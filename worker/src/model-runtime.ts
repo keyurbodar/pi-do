@@ -4,6 +4,12 @@
 // facade). Here the runtime is sync and key-driven: provider keys are read
 // from env, otherwise the deterministic stub stands in. Never log keys:
 // key material only decides the branch and never leaves memory.
+// Catalog source: pi-ai owns model ids, urls, and prices. This file only
+// looks models up in the installed anthropic/openai data slices (never the
+// provider runtime or auth modules) and fails closed on unknown ids.
+import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models";
+import { OPENAI_MODELS } from "@earendil-works/pi-ai/providers/openai.models";
+import type { Api, Model } from "@earendil-works/pi-ai";
 export const STUB_MODEL_ID = "stub";
 
 export interface RuntimeModel {
@@ -12,6 +18,9 @@ export interface RuntimeModel {
   api: string;
   provider: string;
   baseUrl: string;
+  contextWindow: Model<Api>["contextWindow"];
+  maxTokens: Model<Api>["maxTokens"];
+  cost: Model<Api>["cost"];
 }
 
 export interface ModelRuntime {
@@ -25,6 +34,34 @@ export interface RuntimeEnv {
   MODEL_ID?: string;
 }
 
+const ANTHROPIC_DEFAULT_ID =
+  "claude-sonnet-4-5" satisfies keyof typeof ANTHROPIC_MODELS;
+const OPENAI_DEFAULT_ID = "gpt-4o" satisfies keyof typeof OPENAI_MODELS;
+
+function resolveModel(
+  catalog: Record<string, Model<Api>>,
+  provider: string,
+  want: string,
+): RuntimeModel {
+  const entry = catalog[want];
+  if (!entry) {
+    throw {
+      error: `unknown model: ${want}`,
+      hint: `available ${provider} models: ${Object.keys(catalog).sort().join(", ")}`,
+    };
+  }
+  return {
+    id: entry.id,
+    name: entry.name,
+    api: entry.api,
+    provider: entry.provider,
+    baseUrl: entry.baseUrl,
+    contextWindow: entry.contextWindow,
+    maxTokens: entry.maxTokens,
+    cost: entry.cost,
+  };
+}
+
 export function buildRuntime(env: RuntimeEnv): ModelRuntime {
   const override =
     typeof env.MODEL_ID === "string" && env.MODEL_ID.length > 0
@@ -34,15 +71,12 @@ export function buildRuntime(env: RuntimeEnv): ModelRuntime {
     typeof env.ANTHROPIC_API_KEY === "string" &&
     env.ANTHROPIC_API_KEY.length > 0
   ) {
-    const id = override ?? "claude-sonnet-4-5";
     return {
-      model: {
-        id,
-        name: id,
-        api: "anthropic-messages",
-        provider: "anthropic",
-        baseUrl: "https://api.anthropic.com",
-      },
+      model: resolveModel(
+        ANTHROPIC_MODELS,
+        "anthropic",
+        override ?? ANTHROPIC_DEFAULT_ID,
+      ),
       stub: false,
     };
   }
@@ -50,15 +84,12 @@ export function buildRuntime(env: RuntimeEnv): ModelRuntime {
     typeof env.OPENAI_API_KEY === "string" &&
     env.OPENAI_API_KEY.length > 0
   ) {
-    const id = override ?? "gpt-4o";
     return {
-      model: {
-        id,
-        name: id,
-        api: "openai-responses",
-        provider: "openai",
-        baseUrl: "https://api.openai.com",
-      },
+      model: resolveModel(
+        OPENAI_MODELS,
+        "openai",
+        override ?? OPENAI_DEFAULT_ID,
+      ),
       stub: false,
     };
   }
@@ -72,6 +103,9 @@ export function buildRuntime(env: RuntimeEnv): ModelRuntime {
       api: "stub",
       provider: "stub",
       baseUrl: "",
+      contextWindow: 0,
+      maxTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     },
     stub: true,
   };
