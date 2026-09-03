@@ -12,7 +12,7 @@ pr	title	branch	worktree	complexity	time_min	depends_on	parallel_group	scope	com
 11	per-session-queue	pr/11-per-session-queue	.worktrees/pr-11	2	12	10	W8	per-session promise queue one prompt at a time + withFileMutationQueue for overlapping edits	0%	—
 12	bash-stream-abort	pr/12-bash-stream-abort	.worktrees/pr-12	3	15	10	W8	throttled tool_update bash streaming + AbortSignal to ExecHandle kill path	0%	—
 13	exec-descriptions	pr/13-exec-descriptions	.worktrees/pr-13	1	10	06	W5	per-backend exec descriptions into bash tool text	100%	✅ merged (just-bash limits in description, assert in smoke)
-14	model-runtime-wiring	pr/14-model-runtime-wiring	.worktrees/pr-14	3	18	06	W5	ModelRuntime + default read bash edit write wiring via env createAgentSession shape	0%	—
+14	model-runtime-wiring	pr/14-model-runtime-wiring	.worktrees/pr-14	3	18	06	W5	ModelRuntime + default read bash edit write wiring via env createAgentSession shape	100%	✅ merged (runtime+factory, tools live in pi-cf, 6 batteries green)
 15	edit-write-tools	pr/15-edit-write-tools	.worktrees/pr-15	2	12	14	W7	write edit tools via env through mutation queue last-writer-wins recorded as entries	0%	—
 16	lane-compact-archive	pr/16-lane-compact-archive	.worktrees/pr-16	2	12	07	W7	lane compact summary entry + archived entries pagination keeps table bounded	0%	—
 17	cli-client	pr/17-cli-client	.worktrees/pr-17	2	15	10	W8	thin CLI prompt abort steer sender + frame printer for verification over WS	70%	◐ doctor/workspace/files/session/git/exec/run land via feature PRs; entries/stream/commands pending
