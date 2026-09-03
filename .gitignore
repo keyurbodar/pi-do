@@ -5,3 +5,4 @@ artifacts/
 .DS_Store
 refs/
 .worktrees/
+worker/.dev.vars
