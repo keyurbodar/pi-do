@@ -139,11 +139,9 @@ eq(
   1,
 );
 
-// Resume cursor: head is the last cursor, count the rows; empty sid is 0/0.
 eq("head-s1", entryHead(sql, "s1"), { count: 5, head: 5 });
 eq("head-empty", entryHead(sql, "nobody"), { count: 0, head: 0 });
 
-// Paged replay concatenates back to the full slice in cursor order.
 const p1 = listEntries(sql, "s1", { after: 0, limit: 2 }).map((e) => e.cursor);
 const p2 = listEntries(sql, "s1", { after: 2, limit: 2 }).map((e) => e.cursor);
 const p3 = listEntries(sql, "s1", { after: 4, limit: 2 }).map((e) => e.cursor);

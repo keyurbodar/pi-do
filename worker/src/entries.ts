@@ -77,7 +77,6 @@ export function listEntries(
   return out;
 }
 
-// Resume cursor for a session: entry count plus the head cursor (0 when empty).
 export function entryHead(sql: EntriesSql, sid: string): { count: number; head: number } {
   for (const row of sql.exec(
     "SELECT COUNT(*) AS count, COALESCE(MAX(id), 0) AS head FROM pi_entries WHERE sid = ?",
