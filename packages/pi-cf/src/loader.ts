@@ -22,14 +22,90 @@ function fail(error: string, hint: string): never {
   throw { error, hint };
 }
 
-// Same file gate as pi's isExtensionFile: .ts or .js only, sorted so turn
-// order stays deterministic across SQLite page layouts.
+// Same file gate as pi's isExtensionFile: depth-1 .ts/.js only, sorted so
+// turn order stays deterministic across SQLite page layouts. Nested files
+// load only through their subdir manifest or index file below, never twice.
 export function discoverVfsExtensions(files: FileStoreLike, ws: string): string[] {
-  return files
-    .list(ws, `${VFS_EXTENSIONS_DIR}/`)
+  const prefix = `${VFS_EXTENSIONS_DIR}/`;
+  const all = files
+    .list(ws, prefix)
     .map((entry) => entry.path)
-    .filter((path) => path.endsWith(".ts") || path.endsWith(".js"))
     .sort();
+  const found: string[] = [];
+  const subdirs = new Set<string>();
+  for (const path of all) {
+    if (!path.startsWith(prefix)) continue;
+    const rest = path.slice(prefix.length);
+    const slash = rest.indexOf("/");
+    if (slash === -1) {
+      if (rest.endsWith(".ts") || rest.endsWith(".js")) found.push(path);
+      continue;
+    }
+    subdirs.add(rest.slice(0, slash));
+  }
+  for (const sub of [...subdirs].sort()) found.push(...resolveSubdirEntries(files, ws, sub));
+  return found.sort();
+}
+
+// pi's resolveExtensionEntries shape, fail-closed: a present package.json
+// must parse with a usable pi.extensions list, and every named entry must
+// resolve to a .ts/.js file inside the same subdir. No npm install, no
+// dependency resolution: the manifest names files, nothing more.
+function resolveSubdirEntries(files: FileStoreLike, ws: string, sub: string): string[] {
+  const base = `${VFS_EXTENSIONS_DIR}/${sub}`;
+  const manifestPath = `${base}/package.json`;
+  const raw = files.get(ws, manifestPath);
+  if (raw !== undefined) {
+    const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+    let pkg: unknown;
+    try {
+      pkg = JSON.parse(new TextDecoder().decode(bytes));
+    } catch {
+      fail(
+        `bad extension manifest: ${base}`,
+        "package.json must be JSON with { pi: { extensions: [...] } } naming .ts/.js files in this subdir, or remove it so index.ts loads instead",
+      );
+    }
+    const piField: unknown = pkg !== null && typeof pkg === "object" && "pi" in pkg ? pkg.pi : undefined;
+    const exts: unknown =
+      piField !== null && typeof piField === "object" && "extensions" in piField ? piField.extensions : undefined;
+    if (!Array.isArray(exts) || exts.length === 0 || !exts.every((e) => typeof e === "string")) {
+      fail(
+        `bad extension manifest: ${base}`,
+        "package.json needs { pi: { extensions: [...] } } with at least one .ts/.js path in this subdir, or remove it so index.ts loads instead",
+      );
+    }
+    return exts.map((entry: string) => resolveManifestEntry(files, ws, base, entry));
+  }
+  for (const name of ["index.ts", "index.js"]) {
+    if (files.exists(ws, `${base}/${name}`)) return [`${base}/${name}`];
+  }
+  return [];
+}
+
+// Lexical join: entries stay inside their subdir, so ../ cannot pull a file
+// from another extension or the workspace root into this factory's scope.
+function resolveManifestEntry(files: FileStoreLike, ws: string, base: string, entry: string): string {
+  const parts: string[] = [];
+  for (const part of entry.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      if (parts.length === 0) {
+        fail(`bad extension manifest: ${base}`, `entry ${entry} leaves this subdir; name a .ts/.js file inside it instead`);
+      }
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  const resolved = `${base}/${parts.join("/")}`;
+  if (!resolved.endsWith(".ts") && !resolved.endsWith(".js")) {
+    fail(`bad extension manifest: ${base}`, `entry ${entry} is not a .ts or .js file; name the entry file directly`);
+  }
+  if (!files.exists(ws, resolved)) {
+    fail(`bad extension manifest: ${base}`, `entry ${entry} not found under ${base}; write the file or fix the pi.extensions path`);
+  }
+  return resolved;
 }
 
 type VfsModuleFn = (api: InlineExtensionApi, context: ToolContext) => unknown;
