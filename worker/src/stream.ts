@@ -14,7 +14,7 @@
 // because the next openRun flips the orphaned run to interrupted.
 import { appendEntry, closeRun, getEntry, openRun, type EntriesSql } from "./entries";
 import { enforceFence } from "./fence";
-import type { FileStore } from "./files";
+import type { FileStore } from "./vfs-dofs";
 import { buildRuntime, clampThinkingLevel, resolveProviderKey, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
 import { createAgentSession } from "../../packages/pi-cf/src/session";
 export interface StreamShell {
