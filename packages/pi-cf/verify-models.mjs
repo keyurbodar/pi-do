@@ -1,10 +1,5 @@
-// verify-models.mjs — resolves one known anthropic id and one known openai
-// id through the worker's buildRuntime lookup, the same path production
-// runs take. Asserts contextWindow plus cost plus baseUrl arrive from the
-// pi-ai catalog and are sane, unknown ids fail closed with the provider
-// model id list as the hint, and keyless env still yields the stub.
-// Exit nonzero on the first gap. Fake key material only, never
-// process.env; the catalog data needs no credentials.
+// verify-models.mjs — same buildRuntime lookup production runs take.
+// Fake key material only, never process.env; the catalog needs no credentials.
 import { buildRuntime, STUB_MODEL_ID } from "../../worker/src/model-runtime.ts";
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models";
 import { OPENAI_MODELS } from "@earendil-works/pi-ai/providers/openai.models";

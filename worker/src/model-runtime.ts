@@ -4,7 +4,6 @@
 // facade). Here the runtime is sync and key-driven: provider keys are read
 // from env, otherwise the deterministic stub stands in. Never log keys:
 // key material only decides the branch and never leaves memory.
-//
 // Catalog source: pi-ai owns model ids, urls, and prices. This file only
 // looks models up in the installed anthropic/openai data slices (never the
 // provider runtime or auth modules) and fails closed on unknown ids.
