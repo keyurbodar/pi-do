@@ -20,6 +20,7 @@ commands:
   run                           one headless harness turn (POST /workspaces/:id/sessions/:sid/run)
   claim                         rotate owner fence via revision CAS (POST /workspaces/:id/sessions/:sid/claim)
   entries                       raw replay slice (GET /workspaces/:id/sessions/:sid/entries)
+  stream                        live turns over WS (GET /workspaces/:id/sessions/:sid/stream)
   meta                          resume cursor (GET /workspaces/:id/sessions/:sid/meta)
 
 global flags:
@@ -312,6 +313,27 @@ exit codes:
 example:
   pi-do meta --ws <id> --sid <sid>
 `;
+const STREAM_HELP = `pi-do stream — live turns over a WebSocket
+
+usage:
+  pi-do stream --ws WS --sid SID [--fence F --expected N] [--base URL] [--json]
+
+behavior:
+  Opens GET /workspaces/:id/sessions/:sid/stream as a WebSocket. Each stdin
+  line becomes one {prompt} frame (the live fence attaches when --fence and
+  --expected are given, and tracks {done} rotations). Every server frame
+  prints on stdout as it arrives: {entry} frames carry the storage re-read,
+  {done} carries the rotated {fence, revision}, {aborted} ends a cancelled
+  turn, {busy} means a turn is already running, {ping} is a heartbeat.
+
+exit codes:
+  0  socket closed cleanly after stdin ended
+  1  server-side failure or socket error (error + hint printed)
+  2  usage error
+
+example:
+  printf 'read seed.txt\\n' | pi-do stream --ws <id> --sid <sid>
+`;
 
 
 function failUsage(message, help) {
@@ -478,7 +500,7 @@ function helpFor(cmd, sub) {
   if (cmd === "run") return RUN_HELP;
   if (cmd === "claim") return CLAIM_HELP;
   if (cmd === "entries") return ENTRIES_HELP;
-  if (cmd === "meta") return META_HELP;
+  if (cmd === "stream") return STREAM_HELP;
   return ROOT_HELP;
 }
 
@@ -823,6 +845,125 @@ async function doMeta(base, json, opts) {
   }
   process.exit(0);
 }
+async function doStream(base, json, opts) {
+  if (!opts.ws) failUsage(`stream needs --ws WS.`, STREAM_HELP);
+  if (!opts.sid) failUsage(`stream needs --sid SID.`, STREAM_HELP);
+  if ((opts.fence !== undefined) !== (opts.expected !== undefined)) {
+    failUsage(`stream needs both --fence F and --expected N together, or neither.`, STREAM_HELP);
+  }
+  let expected;
+  if (opts.expected !== undefined) {
+    expected = Number(opts.expected);
+    if (!Number.isInteger(expected) || expected < 0) failUsage(`stream needs --expected N (a non-negative integer).`, STREAM_HELP);
+  }
+  if (typeof WebSocket === "undefined") {
+    human(`error: this node has no global WebSocket`);
+    human(`hint: use node >= 22 for 'pi-do stream', or drive the socket from verify/stream-protocol.sh`);
+    process.exit(1);
+  }
+  const wsBase = stripBase(base).replace(/^http:/, "ws:").replace(/^https:/, "wss:");
+  const url = new URL(`${wsBase}/workspaces/${encodeURIComponent(opts.ws)}/sessions/${encodeURIComponent(opts.sid)}/stream`);
+  let fence = opts.fence;
+  if (fence !== undefined) {
+    url.searchParams.set("fence", fence);
+    url.searchParams.set("expected", String(expected));
+  }
+  const sock = new WebSocket(url.toString());
+  const show = (frame) => {
+    if (json) {
+      printJson(frame);
+      return;
+    }
+    if (frame.entry) {
+      process.stdout.write(`entry ${frame.entry.cursor} ${frame.entry.type} ${frame.entry.body}\n`);
+    } else if (frame.done) {
+      process.stdout.write(`done fence=${frame.fence} revision=${frame.revision}\n`);
+      if (frame.result) process.stdout.write(`${frame.result.endsWith("\n") ? frame.result : `${frame.result}\n`}`);
+    } else if (frame.aborted) {
+      process.stdout.write(`aborted run=${frame.runId ?? ""}\n`);
+    } else if (frame.busy) {
+      process.stdout.write(`busy ${frame.hint ?? ""}\n`);
+    } else if (frame.ping) {
+      process.stdout.write(`ping\n`);
+    } else if (frame.error) {
+      process.stdout.write(`error ${frame.error} ${frame.hint ?? ""}\n`);
+    } else {
+      process.stdout.write(`${JSON.stringify(frame)}\n`);
+    }
+  };
+  let settled = false;
+  const finish = (code) => {
+    if (settled) return;
+    settled = true;
+    try {
+      sock.close();
+    } catch {
+      // Already gone; exit code carries the outcome.
+    }
+    process.exit(code);
+  };
+  sock.onopen = () => {
+    human(`stream open ${url.toString()}`);
+    const sendLine = (line) => {
+      const prompt = line.trim();
+      if (!prompt) return;
+      const frame = { prompt };
+      if (fence !== undefined) {
+        frame.fence = fence;
+        frame.expected = expected;
+      }
+      sock.send(JSON.stringify(frame));
+    };
+    if (process.stdin.isTTY) {
+      human(`hint: type prompts line by line; Ctrl-D ends stdin, Ctrl-C closes the socket`);
+    }
+    let rest = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => {
+      rest += chunk;
+      let idx;
+      while ((idx = rest.indexOf("\n")) !== -1) {
+        const line = rest.slice(0, idx);
+        rest = rest.slice(idx + 1);
+        sendLine(line);
+      }
+    });
+    process.stdin.on("end", () => {
+      if (rest.trim()) sendLine(rest);
+    });
+    process.stdin.resume();
+  };
+  sock.onmessage = (event) => {
+    let frame;
+    try {
+      frame = JSON.parse(String(event.data));
+    } catch {
+      human(`error: non-JSON frame from server`);
+      human(`hint: the stream speaks one JSON object per message; reconnect and retry`);
+      finish(1);
+      return;
+    }
+    if (frame.done === true && typeof frame.fence === "string") {
+      fence = frame.fence;
+      expected = frame.revision;
+    }
+    if (frame.error && !frame.entry) human(`error: ${frame.error}`);
+    if (frame.error && frame.hint) human(`hint: ${frame.hint}`);
+    show(frame);
+  };
+  sock.onerror = () => {
+    human(`error: socket error talking to ${base}`);
+    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
+    if (json) printJson({ error: "socket error", base });
+    finish(1);
+  };
+  sock.onclose = (event) => {
+    human(`stream close code=${event.code} reason=${event.reason || "-"}`);
+    finish(event.wasClean || event.code === 1000 ? 0 : 0);
+  };
+  process.on("SIGINT", () => finish(0));
+}
+
 
 async function doExec(base, json, opts) {
   if (!opts.ws) failUsage(`exec needs --ws WS.`, EXEC_HELP);
@@ -913,6 +1054,9 @@ async function main() {
   } else if (cmd === "run") {
     if (sub !== undefined || extra.length > 0) failUsage(`run takes no subcommand.`, RUN_HELP);
     await doRun(opts.base, opts.json, opts);
+  } else if (cmd === "stream") {
+    if (sub !== undefined || extra.length > 0) failUsage(`stream takes no subcommand.`, STREAM_HELP);
+    await doStream(opts.base, opts.json, opts);
   } else {
     failUsage(`unknown command '${cmd}'.`, ROOT_HELP);
   }

@@ -40,48 +40,66 @@ export interface SessionTurn {
   model: string;
 }
 
+
+export interface SessionToolEvent {
+  kind: "toolCall" | "toolResult";
+  id: string;
+  tool: string;
+  args: Record<string, unknown>;
+  output?: string;
+}
+
+export interface SessionRunOptions {
+  signal?: AbortSignal;
+  onUpdate?: (event: SessionToolEvent) => void;
+}
+
+// Abortable pause between steps. Only the streaming path passes a signal,
+// so the one-shot /run path keeps its timing; the pause opens an abort
+// window so a live {abort} frame lands mid-turn instead of after {done}.
+function abortablePause(signal: AbortSignal | undefined): Promise<void> {
+  if (signal === undefined) return Promise.resolve();
+  if (signal.aborted) return Promise.reject(signal.reason ?? new Error("aborted"));
+  const { promise, resolve, reject } = Promise.withResolvers<void>();
+  const timer = setTimeout(() => {
+    signal.removeEventListener("abort", onAbort);
+    resolve();
+  }, 250);
+  const onAbort = (): void => {
+    clearTimeout(timer);
+    reject(signal.reason ?? new Error("aborted"));
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
+  return promise;
+}
+
 export function createAgentSession(options: CreateAgentSessionOptions): {
-  run(prompt: string): Promise<SessionTurn>;
+  run(prompt: string, runOptions?: SessionRunOptions): Promise<SessionTurn>;
 } {
   const { files, ws, shell, model } = options;
   const env = new ComputerExecutionEnv(files, ws, shell);
   const context: ToolContext = { env };
 
-  async function run(prompt: string): Promise<SessionTurn> {
+  async function run(prompt: string, runOptions?: SessionRunOptions): Promise<SessionTurn> {
+    const signal = runOptions?.signal;
+    const onUpdate = runOptions?.onUpdate;
     const toolCalls: SessionToolCall[] = [];
     const outputs: string[] = [];
     let n = 0;
     for (const step of planStubTurn(prompt)) {
+      signal?.throwIfAborted();
+      await abortablePause(signal);
       n += 1;
       const id = `session-${n}`;
-      if (step.kind === "read") {
-        const result = await sessionTools.read.execute(
-          id,
-          { path: step.path },
-          undefined,
-          undefined,
-          context,
-        );
-        const output = textOf(result);
-        toolCalls.push({ id, tool: "read", args: { path: step.path }, output });
-        outputs.push(output);
-      } else {
-        const result = await sessionTools.bash.execute(
-          id,
-          { command: step.command },
-          undefined,
-          undefined,
-          context,
-        );
-        const output = textOf(result);
-        toolCalls.push({
-          id,
-          tool: "bash",
-          args: { command: step.command },
-          output,
-        });
-        outputs.push(output);
-      }
+      const tool = step.kind;
+      const args = step.kind === "read" ? { path: step.path } : { command: step.command };
+      onUpdate?.({ kind: "toolCall", id, tool, args });
+      const toolFn = step.kind === "read" ? sessionTools.read : sessionTools.bash;
+      const result = await toolFn.execute(id, args, signal, undefined, context);
+      const output = textOf(result);
+      toolCalls.push({ id, tool, args, output });
+      outputs.push(output);
+      onUpdate?.({ kind: "toolResult", id, tool, args, output });
     }
     return {
       result: outputs.join("\n"),
