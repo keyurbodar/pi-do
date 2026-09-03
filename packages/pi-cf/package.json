@@ -8,6 +8,7 @@
     "verify": "node verify-env.mjs"
   },
   "dependencies": {
+    "@earendil-works/pi-ai": "0.84.4",
     "diff": "8.0.4"
   }
 }

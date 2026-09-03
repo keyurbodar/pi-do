@@ -15,9 +15,8 @@
 import { appendEntry, closeRun, getEntry, openRun, type EntriesSql } from "./entries";
 import { enforceFence } from "./fence";
 import type { FileStore } from "./files";
-import { buildRuntime, type RuntimeEnv } from "./model-runtime";
+import { buildRuntime, clampThinkingLevel, resolveProviderKey, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
 import { createAgentSession } from "../../packages/pi-cf/src/session";
-
 export interface StreamShell {
   exec(input: {
     command: string;
@@ -31,6 +30,7 @@ export interface StreamHost {
   files: FileStore;
   shell: StreamShell;
   runtimeEnv: RuntimeEnv;
+  thinking: string | null;
   workspaceKnown: boolean;
   sessionKnown: boolean;
   readFence(): { fence: string | null; revision: number } | null;
@@ -263,14 +263,18 @@ async function startTurn(
     openRun(host.sql, host.sid, turnId);
     emitAppend("prompt", { runId: turnId, prompt });
     const runtime = buildRuntime(host.runtimeEnv);
+    const like: RuntimeModel | Record<string, never> = runtime.stub ? {} : runtime.model;
+    const effThinking = host.thinking === null ? null : clampThinkingLevel(like, host.thinking);
     const session = createAgentSession({
       files: host.files,
       ws: host.ws,
       shell: host.shell,
       model: runtime.model,
+      apiKey: runtime.stub ? undefined : resolveProviderKey(host.runtimeEnv, runtime.model.provider),
     });
     const turn = await session.run(prompt, {
       signal: turnController.signal,
+      thinking: effThinking,
       onUpdate: (event) => {
         if (event.kind === "toolCall") {
           emitAppend("toolCall", { runId: turnId, id: event.id, tool: event.tool, args: event.args });
@@ -302,10 +306,15 @@ async function startTurn(
       emitAppend("interrupted", { runId: turnId });
       send({ aborted: true, runId: turnId });
     } else {
-      const message = e instanceof Error ? e.message : String(e ?? "run failed");
+      const shaped: { error?: unknown; hint?: unknown } | null =
+        e !== null && typeof e === "object" ? (e as { error?: unknown; hint?: unknown }) : null;
+      const message = e instanceof Error
+        ? e.message
+        : (typeof shaped?.error === "string" ? shaped.error : String(e ?? "run failed"));
+      const hint = typeof shaped?.hint === "string" ? shaped.hint : "retry the prompt with a simpler request";
       emitAppend("error", { runId: turnId, error: message });
       closeRun(host.sql, host.sid, turnId);
-      send({ error: message.slice(0, 300), hint: "retry the prompt with a simpler request" });
+      send({ error: message.slice(0, 300), hint });
     }
   } finally {
     if (host.live.get(host.sid) === turnController) host.live.delete(host.sid);

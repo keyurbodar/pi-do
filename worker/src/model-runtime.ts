@@ -332,6 +332,19 @@ function requiredCost(
 export function customKeyEnvVar(providerId: string): string {
   return `${providerId.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`;
 }
+// Inference-time key for one provider id: the built-in env var when the id
+// names a built-in, else the <PROVIDER_ID>_API_KEY Worker secret. Key
+// material only decides this branch; callers pass it into pi-ai options and
+// never log it.
+export function resolveProviderKey(env: RuntimeEnv, providerId: string): string | undefined {
+  const builtin = BUILTINS.find((entry) => providerIdOf(entry.catalog) === providerId);
+  const names = builtin !== undefined ? [builtin.envVar, customKeyEnvVar(providerId)] : [customKeyEnvVar(providerId)];
+  for (const name of names) {
+    const key = env[name];
+    if (typeof key === "string" && key.length > 0) return key;
+  }
+  return undefined;
+}
 
 export function loadCustomProviders(doc: unknown): Map<string, CustomProvider> {
   const out = new Map<string, CustomProvider>();

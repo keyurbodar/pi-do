@@ -1,3 +1,15 @@
+import { completeSimple } from "@earendil-works/pi-ai/compat";
+import type {
+  Api,
+  AssistantMessage,
+  Context as PiContext,
+  Message as PiMessage,
+  Model as PiModel,
+  SimpleStreamOptions,
+  ThinkingLevel,
+  Tool as PiTool,
+  ToolCall as PiToolCall,
+} from "@earendil-works/pi-ai";
 import {
   ComputerExecutionEnv,
   type FileStoreLike,
@@ -31,6 +43,7 @@ export interface CreateAgentSessionOptions {
   shell: ShellLike;
   model: SessionModel;
   tools?: Partial<SessionTools>;
+  apiKey?: string;
 }
 
 export interface SessionToolCall {
@@ -59,6 +72,7 @@ export interface SessionToolEvent {
 export interface SessionRunOptions {
   signal?: AbortSignal;
   onUpdate?: (event: SessionToolEvent) => void;
+  thinking?: string | null;
 }
 
 // Abortable pause between steps. Only the streaming path passes a signal,
@@ -79,6 +93,48 @@ function abortablePause(signal: AbortSignal | undefined): Promise<void> {
   signal.addEventListener("abort", onAbort, { once: true });
   return promise;
 }
+// Model-called loop state. The stub path below owns no pi-ai import at
+// runtime: keyless turns never reach completeSimple, so behavior there is
+// byte-identical to the planStubTurn harness it replaces.
+const MAX_MODEL_STEPS = 10;
+
+const SYSTEM_PROMPT =
+  'You are a coding assistant inside a Cloudflare Worker workspace. File paths are workspace-relative ("" is the workspace root). Use the tools to inspect and change files, then answer with a short summary of what you did.';
+
+// SessionModel is the pi-cf subset; the worker passes its full RuntimeModel
+// here, so extras ride through instead of being retyped per provider.
+function toPiModel(model: SessionModel): PiModel<Api> {
+  const source = model as SessionModel & Partial<PiModel<Api>>;
+  return {
+    id: source.id,
+    name: source.name ?? source.id,
+    api: (source.api ?? "openai-completions") as Api,
+    provider: source.provider ?? "stub",
+    baseUrl: source.baseUrl ?? "",
+    reasoning: source.reasoning ?? false,
+    thinkingLevelMap: source.thinkingLevelMap,
+    input: source.input ?? ["text"],
+    cost: source.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: source.contextWindow ?? 0,
+    maxTokens: source.maxTokens ?? 0,
+  };
+}
+
+function assistantText(message: AssistantMessage): string {
+  return message.content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n");
+}
+
+function errorText(value: unknown): string {
+  if (value instanceof Error) return value.message;
+  if (value !== null && typeof value === "object" && "error" in value && typeof value.error === "string") {
+    const hint = "hint" in value && typeof value.hint === "string" ? ` (${value.hint})` : "";
+    return `${value.error}${hint}`;
+  }
+  return String(value ?? "tool failed");
+}
 
 export function createAgentSession(options: CreateAgentSessionOptions): {
   run(prompt: string, runOptions?: SessionRunOptions): Promise<SessionTurn>;
@@ -91,9 +147,12 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
   async function run(prompt: string, runOptions?: SessionRunOptions): Promise<SessionTurn> {
     const signal = runOptions?.signal;
     const onUpdate = runOptions?.onUpdate;
+    const modelId = model.id;
+    const apiKey = options.apiKey;
+    const keyed = model.api !== "stub" && typeof apiKey === "string" && apiKey.length > 0;
+    if (keyed) return runModelTurn(prompt, apiKey, signal, onUpdate, runOptions?.thinking ?? null);
     const readFn = tools.read;
     const bashFn = tools.bash;
-    const modelId = model.id;
     const toolCalls: SessionToolCall[] = [];
     const outputs: string[] = [];
     let n = 0;
@@ -114,6 +173,88 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
     }
     return {
       result: outputs.join("\n"),
+      toolCalls,
+      via: "createAgentSession",
+      model: modelId,
+    };
+  }
+
+  // Keyed loop: send messages plus tool schemas, execute our tools, append
+  // results, repeat until the model stops calling tools or the step cap
+  // hits. Same SessionTurn shape, same onUpdate events, same abort signal.
+  async function runModelTurn(
+    prompt: string,
+    apiKey: string,
+    signal: AbortSignal | undefined,
+    onUpdate: ((event: SessionToolEvent) => void) | undefined,
+    thinking: string | null,
+  ): Promise<SessionTurn> {
+    const modelId = model.id;
+    const piTools: PiTool[] = Object.values(tools).map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+    }));
+    const messages: PiMessage[] = [{ role: "user", content: prompt, timestamp: Date.now() }];
+    const request: SimpleStreamOptions = { signal };
+    if (thinking !== null && thinking !== "" && thinking !== "off") request.reasoning = thinking as ThinkingLevel;
+    request.apiKey = apiKey;
+    const toolCalls: SessionToolCall[] = [];
+    let n = 0;
+    let result = "";
+    for (let step = 0; step < MAX_MODEL_STEPS; step += 1) {
+      signal?.throwIfAborted();
+      await abortablePause(signal);
+      const piContext: PiContext = { systemPrompt: SYSTEM_PROMPT, messages, tools: piTools };
+      const answer = await completeSimple(toPiModel(model), piContext, request);
+      if (answer.stopReason === "error" || answer.stopReason === "aborted") {
+        signal?.throwIfAborted();
+        // {error, hint} shape so both callers stay hinted: /run returns it
+        // as-is, the stream formats it below. Never carries key material —
+        // pi-ai errors hold status text only.
+        throw {
+          error: (answer.errorMessage ?? "model turn failed").slice(0, 300),
+          hint: "retry the prompt; repeated auth/billing errors mean the provider key or quota needs attention",
+        };
+      }
+      result = assistantText(answer);
+      const calls = answer.content.filter((block): block is PiToolCall => block.type === "toolCall");
+      if (answer.stopReason !== "toolUse" || calls.length === 0) break;
+      messages.push(answer);
+      for (const call of calls) {
+        signal?.throwIfAborted();
+        n += 1;
+        const id = call.id.length > 0 ? call.id : `session-${n}`;
+        const args = call.arguments ?? {};
+        onUpdate?.({ kind: "toolCall", id, tool: call.name, args });
+        const toolFn = tools[call.name as keyof SessionTools];
+        let output: string;
+        let isError = false;
+        if (toolFn === undefined) {
+          output = `unknown tool: ${call.name} (available: ${Object.keys(tools).join(", ")})`;
+          isError = true;
+        } else {
+          try {
+            output = textOf(await toolFn.execute(id, args, signal, undefined, context));
+          } catch (e) {
+            output = errorText(e);
+            isError = true;
+          }
+        }
+        toolCalls.push({ id, tool: call.name, args, output });
+        onUpdate?.({ kind: "toolResult", id, tool: call.name, args, output });
+        messages.push({
+          role: "toolResult",
+          toolCallId: call.id,
+          toolName: call.name,
+          content: [{ type: "text", text: output }],
+          isError,
+          timestamp: Date.now(),
+        });
+      }
+    }
+    return {
+      result,
       toolCalls,
       via: "createAgentSession",
       model: modelId,

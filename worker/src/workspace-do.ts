@@ -4,7 +4,7 @@ import { enforceFence } from "./fence";
 import { acceptStream, readAttachment, socketClosed, socketMessage, wrapSocket, type StreamHost } from "./stream";
 import { createAgentSession } from "../../packages/pi-cf/src/session";
 import { normalizeWorkspacePath } from "../../packages/pi-cf/src/tools";
-import { buildRuntime, clampThinkingLevel, keyedProviders, resolveCatalogModel, resolveKeyedModel, supportedThinkingLevels, THINKING_LEVELS, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
+import { buildRuntime, clampThinkingLevel, keyedProviders, resolveCatalogModel, resolveKeyedModel, resolveProviderKey, supportedThinkingLevels, THINKING_LEVELS, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
 import { createWorkspaceFs, hasGitDir } from "./git-fs";
 import { gateArgv, notARepoBody, NotARepoError, runGitRead } from "./git-reads";
 interface ShellWorkerBinding {
@@ -1016,8 +1016,9 @@ export class WorkspaceDO implements DurableObject {
           ws,
           shell: this.env.SHELL_WORKER,
           model: turnModel,
+          apiKey: resolveProviderKey(this.env as unknown as RuntimeEnv, respProvider),
         });
-        const turn = await session.run(prompt);
+        const turn = await session.run(prompt, { thinking: effThinking });
         recordTurnWithOpen(sql, sid, runId, prompt, turn.toolCalls, turn.result);
         const runtimeOut = { via: turn.via, model: turn.model, provider: respProvider, thinking: effThinking };
         if (rotated !== null) {
@@ -1174,7 +1175,6 @@ export class WorkspaceDO implements DurableObject {
       404,
     );
   }
-
   private streamHost(ws: string, sid: string): StreamHost {
     return {
       sql: this.state.storage.sql,
@@ -1183,6 +1183,7 @@ export class WorkspaceDO implements DurableObject {
       files: this.files,
       shell: this.env.SHELL_WORKER,
       runtimeEnv: this.env as unknown as RuntimeEnv,
+      thinking: this.readTriple(sid)?.thinking ?? null,
       workspaceKnown: ws !== "" && this.workspaceExists(ws),
       sessionKnown: ws !== "" && sid !== "" && this.sessionExists(ws, sid),
       readFence: () => this.readFence(sid),
