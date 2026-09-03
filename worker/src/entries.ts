@@ -1,6 +1,7 @@
 // entries.ts — sole writer of pi_entries plus the runs open/close ledger.
 // Pure functions over a minimal SQL interface; no DO imports, so the same
 // logic runs against the DO SqlStorage and the in-memory fake in verify-runs.
+import type { SessionUsage } from "../../packages/pi-cf/src/session";
 
 export interface EntriesSql {
   exec(query: string, ...bindings: unknown[]): Iterable<unknown>;
@@ -161,13 +162,14 @@ function recordTurnInner(
   prompt: string,
   toolCalls: TurnCall[],
   result: string,
+  usage?: SessionUsage,
 ): void {
   appendEntry(sql, sid, "prompt", { runId, prompt });
   for (const call of toolCalls) {
     appendEntry(sql, sid, "toolCall", { runId, id: call.id, tool: call.tool, args: call.args });
     appendEntry(sql, sid, "toolResult", { runId, id: call.id, tool: call.tool, output: call.output });
   }
-  appendEntry(sql, sid, "result", { runId, result });
+  appendEntry(sql, sid, "result", usage === undefined ? { runId, result } : { runId, result, usage });
   closeRun(sql, sid, runId);
 }
 
@@ -178,9 +180,10 @@ export function recordTurn(
   prompt: string,
   toolCalls: TurnCall[],
   result: string,
+  usage?: SessionUsage,
 ): void {
   runInSyncTx(sql, () => {
-    recordTurnInner(sql, sid, runId, prompt, toolCalls, result);
+    recordTurnInner(sql, sid, runId, prompt, toolCalls, result, usage);
   });
 }
 
@@ -193,9 +196,69 @@ export function recordTurnWithOpen(
   prompt: string,
   toolCalls: TurnCall[],
   result: string,
+  usage?: SessionUsage,
 ): void {
   runInSyncTx(sql, () => {
     openRunInner(sql, sid, runId);
-    recordTurnInner(sql, sid, runId, prompt, toolCalls, result);
+    recordTurnInner(sql, sid, runId, prompt, toolCalls, result, usage);
   });
+}
+
+// Session usage rollup, summed on read from persisted result entries so no
+// new tables are needed. Entries predating usage (or with unreadable bodies)
+// count as zeros.
+export function sumResultUsage(sql: EntriesSql, sid: string): SessionUsage {
+  const sums: SessionUsage = { inTokens: 0, outTokens: 0, cacheRead: 0, costTotal: 0, elapsedMs: 0, tokensPerSec: null };
+  let after = 0;
+  for (;;) {
+    const page = listEntries(sql, sid, { after, limit: 1000 });
+    if (page.length === 0) break;
+    for (const entry of page) {
+      if (entry.type !== "result") continue;
+      const usage = parseResultUsage(entry.body);
+      sums.inTokens += usage.inTokens;
+      sums.outTokens += usage.outTokens;
+      sums.cacheRead += usage.cacheRead;
+      sums.costTotal += usage.costTotal;
+      sums.elapsedMs += usage.elapsedMs;
+    }
+    after = page[page.length - 1].cursor;
+    if (page.length < 1000) break;
+  }
+  return sums;
+}
+
+function parseResultUsage(body: string): Omit<SessionUsage, "tokensPerSec"> {
+  const zero = { inTokens: 0, outTokens: 0, cacheRead: 0, costTotal: 0, elapsedMs: 0 };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return zero;
+  }
+  if (parsed === null || typeof parsed !== "object" || !("usage" in parsed)) return zero;
+  const usage = parsed.usage;
+  if (usage === null || typeof usage !== "object") return zero;
+  const num = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0);
+  return {
+    inTokens: "inTokens" in usage ? num(usage.inTokens) : 0,
+    outTokens: "outTokens" in usage ? num(usage.outTokens) : 0,
+    cacheRead: "cacheRead" in usage ? num(usage.cacheRead) : 0,
+    costTotal: "costTotal" in usage ? num(usage.costTotal) : 0,
+    elapsedMs: "elapsedMs" in usage ? num(usage.elapsedMs) : 0,
+  };
+}
+
+export interface SessionUsageMeta extends SessionUsage {
+  contextPct: number | null;
+  hitPct: number;
+}
+
+// Session rates over summed usage, same 100ms floor as the per-turn rate.
+export function withSessionRates(sums: SessionUsage, contextWindow: number | null): SessionUsageMeta {
+  const tokensPerSec = sums.outTokens > 0 && sums.elapsedMs >= 100 ? (sums.outTokens * 1000) / sums.elapsedMs : null;
+  const context = sums.inTokens + sums.outTokens + sums.cacheRead;
+  const contextPct = typeof contextWindow === "number" && contextWindow > 0 ? (context / contextWindow) * 100 : null;
+  const hitDenom = sums.inTokens + sums.cacheRead;
+  return { ...sums, tokensPerSec, contextPct, hitPct: hitDenom > 0 ? (sums.cacheRead / hitDenom) * 100 : 0 };
 }
