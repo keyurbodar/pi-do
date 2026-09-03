@@ -81,6 +81,16 @@ const b = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
 if (typeof b.error !== 'string' || typeof b.hint !== 'string') throw new Error('need { error, hint }');
 console.log('404 hint ok: ' + b.error);
 " "${OUT}/missing-sid.json" || exit 1
+echo "### 8 bash description names backend limits"
+node -e "
+const fs = require('node:fs');
+const src = fs.readFileSync('worker/src/harness.ts', 'utf8');
+const m = src.match(/name: \"bash\"[\s\S]*?description: \"([^\"]+)\"/);
+if (!m) throw new Error('bash description not found');
+const d = m[1];
+for (const s of ['just-bash', '1 MiB', '10s']) if (!d.includes(s)) throw new Error('bash description missing ' + s + ': ' + d);
+console.log('description ok: ' + d);
+" || exit 1
 
 echo "PASS ${RUN_ID} ws=${WS} sid=${SID}"
 } 2>&1 | tee "${OUT}/transcript.txt"

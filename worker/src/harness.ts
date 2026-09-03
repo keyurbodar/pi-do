@@ -57,7 +57,7 @@ export const readTool: AgentHarnessTool<HarnessContext, any, { bytes: number }> 
 export const bashTool: AgentHarnessTool<HarnessContext, any, { exit: number }> = {
   name: "bash",
   label: "Bash",
-  description: "Run a shell command in the workspace shell. Output is captured text.",
+  description: "Run a shell command via just-bash in an isolate (no node/python). Each call gets a fresh FS, cwd pinned per call. Output capped at 1 MiB, 10s timeout. Output is captured text.",
   parameters: {
     type: "object",
     properties: { command: { type: "string" } },
