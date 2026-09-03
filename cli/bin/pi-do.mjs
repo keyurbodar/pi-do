@@ -385,7 +385,7 @@ example:
 const ENTRIES_HELP = `pi-do entries — ordered replay slice of persisted session entries
 
 usage:
-  pi-do entries --ws WS --sid SID [--after N] [--limit L] [--base URL] [--json]
+  pi-do entries --ws WS --sid SID [--after N] [--limit L] [--all] [--base URL] [--json]
 
 behavior:
   GETs /workspaces/:id/sessions/:sid/entries?after=N&limit=L. Returns the
@@ -393,6 +393,10 @@ behavior:
   head, count}). limit defaults to 100 and clamps at 1000. Without --json
   stdout is one "CURSOR TYPE BODY" line per entry; with --json stdout is
   the raw server JSON.
+  With --all, pages after=lastCursor gaplessly until an empty page (limit
+  per page from --limit, at most 100 pages). Pretty --all prints every entry
+  once in cursor order; --json --all prints the assembled {entries, head,
+  count}.
 
 exit codes:
   0  ok
@@ -401,6 +405,7 @@ exit codes:
 
 example:
   pi-do entries --ws <id> --sid <sid> --after 0 --limit 3
+  pi-do entries --ws <id> --sid <sid> --all
 `;
 
 const META_HELP = `pi-do meta — resume cursor for a session
@@ -431,8 +436,16 @@ behavior:
   line becomes one {prompt} frame (the live fence attaches when --fence and
   --expected are given, and tracks {done} rotations). Every server frame
   prints on stdout as it arrives: {entry} frames carry the storage re-read,
-  {done} carries the rotated {fence, revision}, {aborted} ends a cancelled
-  turn, {busy} means a turn is already running, {ping} is a heartbeat.
+  {done} carries the rotated {fence, revision} plus the result text,
+  {aborted} ends a cancelled turn, {busy} means a turn is already running,
+  {ping} is a heartbeat, {message}/{tool}/{agent} pass through for
+  forward-compat, anything else prints as raw JSON.
+
+stdin controls (one per line):
+  <text>          send {prompt: text} (+fence/expected when given)
+  {json}          send the raw JSON frame as-is
+  /abort          send {abort: true}
+  /steer <text>   send {steer: true, text} (+fence/expected when given)
 
 exit codes:
   0  socket closed cleanly after stdin ended
@@ -472,6 +485,7 @@ function parseArgs(argv) {
     model: undefined,
     level: undefined,
     provider: undefined,
+    all: false,
   };
   const positionals = [];
   let baseSet = false;
@@ -569,6 +583,8 @@ function parseArgs(argv) {
       opts.provider = takeValue("--provider");
     } else if (tok.startsWith("--provider=")) {
       opts.provider = tok.slice("--provider=".length);
+    } else if (tok === "--all") {
+      opts.all = true;
     } else if (tok === "--recursive") {
       opts.recursive = true;
     } else {
@@ -614,9 +630,75 @@ async function failFromResponse(res, json) {
   if (json) printJson(parsed ?? { error: errorMsg, status: res.status });
   process.exit(1);
 }
+function printEntryPretty(entry) {
+  process.stdout.write(`${entry.cursor} ${entry.type} ${entry.body}\n`);
+}
+
+function printEntriesPayload(data, opts) {
+  const entries = Array.isArray(data.entries) ? data.entries : [];
+  if (opts.json) {
+    printJson(data);
+  } else {
+    for (const e of entries) printEntryPretty(e);
+  }
+  human(`entries ${entries.length} (after ${opts.after} limit ${opts.limit} head ${data.head} count ${data.count})`);
+}
+
+async function fetchEntriesPage(base, json, ws, sid, after, limit) {
+  const url = `${stripBase(base)}/workspaces/${encodeURIComponent(ws)}/sessions/${encodeURIComponent(sid)}/entries?after=${encodeURIComponent(after)}&limit=${encodeURIComponent(limit)}`;
+  let res;
+  try {
+    res = await fetch(url);
+  } catch (e) {
+    human(`error: cannot reach server at ${base}`);
+    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
+    if (json) printJson({ error: "cannot reach server", base });
+    process.exit(1);
+  }
+  if (!res.ok) await failFromResponse(res, json);
+  return res.json();
+}
+
+function printStreamFrame(frame, json) {
+  if (json) {
+    printJson(frame);
+    return;
+  }
+  if (frame.entry) {
+    process.stdout.write(`entry ${frame.entry.cursor} ${frame.entry.type} ${frame.entry.body}\n`);
+  } else if (frame.done) {
+    if (typeof frame.fence === "string") process.stdout.write(`done fence=${frame.fence} revision=${frame.revision}\n`);
+    else process.stdout.write(`done\n`);
+    if (frame.result) process.stdout.write(frame.result.endsWith("\n") ? frame.result : `${frame.result}\n`);
+  } else if (frame.aborted) {
+    process.stdout.write(`aborted run=${frame.runId ?? ""}\n`);
+  } else if (frame.busy) {
+    process.stdout.write(`busy ${frame.hint ?? ""}\n`);
+  } else if (frame.ping) {
+    process.stdout.write(`ping\n`);
+  } else if (frame.error) {
+    process.stdout.write(`error ${frame.error} ${frame.hint ?? ""}\n`);
+  } else if (frame.message !== undefined) {
+    process.stdout.write(`message ${JSON.stringify(frame.message)}\n`);
+  } else if (frame.tool !== undefined) {
+    process.stdout.write(`tool ${JSON.stringify(frame.tool)}\n`);
+  } else if (frame.agent !== undefined) {
+    process.stdout.write(`agent ${JSON.stringify(frame.agent)}\n`);
+  } else {
+    process.stdout.write(`${JSON.stringify(frame)}\n`);
+  }
+}
 
 function helpFor(cmd, sub) {
   if (cmd === "doctor") return DOCTOR_HELP;
+  if (cmd === "workspace") {
+    if (sub === "create") return WORKSPACE_CREATE_HELP;
+    return WORKSPACE_HELP;
+  }
+  if (cmd === "session") {
+    if (sub === "create") return SESSION_CREATE_HELP;
+    return SESSION_HELP;
+  }
   if (cmd === "files") {
     if (sub === "put") return FILES_PUT_HELP;
     if (sub === "get") return FILES_GET_HELP;
@@ -625,6 +707,7 @@ function helpFor(cmd, sub) {
     return FILES_HELP;
   }
   if (cmd === "exec") return EXEC_HELP;
+  if (cmd === "git") return GIT_HELP;
   if (cmd === "run") return RUN_HELP;
   if (cmd === "claim") return CLAIM_HELP;
   if (cmd === "model") return MODEL_HELP;
@@ -632,6 +715,7 @@ function helpFor(cmd, sub) {
   if (cmd === "models") return MODELS_HELP;
   if (cmd === "settings") return SETTINGS_HELP;
   if (cmd === "entries") return ENTRIES_HELP;
+  if (cmd === "meta") return META_HELP;
   if (cmd === "stream") return STREAM_HELP;
   return ROOT_HELP;
 }
@@ -1127,27 +1211,32 @@ async function doEntries(base, json, opts) {
   const after = opts.after ?? "0";
   if (!/^\d+$/.test(after)) failUsage(`entries needs --after N (a non-negative integer).`, ENTRIES_HELP);
   const limit = opts.limit ?? "100";
-  if (!/^\d+$/.test(limit)) failUsage(`entries needs --limit L (a non-negative integer up to 1000).`, ENTRIES_HELP);
-  const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/sessions/${encodeURIComponent(opts.sid)}/entries?after=${encodeURIComponent(after)}&limit=${encodeURIComponent(limit)}`;
-  let res;
-  try {
-    res = await fetch(url);
-  } catch (e) {
-    human(`error: cannot reach server at ${base}`);
-    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
-    if (json) printJson({ error: "cannot reach server", base });
-    process.exit(1);
+  if (!/^\d+$/.test(limit) || Number(limit) > 1000) {
+    failUsage(`entries needs --limit L (a non-negative integer up to 1000).`, ENTRIES_HELP);
   }
-  if (!res.ok) await failFromResponse(res, json);
-  const data = await res.json();
-  const entries = Array.isArray(data.entries) ? data.entries : [];
-  if (json) {
-    printJson(data);
-    human(`entries ${entries.length} (after ${after} limit ${limit} head ${data.head} count ${data.count})`);
-  } else {
-    for (const e of entries) process.stdout.write(`${e.cursor} ${e.type} ${e.body}\n`);
-    human(`entries ${entries.length} (after ${after} limit ${limit} head ${data.head} count ${data.count})`);
+  if (!opts.all) {
+    const data = await fetchEntriesPage(base, json, opts.ws, opts.sid, after, limit);
+    printEntriesPayload(data, { json, after, limit });
+    process.exit(0);
   }
+  const entries = [];
+  let cursor = after;
+  let head;
+  let count;
+  for (let page = 0; page < 100; page++) {
+    const data = await fetchEntriesPage(base, json, opts.ws, opts.sid, cursor, limit);
+    const slice = Array.isArray(data.entries) ? data.entries : [];
+    head = data.head;
+    count = data.count;
+    if (slice.length === 0) break;
+    for (const e of slice) {
+      entries.push(e);
+      if (!json) printEntryPretty(e);
+    }
+    cursor = String(slice[slice.length - 1].cursor);
+  }
+  if (json) printJson({ entries, head, count });
+  human(`entries ${entries.length} (after ${after} limit ${limit} head ${head} count ${count})`);
   process.exit(0);
 }
 
@@ -1199,27 +1288,30 @@ async function doStream(base, json, opts) {
     url.searchParams.set("expected", String(expected));
   }
   const sock = new WebSocket(url.toString());
-  const show = (frame) => {
-    if (json) {
-      printJson(frame);
+  const sendRaw = (obj) => sock.send(JSON.stringify(obj));
+  const withFence = (frame) => {
+    if (fence !== undefined) {
+      frame.fence = fence;
+      frame.expected = expected;
+    }
+    return frame;
+  };
+  const sendLine = (line) => {
+    const text = line.trim();
+    if (!text) return;
+    if (text === "/abort") {
+      sendRaw({ abort: true });
       return;
     }
-    if (frame.entry) {
-      process.stdout.write(`entry ${frame.entry.cursor} ${frame.entry.type} ${frame.entry.body}\n`);
-    } else if (frame.done) {
-      process.stdout.write(`done fence=${frame.fence} revision=${frame.revision}\n`);
-      if (frame.result) process.stdout.write(`${frame.result.endsWith("\n") ? frame.result : `${frame.result}\n`}`);
-    } else if (frame.aborted) {
-      process.stdout.write(`aborted run=${frame.runId ?? ""}\n`);
-    } else if (frame.busy) {
-      process.stdout.write(`busy ${frame.hint ?? ""}\n`);
-    } else if (frame.ping) {
-      process.stdout.write(`ping\n`);
-    } else if (frame.error) {
-      process.stdout.write(`error ${frame.error} ${frame.hint ?? ""}\n`);
-    } else {
-      process.stdout.write(`${JSON.stringify(frame)}\n`);
+    if (text === "/steer" || text.startsWith("/steer ")) {
+      sendRaw(withFence({ steer: true, text: text.slice("/steer".length).trim() }));
+      return;
     }
+    if (text.startsWith("{")) {
+      sock.send(text);
+      return;
+    }
+    sendRaw(withFence({ prompt: text }));
   };
   let settled = false;
   const finish = (code) => {
@@ -1234,16 +1326,6 @@ async function doStream(base, json, opts) {
   };
   sock.onopen = () => {
     human(`stream open ${url.toString()}`);
-    const sendLine = (line) => {
-      const prompt = line.trim();
-      if (!prompt) return;
-      const frame = { prompt };
-      if (fence !== undefined) {
-        frame.fence = fence;
-        frame.expected = expected;
-      }
-      sock.send(JSON.stringify(frame));
-    };
     if (process.stdin.isTTY) {
       human(`hint: type prompts line by line; Ctrl-D ends stdin, Ctrl-C closes the socket`);
     }
@@ -1279,7 +1361,7 @@ async function doStream(base, json, opts) {
     }
     if (frame.error && !frame.entry) human(`error: ${frame.error}`);
     if (frame.error && frame.hint) human(`hint: ${frame.hint}`);
-    show(frame);
+    printStreamFrame(frame, json);
   };
   sock.onerror = () => {
     human(`error: socket error talking to ${base}`);
@@ -1364,6 +1446,8 @@ async function main() {
   } else if (cmd === "exec") {
     if (sub !== undefined || extra.length > 0) failUsage(`exec takes no subcommand.`, EXEC_HELP);
     await doExec(opts.base, opts.json, opts);
+  } else if (cmd === "git") {
+    await doGit(opts.base, opts.json, opts, sub === undefined ? [...extra] : [sub, ...extra]);
   } else if (cmd === "entries") {
     if (sub !== undefined || extra.length > 0) failUsage(`entries takes no subcommand.`, ENTRIES_HELP);
     await doEntries(opts.base, opts.json, opts);
