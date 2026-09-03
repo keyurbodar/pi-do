@@ -19,6 +19,7 @@ import { bashTool, editTool, listTool, readTool, removeTool, textOf, writeTool, 
 import { planStubTurn } from "./stub-plan.ts";
 import type { AgentHarnessTool } from "@earendil-works/pi-agent-core";
 import { loadInlineExtensions, type InlineExtensionFactory } from "./extensions.ts";
+import { loadVfsExtensionFactories } from "./loader.ts";
 
 export const sessionTools = {
   read: readTool,
@@ -158,7 +159,6 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
   run(prompt: string, runOptions?: SessionRunOptions): Promise<SessionTurn>;
 } {
   const { files, ws, shell, model } = options;
-  const extensionLoad = loadInlineExtensions(options.extensions ?? []);
   const env = new ComputerExecutionEnv(files, ws, shell);
   const context: ToolContext = { env };
 
@@ -166,7 +166,12 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
     const signal = runOptions?.signal;
     const onUpdate = runOptions?.onUpdate;
     const apiKey = options.apiKey;
-    const ext = await extensionLoad;
+    const ext = await loadInlineExtensions([
+      ...(options.extensions ?? []),
+      // VFS binds later than inline: read every turn so a put/remove under
+      // .pi/extensions lands on the next run without a new session.
+      ...loadVfsExtensionFactories(files, ws, context),
+    ]);
     const tools: Record<string, AgentHarnessTool<ToolContext, any, any>> = { ...sessionTools, ...options.tools };
     for (const [name, tool] of ext.tools) {
       if (name in tools) {
