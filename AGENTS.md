@@ -93,8 +93,11 @@ each file doing one thing. Current `cli/bin/pi-do.mjs` splits into `lib/` next.
 
 ## How to work
 
-- Run every task under poteto-mode. Name each principle behind a decision and
-  the choice it changed. No citation without a decision behind it.
+- Run every task under poteto-mode
+  (`/Users/keyur/.agents/skills/poteto-mode/SKILL.md`). Name each principle
+  behind a decision and the choice it changed. No citation without a decision.
+- Run no-comments (`/Users/keyur/.agents/skills/no-comments/`) before every
+  review. Authoring agents defend comments; the sicko does not.
 
 ## References (read these, not the world)
 

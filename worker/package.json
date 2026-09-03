@@ -12,6 +12,7 @@
     "wrangler": "^3.114.0"
   },
   "dependencies": {
-    "just-bash": "^3.4.2"
+    "just-bash": "^3.4.2",
+    "isomorphic-git": "^1.41.9"
   }
 }
