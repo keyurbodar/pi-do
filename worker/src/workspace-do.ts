@@ -42,12 +42,60 @@ export class WorkspaceDO implements DurableObject {
     );
     this.files.ensureSchema();
     ensureEntriesSchema(sql);
+    sql.exec("DROP TABLE IF EXISTS pi_owners");
     sql.exec(
-      "CREATE TABLE IF NOT EXISTS pi_owners(sid TEXT PRIMARY KEY, fence TEXT, rev INTEGER)",
+      "CREATE TABLE IF NOT EXISTS sessions(sid TEXT PRIMARY KEY, ws TEXT, created_at TEXT, ownerFence TEXT, revision INTEGER NOT NULL DEFAULT 0)",
     );
-    sql.exec(
-      "CREATE TABLE IF NOT EXISTS sessions(sid TEXT PRIMARY KEY, ws TEXT, created_at TEXT)",
-    );
+    const cols = [
+      ...sql.exec("PRAGMA table_info(sessions)"),
+    ] as Array<{ name?: unknown }>;
+    const names = new Set(cols.map((c) => c.name));
+    if (!names.has("ownerFence")) sql.exec("ALTER TABLE sessions ADD COLUMN ownerFence TEXT");
+    if (!names.has("revision"))
+      sql.exec("ALTER TABLE sessions ADD COLUMN revision INTEGER NOT NULL DEFAULT 0");
+  }
+
+  private readFence(sid: string): { fence: string | null; revision: number } | null {
+    const rows = [
+      ...this.state.storage.sql.exec("SELECT ownerFence, revision FROM sessions WHERE sid = ?", sid),
+    ] as Array<{ ownerFence?: unknown; revision?: unknown }>;
+    if (rows.length === 0) return null;
+    const raw = rows[0] as { ownerFence?: unknown; revision?: unknown };
+    const fence = typeof raw.ownerFence === "string" ? raw.ownerFence : null;
+    const revision = typeof raw.revision === "number" ? raw.revision : 0;
+    return { fence, revision };
+  }
+  private enforceFence(
+    sid: string,
+    fence: unknown,
+    expected: unknown,
+  ): { fence: string; revision: number } | { status: 403 | 409; body: unknown } {
+    const cur = this.readFence(sid);
+    if (cur === null || cur.fence === null || cur.fence !== fence) {
+      return {
+        status: 403,
+        body: {
+          error: "fence mismatch",
+          hint: "Fenced: stale holder; claim with the live fence or mint a fresh session",
+          revision: cur?.revision ?? 0,
+        },
+      };
+    }
+    if (cur.revision !== expected) {
+      return {
+        status: 409,
+        body: {
+          error: "revision conflict",
+          hint: `Conflict: expected revision ${String(expected)} but current revision is ${cur.revision}; re-read and retry with expected ${cur.revision}`,
+          revision: cur.revision,
+        },
+      };
+    }
+    return { fence: crypto.randomUUID(), revision: cur.revision + 1 };
+  }
+
+  private rotateFence(sid: string, next: { fence: string; revision: number }): void {
+    this.state.storage.sql.exec("UPDATE sessions SET ownerFence = ?, revision = ? WHERE sid = ?", next.fence, next.revision, sid);
   }
 
   private sessionExists(ws: string, sid: string): boolean {
@@ -209,8 +257,15 @@ export class WorkspaceDO implements DurableObject {
         );
       }
       const sessionId = crypto.randomUUID();
-      this.state.storage.sql.exec("INSERT INTO sessions(sid, ws, created_at) VALUES (?, ?, ?)", sessionId, ws, new Date().toISOString());
-      return json({ sessionId });
+      const fence = crypto.randomUUID();
+      this.state.storage.sql.exec(
+        "INSERT INTO sessions(sid, ws, created_at, ownerFence, revision) VALUES (?, ?, ?, ?, 0)",
+        sessionId,
+        ws,
+        new Date().toISOString(),
+        fence,
+      );
+      return json({ sessionId, fence, revision: 0 });
     }
 
     if (request.method === "POST" && url.pathname === "/git") {
@@ -278,6 +333,63 @@ export class WorkspaceDO implements DurableObject {
       }
     }
 
+    if (request.method === "POST" && url.pathname === "/claim") {
+      const ws = url.searchParams.get("ws") ?? "";
+      const sid = url.searchParams.get("sid") ?? "";
+      if (!ws) {
+        return json(
+          {
+            error: "missing workspace",
+            hint: "call POST /workspaces/:id/sessions/:sid/claim on the Worker instead",
+          },
+          400,
+        );
+      }
+      if (!this.workspaceExists(ws)) {
+        return json(
+          {
+            error: "unknown workspace",
+            hint: "create one with POST /workspaces first, then mint a session",
+          },
+          404,
+        );
+      }
+      if (!sid || !this.sessionExists(ws, sid)) {
+        return json(
+          {
+            error: "unknown session",
+            hint: "mint one with POST /workspaces/:id/sessions first, then retry with that session id",
+          },
+          404,
+        );
+      }
+      let fence: unknown;
+      let expected: unknown;
+      try {
+        const body: unknown = await request.json();
+        if (body !== null && typeof body === "object") {
+          if ("fence" in body) fence = body.fence;
+          if ("expected" in body) expected = body.expected;
+        }
+      } catch {
+        fence = undefined;
+        expected = undefined;
+      }
+      if (typeof fence !== "string" || fence.length === 0 || !Number.isInteger(expected)) {
+        return json(
+          {
+            error: "missing fence",
+            hint: "retry as POST /workspaces/:id/sessions/:sid/claim with JSON {fence, expected}",
+          },
+          400,
+        );
+      }
+      const checked = this.enforceFence(sid, fence, expected);
+      if ("status" in checked) return json(checked.body, checked.status);
+      this.rotateFence(sid, checked);
+      return json({ sessionId: sid, fence: checked.fence, revision: checked.revision });
+    }
+
     if (request.method === "POST" && url.pathname === "/run") {
       const ws = url.searchParams.get("ws") ?? "";
       const sid = url.searchParams.get("sid") ?? "";
@@ -309,10 +421,22 @@ export class WorkspaceDO implements DurableObject {
         );
       }
       let prompt: unknown;
+      let fence: unknown;
+      let expected: unknown;
+      let hasFence = false;
+      let hasExpected = false;
       try {
         const body: unknown = await request.json();
-        if (body !== null && typeof body === "object" && "prompt" in body) {
-          prompt = body.prompt;
+        if (body !== null && typeof body === "object") {
+          if ("prompt" in body) prompt = body.prompt;
+          if ("fence" in body) {
+            fence = body.fence;
+            hasFence = true;
+          }
+          if ("expected" in body) {
+            expected = body.expected;
+            hasExpected = true;
+          }
         }
       } catch {
         prompt = undefined;
@@ -325,6 +449,22 @@ export class WorkspaceDO implements DurableObject {
           },
           400,
         );
+      }
+      let rotated: { fence: string; revision: number } | null = null;
+      if (hasFence || hasExpected) {
+        if (typeof fence !== "string" || fence.length === 0 || !Number.isInteger(expected)) {
+          return json(
+            {
+              error: "missing fence",
+              hint: "retry the run with both {fence, expected}, or omit both for the legacy path",
+            },
+            400,
+          );
+        }
+        const checked = this.enforceFence(sid, fence, expected);
+        if ("status" in checked) return json(checked.body, checked.status);
+        this.rotateFence(sid, checked);
+        rotated = checked;
       }
       const sql = this.state.storage.sql;
       const runId = crypto.randomUUID();
@@ -339,6 +479,15 @@ export class WorkspaceDO implements DurableObject {
         });
         const turn = await session.run(prompt);
         recordTurn(sql, sid, runId, prompt, turn.toolCalls, turn.result);
+        if (rotated !== null) {
+          return json({
+            result: turn.result,
+            toolCalls: turn.toolCalls,
+            runtime: { via: turn.via, model: turn.model },
+            fence: rotated.fence,
+            revision: rotated.revision,
+          });
+        }
         return json({
           result: turn.result,
           toolCalls: turn.toolCalls,

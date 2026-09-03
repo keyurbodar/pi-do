@@ -18,6 +18,7 @@ commands:
   exec                          run a one-off shell command (POST /workspaces/:id/exec)
   git                           narrow git reads (POST /workspaces/:id/sessions/:sid/git)
   run                           one headless harness turn (POST /workspaces/:id/sessions/:sid/run)
+  claim                         rotate owner fence via revision CAS (POST /workspaces/:id/sessions/:sid/claim)
   entries                       raw replay slice (GET /workspaces/:id/sessions/:sid/entries)
 
 global flags:
@@ -109,16 +110,38 @@ exit codes:
 example:
   pi-do session create --ws 550e8400-e29b-41d4-a716-446655440000
 `;
+const CLAIM_HELP = `pi-do claim — rotate the owner fence via revision CAS
+
+usage:
+  pi-do claim --ws WS --sid SID --fence F --expected N [--base URL] [--json]
+
+behavior:
+  POSTs {fence, expected} to /workspaces/:id/sessions/:sid/claim. Wrong
+  fence answers 403 (Fenced); stale expected answers 409 (Conflict) naming
+  the current revision. Success rotates the fence, bumps revision, returns
+  both. Every error path mutates nothing.
+
+exit codes:
+  0  claimed ({fence, revision})
+  1  server-side failure, e.g. 403 Fenced or 409 Conflict (error + hint printed)
+  2  usage error
+
+example:
+  pi-do claim --ws <id> --sid <sid> --fence <fence> --expected 0
+`;
 
 const RUN_HELP = `pi-do run — one headless harness turn in a session
 
 usage:
-  pi-do run --ws WS --sid SID --prompt T [--base URL] [--json]
+  pi-do run --ws WS --sid SID --prompt T [--fence F --expected N] [--base URL] [--json]
 
 behavior:
   POSTs {prompt} to /workspaces/:id/sessions/:sid/run. The stub model reads
   seed.txt and echoes a bash marker, then answers {result, toolCalls}.
-  Real model wiring arrives in PR14.
+  With --fence/--expected the run enforces the owner fence like claim
+  before opening the run (403 Fenced on wrong fence, 409 Conflict on stale
+  revision); success rotates the fence, bumps revision, and returns both
+  alongside the turn. Omit both for the legacy path.
   Without --json stdout is the result text; with --json stdout is the raw
   server JSON and the human line goes to stderr.
 
@@ -286,6 +309,8 @@ function parseArgs(argv) {
     ws: undefined,
     sid: undefined,
     prompt: undefined,
+    fence: undefined,
+    expected: undefined,
     after: undefined,
     path: undefined,
     body: undefined,
@@ -358,7 +383,14 @@ function parseArgs(argv) {
       opts.cwd = takeValue("--cwd");
     } else if (tok.startsWith("--cwd=")) {
       opts.cwd = tok.slice("--cwd=".length);
-      failUsage(`unknown flag ${tok.split("=")[0]}.`);
+    } else if (tok === "--fence") {
+      opts.fence = takeValue("--fence");
+    } else if (tok.startsWith("--fence=")) {
+      opts.fence = tok.slice("--fence=".length);
+    } else if (tok === "--expected") {
+      opts.expected = takeValue("--expected");
+    } else if (tok.startsWith("--expected=")) {
+      opts.expected = tok.slice("--expected=".length);
     } else if (tok === "--prompt") {
       opts.prompt = takeValue("--prompt");
     } else if (tok.startsWith("--prompt=")) {
@@ -419,6 +451,7 @@ function helpFor(cmd, sub) {
   }
   if (cmd === "exec") return EXEC_HELP;
   if (cmd === "run") return RUN_HELP;
+  if (cmd === "claim") return CLAIM_HELP;
   if (cmd === "entries") return ENTRIES_HELP;
   return ROOT_HELP;
 }
@@ -511,13 +544,26 @@ async function doRun(base, json, opts) {
   if (!opts.ws) failUsage(`run needs --ws WS.`, RUN_HELP);
   if (!opts.sid) failUsage(`run needs --sid SID.`, RUN_HELP);
   if (opts.prompt === undefined) failUsage(`run needs --prompt T.`, RUN_HELP);
+  if ((opts.fence !== undefined) !== (opts.expected !== undefined)) {
+    failUsage(`run needs both --fence F and --expected N together, or neither.`, RUN_HELP);
+  }
+  let expected;
+  if (opts.expected !== undefined) {
+    expected = Number(opts.expected);
+    if (!Number.isInteger(expected) || expected < 0) failUsage(`run needs --expected N (a non-negative integer).`, RUN_HELP);
+  }
   const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/sessions/${encodeURIComponent(opts.sid)}/run`;
+  const payload = { prompt: opts.prompt };
+  if (opts.fence !== undefined) {
+    payload.fence = opts.fence;
+    payload.expected = expected;
+  }
   let res;
   try {
     res = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ prompt: opts.prompt }),
+      body: JSON.stringify(payload),
     });
   } catch (e) {
     human(`error: cannot reach server at ${base}`);
@@ -534,6 +580,38 @@ async function doRun(base, json, opts) {
   } else {
     if (data.result) process.stdout.write(data.result.endsWith("\n") ? data.result : `${data.result}\n`);
     human(`run ok: ${calls.length} tool calls`);
+  }
+  process.exit(0);
+}
+
+async function doClaim(base, json, opts) {
+  if (!opts.ws) failUsage(`claim needs --ws WS.`, CLAIM_HELP);
+  if (!opts.sid) failUsage(`claim needs --sid SID.`, CLAIM_HELP);
+  if (opts.fence === undefined) failUsage(`claim needs --fence F.`, CLAIM_HELP);
+  if (opts.expected === undefined) failUsage(`claim needs --expected N.`, CLAIM_HELP);
+  const expected = Number(opts.expected);
+  if (!Number.isInteger(expected) || expected < 0) failUsage(`claim needs --expected N (a non-negative integer).`, CLAIM_HELP);
+  const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/sessions/${encodeURIComponent(opts.sid)}/claim`;
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ fence: opts.fence, expected }),
+    });
+  } catch (e) {
+    human(`error: cannot reach server at ${base}`);
+    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
+    if (json) printJson({ error: "cannot reach server", base });
+    process.exit(1);
+  }
+  if (!res.ok) await failFromResponse(res, json);
+  const data = await res.json();
+  if (json) {
+    printJson(data);
+    human(`claim ok: revision ${data.revision}`);
+  } else {
+    process.stdout.write(`fence ${data.fence} revision ${data.revision}\n`);
   }
   process.exit(0);
 }
@@ -773,6 +851,9 @@ async function main() {
   } else if (cmd === "session") {
     if (sub !== "create" || extra.length > 0) failUsage(`unknown session subcommand '${sub ?? ""}'.`, SESSION_HELP);
     await doSessionCreate(opts.base, opts.json, opts);
+  } else if (cmd === "claim") {
+    if (sub !== undefined || extra.length > 0) failUsage(`claim takes no subcommand.`, CLAIM_HELP);
+    await doClaim(opts.base, opts.json, opts);
   } else if (cmd === "run") {
     if (sub !== undefined || extra.length > 0) failUsage(`run takes no subcommand.`, RUN_HELP);
     await doRun(opts.base, opts.json, opts);
