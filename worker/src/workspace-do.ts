@@ -1,5 +1,5 @@
 import { createFileStore, type FileStore } from "./files";
-import { appendEntry, ensureEntriesSchema, entryHead, listEntries, openRun, recordTurn, runInSyncTx } from "./entries";
+import { appendEntry, ensureEntriesSchema, entryHead, listEntries, openRun, recordTurnWithOpen, runInSyncTx } from "./entries";
 import { enforceFence } from "./fence";
 import { handleStream } from "./stream";
 import { createAgentSession } from "../../packages/pi-cf/src/session";
@@ -960,7 +960,6 @@ export class WorkspaceDO implements DurableObject {
       }
       const sql = this.state.storage.sql;
       const runId = crypto.randomUUID();
-      openRun(sql, sid, runId);
       try {
         let turnModel: { id: string; name?: string; api?: string; provider?: string; baseUrl?: string };
         let respProvider: string;
@@ -997,7 +996,7 @@ export class WorkspaceDO implements DurableObject {
           model: turnModel,
         });
         const turn = await session.run(prompt);
-        recordTurn(sql, sid, runId, prompt, turn.toolCalls, turn.result);
+        recordTurnWithOpen(sql, sid, runId, prompt, turn.toolCalls, turn.result);
         const runtimeOut = { via: turn.via, model: turn.model, provider: respProvider, thinking: effThinking };
         if (rotated !== null) {
           return json({
@@ -1014,6 +1013,9 @@ export class WorkspaceDO implements DurableObject {
           runtime: runtimeOut,
         });
       } catch (e) {
+        // The open now commits with the turn, so a failed turn re-opens here
+        // and still flips to interrupted on the next turn.
+        openRun(sql, sid, runId);
         if (
           e !== null &&
           typeof e === "object" &&
