@@ -4,7 +4,7 @@ pr	title	branch	worktree	complexity	time_min	depends_on	parallel_group	scope	com
 03	env-fs-adapter	pr/03-env-fs-adapter	.worktrees/pr-03	2	12	02	W3	ComputerExecutionEnv FileSystem methods mapped to workspace.fs only	100%	✅ merged (tsc x2, verify-env, roundtrip PASS)
 04	shell-justbash-exec	pr/04-shell-justbash-exec	.worktrees/pr-04	3	18	01	W2	worker-shell just-bash backend sync:none + POST /exec one-off shell outside loop	100%	✅ merged (exec, timeout 10.1s, no-entries, regression PASS)
 05	git-narrow-api	pr/05-git-narrow-api	.worktrees/pr-05	2	12	02	W3	narrow workspace.git status/log/diff via POST sessions/:sid/git argv allowlist	100%	✅ merged (allowlist, real-repo reads, adversarial shut; writes deferred)
-06	harness-headless-loop	pr/06-harness-headless-loop	.worktrees/pr-06	3	20	03,04	W4	pi harness headless prompt to read+bash tool call inside DO no socket yet	0%	—
+06	harness-headless-loop	pr/06-harness-headless-loop	.worktrees/pr-06	3	20	03,04	W4	pi harness headless prompt to read+bash tool call inside DO no socket yet	100%	✅ merged (stub turn read+bash, run route, 5 batteries green)
 07	session-persist-append	pr/07-session-persist-append	.worktrees/pr-07	3	18	06	W5	append every harness onUpdate to pi_entries before emit + findOpenOperations interrupted mark	0%	—
 08	fence-revision-cas	pr/08-fence-revision-cas	.worktrees/pr-08	3	15	07	W6	owner-fence token + revision CAS on replace stale socket gets Fenced Conflict never overwrites	0%	—
 09	entries-replay-api	pr/09-entries-replay-api	.worktrees/pr-09	2	12	07	W6	GET session metadata + GET entries after cursor pagination for resume replay	0%	—
@@ -15,7 +15,7 @@ pr	title	branch	worktree	complexity	time_min	depends_on	parallel_group	scope	com
 14	model-runtime-wiring	pr/14-model-runtime-wiring	.worktrees/pr-14	3	18	06	W5	ModelRuntime + default read bash edit write wiring via env createAgentSession shape	0%	—
 15	edit-write-tools	pr/15-edit-write-tools	.worktrees/pr-15	2	12	14	W7	write edit tools via env through mutation queue last-writer-wins recorded as entries	0%	—
 16	lane-compact-archive	pr/16-lane-compact-archive	.worktrees/pr-16	2	12	07	W7	lane compact summary entry + archived entries pagination keeps table bounded	0%	—
-17	cli-client	pr/17-cli-client	.worktrees/pr-17	2	15	10	W8	thin CLI prompt abort steer sender + frame printer for verification over WS	60%	◐ doctor/workspace/files/session/git/exec land via feature PRs; entries/stream/commands pending
+17	cli-client	pr/17-cli-client	.worktrees/pr-17	2	15	10	W8	thin CLI prompt abort steer sender + frame printer for verification over WS	70%	◐ doctor/workspace/files/session/git/exec/run land via feature PRs; entries/stream/commands pending
 18	sdk-createPiCf	pr/18-sdk-createPiCf	.worktrees/pr-18	3	18	14,11	W9	createPiCf DO factory Workspace plus env plus harness + minimal-agent example	0%	—
 19	inline-extensions	pr/19-inline-extensions	.worktrees/pr-19	3	18	18	W10	ExtensionFactory inline path registerTool registerCommand hooks sendMessage appendEntry + sample ext	0%	—
 20	ext-wire-frames	pr/20-ext-wire-frames	.worktrees/pr-20	2	12	19,10	W11	get_commands + extension_ui_request response frames so clients render ext UI	0%	—
