@@ -71,10 +71,8 @@ function createFakeStore(putOrder) {
 const ctx = { env: new ComputerExecutionEnv(createFakeStore(), "ws1") };
 const textOf = (r) => r.content.map((c) => (c.type === "text" ? c.text : "")).join("");
 
-// All six tools registered beside read and bash.
 eq("session-tools", Object.keys(sessionTools).sort(), ["bash", "edit", "list", "read", "remove", "write"]);
 
-// Write-then-read round-trip.
 eq("write", textOf(await writeTool.execute("t1", { path: "a.txt", content: "hello" }, undefined, undefined, ctx)), "Successfully wrote to a.txt");
 eq("read-back", textOf(await readTool.execute("t2", { path: "a.txt" }, undefined, undefined, ctx)), "hello");
 
@@ -82,7 +80,6 @@ eq("read-back", textOf(await readTool.execute("t2", { path: "a.txt" }, undefined
 await writeTool.execute("t3", { path: "a.txt", content: "hello again" }, undefined, undefined, ctx);
 eq("read-overwrite", textOf(await readTool.execute("t4", { path: "a.txt" }, undefined, undefined, ctx)), "hello again");
 
-// Edit patch plus diff output.
 await writeTool.execute("t5", { path: "poem.txt", content: "line one\nline two\nline three" }, undefined, undefined, ctx);
 const edited = await editTool.execute("t6", { path: "poem.txt", edits: [{ oldText: "line two", newText: "LINE TWO" }] }, undefined, undefined, ctx);
 includes("edit-text", textOf(edited), "Successfully replaced 1 block(s) in poem.txt.");
@@ -96,13 +93,11 @@ eq("edit-read", textOf(await readTool.execute("t7", { path: "poem.txt" }, undefi
 const edited2 = await editTool.execute("t8", { path: "poem.txt", oldText: "LINE TWO", newText: "line 2" }, undefined, undefined, ctx);
 includes("edit-compat", textOf(edited2), "Successfully replaced 1 block(s) in poem.txt.");
 
-// Edit failures fail closed with hints.
 await throwsToolError("edit-missing", () => editTool.execute("t9", { path: "nope.txt", edits: [{ oldText: "x", newText: "y" }] }, undefined, undefined, ctx), "no such file");
 await throwsToolError("edit-notfound", () => editTool.execute("t10", { path: "poem.txt", edits: [{ oldText: "absent", newText: "y" }] }, undefined, undefined, ctx), "Could not find");
 await writeTool.execute("t11", { path: "dup.txt", content: "same\nsame" }, undefined, undefined, ctx);
 await throwsToolError("edit-duplicate", () => editTool.execute("t12", { path: "dup.txt", edits: [{ oldText: "same", newText: "y" }] }, undefined, undefined, ctx), "occurrences");
 
-// List recursive plus cap.
 await writeTool.execute("t13", { path: "d/a.txt", content: "a" }, undefined, undefined, ctx);
 await writeTool.execute("t14", { path: "d/b.txt", content: "b" }, undefined, undefined, ctx);
 await writeTool.execute("t15", { path: "d/sub/c.txt", content: "c" }, undefined, undefined, ctx);
@@ -113,7 +108,6 @@ eq("list-cap", textOf(capped), "d/a.txt\nd/b.txt\n\n[2 entries limit reached. Us
 eq("list-empty", textOf(await listTool.execute("t19", { path: "empty/" }, undefined, undefined, ctx)), "(empty directory)");
 await throwsToolError("list-bad-cap", () => listTool.execute("t20", { path: "d/", maxEntries: 0 }, undefined, undefined, ctx), "bad maxEntries");
 
-// Remove plus traversal rejection.
 eq("remove-file", textOf(await removeTool.execute("t21", { path: "d/a.txt" }, undefined, undefined, ctx)), "Removed d/a.txt");
 await throwsToolError("remove-gone", () => readTool.execute("t22", { path: "d/a.txt" }, undefined, undefined, ctx), "no such file");
 await throwsToolError("remove-dir-guarded", () => removeTool.execute("t23", { path: "d" }, undefined, undefined, ctx), "is a directory");
@@ -126,7 +120,6 @@ await throwsToolError("remove-nul", () => removeTool.execute("t28", { path: "a\0
 await throwsToolError("remove-root", () => removeTool.execute("t29", { path: "./" }, undefined, undefined, ctx), "workspace root");
 await throwsToolError("write-traversal", () => writeTool.execute("t30", { path: "sub/../../escape.txt", content: "x" }, undefined, undefined, ctx), "escapes workspace");
 
-// Read ranges plus bound.
 const ten = Array.from({ length: 10 }, (_, i) => `l${i + 1}`).join("\n");
 await writeTool.execute("t31", { path: "ten.txt", content: ten }, undefined, undefined, ctx);
 eq("read-whole-unchanged", textOf(await readTool.execute("t32", { path: "ten.txt" }, undefined, undefined, ctx)), ten);
@@ -135,7 +128,6 @@ await throwsToolError("read-offset-past-end", () => readTool.execute("t34", { pa
 await throwsToolError("read-bad-offset", () => readTool.execute("t35", { path: "ten.txt", offset: 0 }, undefined, undefined, ctx), "bad offset");
 await throwsToolError("read-bad-limit", () => readTool.execute("t36", { path: "ten.txt", limit: -1 }, undefined, undefined, ctx), "bad limit");
 
-// Overlapping writes serialize: last writer wins, put order matches call order.
 const order = [];
 const ctx2 = { env: new ComputerExecutionEnv(createFakeStore(order), "ws2") };
 await Promise.all([

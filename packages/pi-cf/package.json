@@ -8,6 +8,6 @@
     "verify": "node verify-env.mjs"
   },
   "dependencies": {
-    "diff": "^8.0.4"
+    "diff": "8.0.4"
   }
 }
