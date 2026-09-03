@@ -20,6 +20,7 @@ commands:
   run                           one headless harness turn (POST /workspaces/:id/sessions/:sid/run)
   claim                         rotate owner fence via revision CAS (POST /workspaces/:id/sessions/:sid/claim)
   entries                       raw replay slice (GET /workspaces/:id/sessions/:sid/entries)
+  meta                          resume cursor (GET /workspaces/:id/sessions/:sid/meta)
 
 global flags:
   --base URL    worker base URL (default ${DEFAULT_BASE})
@@ -272,17 +273,17 @@ example:
   pi-do exec --ws 550e8400-e29b-41d4-a716-446655440000 --command "echo hi"
 `;
 
-const ENTRIES_HELP = `pi-do entries — raw replay slice of persisted session entries
+const ENTRIES_HELP = `pi-do entries — ordered replay slice of persisted session entries
 
 usage:
-  pi-do entries --ws WS --sid SID [--after N] [--base URL] [--json]
+  pi-do entries --ws WS --sid SID [--after N] [--limit L] [--base URL] [--json]
 
 behavior:
-  GETs /workspaces/:id/sessions/:sid/entries?after=N. Returns the raw
-  ordered entry list ({entries: [{cursor, type, body}]}) with no pagination
-  promises: pagination, metadata, and resume semantics stay in PR09.
-  Without --json stdout is one "CURSOR TYPE BODY" line per entry; with
-  --json stdout is the raw server JSON.
+  GETs /workspaces/:id/sessions/:sid/entries?after=N&limit=L. Returns the
+  ordered entry list plus the resume cursor ({entries: [{cursor, type, body}],
+  head, count}). limit defaults to 100 and clamps at 1000. Without --json
+  stdout is one "CURSOR TYPE BODY" line per entry; with --json stdout is
+  the raw server JSON.
 
 exit codes:
   0  ok
@@ -290,7 +291,26 @@ exit codes:
   2  usage error
 
 example:
-  pi-do entries --ws <id> --sid <sid> --after 0
+  pi-do entries --ws <id> --sid <sid> --after 0 --limit 3
+`;
+
+const META_HELP = `pi-do meta — resume cursor for a session
+
+usage:
+  pi-do meta --ws WS --sid SID [--base URL] [--json]
+
+behavior:
+  GETs /workspaces/:id/sessions/:sid/meta. Returns {sid, ws, created, head,
+  count, openRun} where openRun is the still-open run id or null. Without
+  --json stdout is human lines; with --json stdout is the raw server JSON.
+
+exit codes:
+  0  ok
+  1  server-side failure, e.g. unknown workspace/session (error + hint printed)
+  2  usage error
+
+example:
+  pi-do meta --ws <id> --sid <sid>
 `;
 
 
@@ -312,6 +332,7 @@ function parseArgs(argv) {
     fence: undefined,
     expected: undefined,
     after: undefined,
+    limit: undefined,
     path: undefined,
     body: undefined,
     bodyFile: undefined,
@@ -399,6 +420,10 @@ function parseArgs(argv) {
       opts.after = takeValue("--after");
     } else if (tok.startsWith("--after=")) {
       opts.after = tok.slice("--after=".length);
+    } else if (tok === "--limit") {
+      opts.limit = takeValue("--limit");
+    } else if (tok.startsWith("--limit=")) {
+      opts.limit = tok.slice("--limit=".length);
     } else {
       positionals.push(tok);
     }
@@ -453,6 +478,7 @@ function helpFor(cmd, sub) {
   if (cmd === "run") return RUN_HELP;
   if (cmd === "claim") return CLAIM_HELP;
   if (cmd === "entries") return ENTRIES_HELP;
+  if (cmd === "meta") return META_HELP;
   return ROOT_HELP;
 }
 
@@ -748,7 +774,9 @@ async function doEntries(base, json, opts) {
   if (!opts.sid) failUsage(`entries needs --sid SID.`, ENTRIES_HELP);
   const after = opts.after ?? "0";
   if (!/^\d+$/.test(after)) failUsage(`entries needs --after N (a non-negative integer).`, ENTRIES_HELP);
-  const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/sessions/${encodeURIComponent(opts.sid)}/entries?after=${encodeURIComponent(after)}`;
+  const limit = opts.limit ?? "100";
+  if (!/^\d+$/.test(limit)) failUsage(`entries needs --limit L (a non-negative integer up to 1000).`, ENTRIES_HELP);
+  const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/sessions/${encodeURIComponent(opts.sid)}/entries?after=${encodeURIComponent(after)}&limit=${encodeURIComponent(limit)}`;
   let res;
   try {
     res = await fetch(url);
@@ -763,10 +791,35 @@ async function doEntries(base, json, opts) {
   const entries = Array.isArray(data.entries) ? data.entries : [];
   if (json) {
     printJson(data);
-    human(`entries ${entries.length} (after ${after})`);
+    human(`entries ${entries.length} (after ${after} limit ${limit} head ${data.head} count ${data.count})`);
   } else {
     for (const e of entries) process.stdout.write(`${e.cursor} ${e.type} ${e.body}\n`);
-    human(`entries ${entries.length} (after ${after})`);
+    human(`entries ${entries.length} (after ${after} limit ${limit} head ${data.head} count ${data.count})`);
+  }
+  process.exit(0);
+}
+
+async function doMeta(base, json, opts) {
+  if (!opts.ws) failUsage(`meta needs --ws WS.`, META_HELP);
+  if (!opts.sid) failUsage(`meta needs --sid SID.`, META_HELP);
+  const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/sessions/${encodeURIComponent(opts.sid)}/meta`;
+  let res;
+  try {
+    res = await fetch(url);
+  } catch (e) {
+    human(`error: cannot reach server at ${base}`);
+    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
+    if (json) printJson({ error: "cannot reach server", base });
+    process.exit(1);
+  }
+  if (!res.ok) await failFromResponse(res, json);
+  const data = await res.json();
+  if (json) {
+    printJson(data);
+    human(`meta head ${data.head} count ${data.count} openRun ${data.openRun ?? "null"}`);
+  } else {
+    process.stdout.write(`sid ${data.sid}\nws ${data.ws}\ncreated ${data.created}\nhead ${data.head}\ncount ${data.count}\nopenRun ${data.openRun ?? "null"}\n`);
+    human(`meta head ${data.head} count ${data.count}`);
   }
   process.exit(0);
 }
@@ -848,6 +901,9 @@ async function main() {
   } else if (cmd === "entries") {
     if (sub !== undefined || extra.length > 0) failUsage(`entries takes no subcommand.`, ENTRIES_HELP);
     await doEntries(opts.base, opts.json, opts);
+  } else if (cmd === "meta") {
+    if (sub !== undefined || extra.length > 0) failUsage(`meta takes no subcommand.`, META_HELP);
+    await doMeta(opts.base, opts.json, opts);
   } else if (cmd === "session") {
     if (sub !== "create" || extra.length > 0) failUsage(`unknown session subcommand '${sub ?? ""}'.`, SESSION_HELP);
     await doSessionCreate(opts.base, opts.json, opts);

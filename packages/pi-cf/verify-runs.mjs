@@ -5,6 +5,7 @@ import {
   appendEntry,
   closeRun,
   ensureEntriesSchema,
+  entryHead,
   listEntries,
   openRun,
   recordTurn,
@@ -44,7 +45,12 @@ function createFakeSql() {
         return entries
           .filter((e) => e.sid === bindings[0] && e.id > bindings[1])
           .sort((a, b) => a.id - b.id)
+          .slice(0, Math.min(bindings[2] ?? 100, 1000))
           .map((e) => ({ cursor: e.id, type: e.type, body: e.body }));
+      }
+      if (q.startsWith("SELECT COUNT(*) AS count")) {
+        const ids = entries.filter((e) => e.sid === bindings[0]).map((e) => e.id);
+        return [{ count: ids.length, head: ids.length === 0 ? 0 : Math.max(...ids) }];
       }
       if (q.startsWith("SELECT runId FROM runs")) {
         return [...runs.values()]
@@ -131,6 +137,39 @@ eq(
   "close-unknown-clean",
   listEntries(sql, "s1").filter((e) => e.type === "interrupted").length,
   1,
+);
+
+eq("head-s1", entryHead(sql, "s1"), { count: 5, head: 5 });
+eq("head-empty", entryHead(sql, "nobody"), { count: 0, head: 0 });
+
+const p1 = listEntries(sql, "s1", { after: 0, limit: 2 }).map((e) => e.cursor);
+const p2 = listEntries(sql, "s1", { after: 2, limit: 2 }).map((e) => e.cursor);
+const p3 = listEntries(sql, "s1", { after: 4, limit: 2 }).map((e) => e.cursor);
+eq("pages", [...p1, ...p2, ...p3], listEntries(sql, "s1").map((e) => e.cursor));
+eq("clamp", listEntries(sql, "s1", { after: 0, limit: 5000 }).length, 5);
+
+// Negative cursors fail closed, never silently clamp to zero.
+for (const bad of [
+  () => listEntries(sql, "s1", -1),
+  () => listEntries(sql, "s1", { after: 0, limit: -1 }),
+]) {
+  let threw = false;
+  try {
+    bad();
+  } catch {
+    threw = true;
+  }
+  eq("fail-closed", threw, true);
+}
+
+// Interrupted path: an unclosed run stays open, so meta's openRun is truthful.
+openRun(sql, "s1", "r4");
+eq("r4-open", sql.statusOf("r4"), "open");
+eq("head-interrupted", entryHead(sql, "s1"), { count: 6, head: 7 });
+eq(
+  "interrupted-points-forward",
+  JSON.parse(listEntries(sql, "s1").at(-1).body),
+  { runId: "r3", interruptedBy: "r4" },
 );
 
 console.log("PASS verify-runs");

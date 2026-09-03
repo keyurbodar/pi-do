@@ -42,13 +42,32 @@ export function appendEntry(
   return cursor;
 }
 
-// Raw ordered replay slice. Pagination, metadata, and resume stay in PR09.
-export function listEntries(sql: EntriesSql, sid: string, after = 0): EntryRow[] {
+// Ordered replay slice with resume cursor. limit defaults to 100, clamps at
+// 1000, and fails closed (throws) on negative or non-integer input.
+export function listEntries(
+  sql: EntriesSql,
+  sid: string,
+  after: number | { after?: number; limit?: number } = 0,
+  limit = 100,
+): EntryRow[] {
+  let a = 0;
+  let l = 100;
+  if (typeof after === "object" && after !== null) {
+    a = after.after ?? 0;
+    l = after.limit ?? 100;
+  } else {
+    a = after;
+    l = limit;
+  }
+  if (!Number.isInteger(a) || a < 0) throw new Error("listEntries: after must be a non-negative integer");
+  if (!Number.isInteger(l) || l < 0) throw new Error("listEntries: limit must be a non-negative integer");
+  l = Math.min(l, 1000);
   const out: EntryRow[] = [];
   for (const row of sql.exec(
-    "SELECT id AS cursor, type, body FROM pi_entries WHERE sid = ? AND id > ? ORDER BY id",
+    "SELECT id AS cursor, type, body FROM pi_entries WHERE sid = ? AND id > ? ORDER BY id LIMIT ?",
     sid,
-    after,
+    a,
+    l,
   )) {
     if (row === null || typeof row !== "object") continue;
     if (!("cursor" in row && "type" in row && "body" in row)) continue;
@@ -56,6 +75,19 @@ export function listEntries(sql: EntriesSql, sid: string, after = 0): EntryRow[]
     out.push({ cursor: row.cursor, type: row.type, body: row.body });
   }
   return out;
+}
+
+export function entryHead(sql: EntriesSql, sid: string): { count: number; head: number } {
+  for (const row of sql.exec(
+    "SELECT COUNT(*) AS count, COALESCE(MAX(id), 0) AS head FROM pi_entries WHERE sid = ?",
+    sid,
+  )) {
+    if (row === null || typeof row !== "object") continue;
+    if (!("count" in row && "head" in row)) continue;
+    if (typeof row.count !== "number" || typeof row.head !== "number") continue;
+    return { count: row.count, head: row.head };
+  }
+  return { count: 0, head: 0 };
 }
 
 function runInSyncTx(sql: EntriesSql, fn: () => void): void {

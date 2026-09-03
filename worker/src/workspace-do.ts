@@ -1,5 +1,5 @@
 import { createFileStore, type FileStore } from "./files";
-import { ensureEntriesSchema, listEntries, openRun, recordTurn } from "./entries";
+import { ensureEntriesSchema, entryHead, listEntries, openRun, recordTurn } from "./entries";
 import { createAgentSession } from "../../packages/pi-cf/src/session";
 import { buildRuntime, type RuntimeEnv } from "./model-runtime";
 import type { DurableObjectState } from "@cloudflare/workers-types";
@@ -510,8 +510,7 @@ export class WorkspaceDO implements DurableObject {
       }
     }
 
-    // GET /entries?ws=&sid=&after=N — raw ordered replay slice.
-    // Pagination, metadata, and resume semantics stay in PR09.
+    // GET /entries?ws=&sid=&after=N&limit=L — ordered replay slice plus resume cursor.
     if (request.method === "GET" && url.pathname === "/entries") {
       const ws = url.searchParams.get("ws") ?? "";
       const sid = url.searchParams.get("sid") ?? "";
@@ -553,7 +552,68 @@ export class WorkspaceDO implements DurableObject {
           400,
         );
       }
-      return json({ entries: listEntries(this.state.storage.sql, sid, after) });
+      const rawLimit = url.searchParams.get("limit") ?? "100";
+      const limit = Number(rawLimit);
+      if (!Number.isInteger(limit) || limit < 0) {
+        return json(
+          {
+            error: "bad limit",
+            hint: "retry with ?limit=L where L is a non-negative integer up to 1000, e.g. ?limit=100",
+          },
+          400,
+        );
+      }
+      const sql = this.state.storage.sql;
+      const { count, head } = entryHead(sql, sid);
+      return json({ entries: listEntries(sql, sid, { after, limit }), head, count });
+    }
+
+    // GET /meta?ws=&sid= — resume cursor: session row plus entry head and open run.
+    if (request.method === "GET" && url.pathname === "/meta") {
+      const ws = url.searchParams.get("ws") ?? "";
+      const sid = url.searchParams.get("sid") ?? "";
+      if (!ws) {
+        return json(
+          {
+            error: "missing workspace",
+            hint: "retry as GET /workspaces/:id/sessions/:sid/meta on the Worker instead",
+          },
+          400,
+        );
+      }
+      if (!this.workspaceExists(ws)) {
+        return json(
+          {
+            error: "unknown workspace",
+            hint: "create one with POST /workspaces first, then mint a session",
+          },
+          404,
+        );
+      }
+      if (!sid || !this.sessionExists(ws, sid)) {
+        return json(
+          {
+            error: "unknown session",
+            hint: "mint one with POST /workspaces/:id/sessions first, then retry with that session id",
+          },
+          404,
+        );
+      }
+      const sql = this.state.storage.sql;
+      let created = "";
+      for (const row of sql.exec("SELECT created_at FROM sessions WHERE sid = ? AND ws = ? LIMIT 1", sid, ws)) {
+        if (row !== null && typeof row === "object" && "created_at" in row && typeof row.created_at === "string") {
+          created = row.created_at;
+        }
+      }
+      const { count, head } = entryHead(sql, sid);
+      let openRun: string | null = null;
+      for (const row of sql.exec("SELECT runId FROM runs WHERE sid = ? AND status = ? LIMIT 1", sid, "open")) {
+        if (row !== null && typeof row === "object" && "runId" in row && typeof row.runId === "string") {
+          openRun = row.runId;
+        }
+      }
+      return json({ sid, ws, created, head, count, openRun });
     }
 
     return json(
