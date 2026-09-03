@@ -77,6 +77,22 @@ export function listEntries(
   return out;
 }
 
+// Single-row re-read by cursor. Stream frames are built from this, never
+// from the in-memory appended copy, so the socket stays a view on storage.
+export function getEntry(sql: EntriesSql, sid: string, cursor: number): EntryRow | null {
+  for (const row of sql.exec(
+    "SELECT id AS cursor, type, body FROM pi_entries WHERE sid = ? AND id = ? LIMIT 1",
+    sid,
+    cursor,
+  )) {
+    if (row === null || typeof row !== "object") continue;
+    if (!("cursor" in row && "type" in row && "body" in row)) continue;
+    if (typeof row.cursor !== "number" || typeof row.type !== "string" || typeof row.body !== "string") continue;
+    return { cursor: row.cursor, type: row.type, body: row.body };
+  }
+  return null;
+}
+
 export function entryHead(sql: EntriesSql, sid: string): { count: number; head: number } {
   for (const row of sql.exec(
     "SELECT COUNT(*) AS count, COALESCE(MAX(id), 0) AS head FROM pi_entries WHERE sid = ?",

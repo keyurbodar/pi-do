@@ -251,6 +251,30 @@ export default {
       return Response.json({ stdout: result.stdout, stderr: result.stderr, exit: result.exit });
     }
 
+    // GET /workspaces/:id/sessions/:sid/stream → WS upgrade for live turns.
+    if (
+      request.method === "GET" &&
+      parts.length === 5 &&
+      parts[0] === "workspaces" &&
+      parts[2] === "sessions" &&
+      parts[4] === "stream"
+    ) {
+      const workspaceId = parts[1];
+      const sessionId = parts[3];
+      const inner = new URL("http://do/stream");
+      inner.searchParams.set("ws", workspaceId);
+      inner.searchParams.set("sid", sessionId);
+      for (const key of ["fence", "expected"]) {
+        const value = url.searchParams.get(key);
+        if (value !== null) inner.searchParams.set(key, value);
+      }
+      return await env.WORKSPACE_DO.get(
+        env.WORKSPACE_DO.idFromName(workspaceId),
+      ).fetch(
+        new Request(inner.toString(), { method: "GET", headers: request.headers }),
+      );
+    }
+
     return new Response(
       JSON.stringify({
         error: "not found",

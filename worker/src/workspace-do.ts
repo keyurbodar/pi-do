@@ -1,5 +1,7 @@
 import { createFileStore, type FileStore } from "./files";
 import { ensureEntriesSchema, entryHead, listEntries, openRun, recordTurn } from "./entries";
+import { enforceFence } from "./fence";
+import { handleStream } from "./stream";
 import { createAgentSession } from "../../packages/pi-cf/src/session";
 import { buildRuntime, type RuntimeEnv } from "./model-runtime";
 import type { DurableObjectState } from "@cloudflare/workers-types";
@@ -65,37 +67,20 @@ export class WorkspaceDO implements DurableObject {
     const revision = typeof raw.revision === "number" ? raw.revision : 0;
     return { fence, revision };
   }
-  private enforceFence(
-    sid: string,
-    fence: unknown,
-    expected: unknown,
-  ): { fence: string; revision: number } | { status: 403 | 409; body: unknown } {
-    const cur = this.readFence(sid);
-    if (cur === null || cur.fence === null || cur.fence !== fence) {
-      return {
-        status: 403,
-        body: {
-          error: "fence mismatch",
-          hint: "Fenced: stale holder; claim with the live fence or mint a fresh session",
-          revision: cur?.revision ?? 0,
-        },
-      };
-    }
-    if (cur.revision !== expected) {
-      return {
-        status: 409,
-        body: {
-          error: "revision conflict",
-          hint: `Conflict: expected revision ${String(expected)} but current revision is ${cur.revision}; re-read and retry with expected ${cur.revision}`,
-          revision: cur.revision,
-        },
-      };
-    }
-    return { fence: crypto.randomUUID(), revision: cur.revision + 1 };
-  }
 
   private rotateFence(sid: string, next: { fence: string; revision: number }): void {
     this.state.storage.sql.exec("UPDATE sessions SET ownerFence = ?, revision = ? WHERE sid = ?", next.fence, next.revision, sid);
+  }
+  private casRotateFence(
+    sid: string,
+    oldFence: string,
+    oldRevision: number,
+    next: { fence: string; revision: number },
+  ): boolean {
+    const cur = this.readFence(sid);
+    if (cur === null || cur.fence !== oldFence || cur.revision !== oldRevision) return false;
+    this.rotateFence(sid, next);
+    return true;
   }
 
   private sessionExists(ws: string, sid: string): boolean {
@@ -384,7 +369,7 @@ export class WorkspaceDO implements DurableObject {
           400,
         );
       }
-      const checked = this.enforceFence(sid, fence, expected);
+      const checked = enforceFence(this.readFence(sid), fence, expected);
       if ("status" in checked) return json(checked.body, checked.status);
       this.rotateFence(sid, checked);
       return json({ sessionId: sid, fence: checked.fence, revision: checked.revision });
@@ -461,7 +446,7 @@ export class WorkspaceDO implements DurableObject {
             400,
           );
         }
-        const checked = this.enforceFence(sid, fence, expected);
+        const checked = enforceFence(this.readFence(sid), fence, expected);
         if ("status" in checked) return json(checked.body, checked.status);
         this.rotateFence(sid, checked);
         rotated = checked;
@@ -508,6 +493,24 @@ export class WorkspaceDO implements DurableObject {
           500,
         );
       }
+    }
+
+    // GET /stream?ws=&sid= — WS upgrade for live turns (see stream.ts).
+    if (url.pathname === "/stream") {
+      const ws = url.searchParams.get("ws") ?? "";
+      const sid = url.searchParams.get("sid") ?? "";
+      return handleStream(request, {
+        sql: this.state.storage.sql,
+        ws,
+        sid,
+        files: this.files,
+        shell: this.env.SHELL_WORKER,
+        runtimeEnv: this.env as unknown as RuntimeEnv,
+        workspaceKnown: ws !== "" && this.workspaceExists(ws),
+        sessionKnown: ws !== "" && sid !== "" && this.sessionExists(ws, sid),
+        readFence: () => this.readFence(sid),
+        casRotateFence: (oldFence, oldRevision, next) => this.casRotateFence(sid, oldFence, oldRevision, next),
+      });
     }
 
     // GET /entries?ws=&sid=&after=N&limit=L — ordered replay slice plus resume cursor.
