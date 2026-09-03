@@ -74,6 +74,28 @@ export class WorkspaceDO implements DurableObject {
       );
       return json({ workspaceId });
     }
+    if (request.method === "GET" && url.pathname === "/exists") {
+      const ws = url.searchParams.get("ws") ?? "";
+      if (!ws) {
+        return json(
+          {
+            error: "missing workspace",
+            hint: "call POST /workspaces/:id/exec on the Worker instead",
+          },
+          400,
+        );
+      }
+      if (!this.workspaceExists(ws)) {
+        return json(
+          {
+            error: "unknown workspace",
+            hint: "create one with POST /workspaces first",
+          },
+          404,
+        );
+      }
+      return json({ workspaceId: ws, exists: true });
+    }
 
     if (url.pathname === "/files") {
       const ws = url.searchParams.get("ws") ?? "";

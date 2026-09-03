@@ -14,6 +14,7 @@ commands:
   doctor                        check the worker is listening (GET BASE/)
   workspace create              create a workspace (POST /workspaces)
   files put|get|ls              read/write/list workspace files
+  exec                          run a one-off shell command (POST /workspaces/:id/exec)
 
 global flags:
   --base URL    worker base URL (default ${DEFAULT_BASE})
@@ -24,8 +25,8 @@ examples:
   pi-do doctor
   pi-do workspace create
   pi-do files put --ws <id> --path hello.txt --body "hi"
+  pi-do exec --ws <id> --command "echo hi"
 `;
-
 const DOCTOR_HELP = `pi-do doctor — check the worker is listening
 
 usage:
@@ -151,6 +152,27 @@ exit codes:
 example:
   pi-do files ls --ws 550e8400-e29b-41d4-a716-446655440000 --path notes/
 `;
+const EXEC_HELP = `pi-do exec — run a one-off shell command in a workspace
+
+usage:
+  pi-do exec --ws WS --command CMD [--cwd DIR] [--base URL] [--json]
+
+behavior:
+  POSTs {command, cwd} to /workspaces/:id/exec. The command runs once in
+  an isolated shell (no workspace files or entries are touched) with output
+  capped at 1 MiB and a fixed runtime timeout (kill arrives in PR12).
+  Without --json stdout is the command stdout plus an "exit N" line on
+  stderr; with --json stdout is the raw server JSON {stdout, stderr, exit}.
+
+exit codes:
+  0  ok (command exit is in the body, not the CLI exit)
+  1  server-side failure, e.g. unknown workspace (error + hint printed)
+  2  usage error
+
+example:
+  pi-do exec --ws 550e8400-e29b-41d4-a716-446655440000 --command "echo hi"
+`;
+
 
 function failUsage(message, help) {
   process.stderr.write(`pi-do: ${message}\n`);
@@ -169,6 +191,8 @@ function parseArgs(argv) {
     body: undefined,
     bodyFile: undefined,
     out: undefined,
+    command: undefined,
+    cwd: undefined,
   };
   const positionals = [];
   let baseSet = false;
@@ -220,7 +244,14 @@ function parseArgs(argv) {
       opts.out = takeValue(tok);
     } else if (tok.startsWith("--out=")) {
       opts.out = tok.slice("--out=".length);
-    } else if (tok.startsWith("-") && tok.length > 1) {
+    } else if (tok === "--command") {
+      opts.command = takeValue("--command");
+    } else if (tok.startsWith("--command=")) {
+      opts.command = tok.slice("--command=".length);
+    } else if (tok === "--cwd") {
+      opts.cwd = takeValue("--cwd");
+    } else if (tok.startsWith("--cwd=")) {
+      opts.cwd = tok.slice("--cwd=".length);
       failUsage(`unknown flag ${tok.split("=")[0]}.`);
     } else {
       positionals.push(tok);
@@ -270,6 +301,7 @@ function helpFor(cmd, sub) {
     if (sub === "ls") return FILES_LS_HELP;
     return FILES_HELP;
   }
+  if (cmd === "exec") return EXEC_HELP;
   return ROOT_HELP;
 }
 
@@ -431,6 +463,41 @@ async function doFilesLs(base, json, opts) {
   process.exit(0);
 }
 
+async function doExec(base, json, opts) {
+  if (!opts.ws) failUsage(`exec needs --ws WS.`, EXEC_HELP);
+  if (opts.command === undefined) failUsage(`exec needs --command CMD.`, EXEC_HELP);
+  if (opts.path !== undefined || opts.body !== undefined || opts.bodyFile !== undefined || opts.out !== undefined) {
+    failUsage(`exec takes no --path/--body/--body-file/--out.`, EXEC_HELP);
+  }
+  const payload = { command: opts.command };
+  if (opts.cwd !== undefined) payload.cwd = opts.cwd;
+  const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/exec`;
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    human(`error: cannot reach server at ${base}`);
+    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
+    if (json) printJson({ error: "cannot reach server", base });
+    process.exit(1);
+  }
+  if (!res.ok) await failFromResponse(res, json);
+  const data = await res.json();
+  if (json) {
+    printJson(data);
+    human(`exit ${data.exit}`);
+  } else {
+    if (data.stdout) process.stdout.write(data.stdout.endsWith("\n") ? data.stdout : `${data.stdout}\n`);
+    if (data.stderr) process.stderr.write(data.stderr.endsWith("\n") ? data.stderr : `${data.stderr}\n`);
+    human(`exit ${data.exit}`);
+  }
+  process.exit(0);
+}
+
 async function main() {
   const { opts, positionals } = parseArgs(process.argv.slice(2));
   const [cmd, sub, ...extra] = positionals;
@@ -461,7 +528,9 @@ async function main() {
     else if (sub === "get" && extra.length === 0) await doFilesGet(opts.base, opts.json, opts);
     else if (sub === "ls" && extra.length === 0) await doFilesLs(opts.base, opts.json, opts);
     else failUsage(`unknown files subcommand '${sub}'.`, FILES_HELP);
-  } else {
+  } else if (cmd === "exec") {
+    if (sub !== undefined || extra.length > 0) failUsage(`exec takes no subcommand.`, EXEC_HELP);
+    await doExec(opts.base, opts.json, opts);
     failUsage(`unknown command '${cmd}'.`, ROOT_HELP);
   }
 }
