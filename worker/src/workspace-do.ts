@@ -1,5 +1,6 @@
 import { createDofsVfs, type FileStore } from "./vfs-dofs";
 import { appendEntry, ensureEntriesSchema, entryHead, listEntries, openRun, recordTurnWithOpen, runInSyncTx, sumResultUsage, withSessionRates } from "./entries";
+import { archiveMeta, compactionPending, ensureCompactionSchema, maybeMarkForCompaction, pendingSessions, readArchivePage, runCompaction } from "./compaction";
 import { enforceFence } from "./fence";
 import { acceptStream, readAttachment, socketClosed, socketMessage, wrapSocket, type StreamHost } from "./stream";
 import { createAgentSession } from "../../packages/pi-cf/src/session";
@@ -65,6 +66,7 @@ export class WorkspaceDO implements DurableObject {
     );
     this.files.ensureSchema();
     ensureEntriesSchema(sql);
+    ensureCompactionSchema(sql);
     sql.exec("DROP TABLE IF EXISTS pi_owners");
     sql.exec(
       "CREATE TABLE IF NOT EXISTS sessions(sid TEXT PRIMARY KEY, ws TEXT, created_at TEXT, ownerFence TEXT, revision INTEGER NOT NULL DEFAULT 0)",
@@ -1033,6 +1035,8 @@ export class WorkspaceDO implements DurableObject {
         });
         const turn = await session.run(prompt, { thinking: effThinking });
         recordTurnWithOpen(sql, sid, runId, prompt, turn.toolCalls, turn.result, turn.usage);
+        // Window reserve: mark for compaction but never compact inside the turn. The alarm runs seconds later so a burst of turns settles into one compaction.
+        if (maybeMarkForCompaction(sql, sid)) await this.state.storage.setAlarm(Date.now() + 2000);
         const runtimeOut = { via: turn.via, model: turn.model, provider: respProvider, thinking: effThinking };
         if (rotated !== null) {
           return json({
@@ -1182,9 +1186,92 @@ export class WorkspaceDO implements DurableObject {
         }
       }
       const triple = this.readTriple(sid);
+      const archive = archiveMeta(sql, sid);
       const sums = sumResultUsage(sql, sid);
       const usage = withSessionRates(sums, this.sessionContextWindow(triple));
-      return json({ sid, ws, created, head, count, openRun, model: { provider: triple?.provider ?? null, id: triple?.id ?? null }, thinking: triple?.thinking ?? null, usage });
+      return json({ sid, ws, created, head, count, openRun, model: { provider: triple?.provider ?? null, id: triple?.id ?? null }, thinking: triple?.thinking ?? null, usage, compaction: { pending: compactionPending(sql, sid), archivePages: archive.pages, archiveTotal: archive.total } });
+    }
+
+    // POST /compact?ws=&sid= — manual trigger; same runCompaction the alarm runs.
+    if (request.method === "POST" && url.pathname === "/compact") {
+      const ws = url.searchParams.get("ws") ?? "";
+      const sid = url.searchParams.get("sid") ?? "";
+      if (!ws) {
+        return json(
+          {
+            error: "missing workspace",
+            hint: "retry as POST /workspaces/:id/sessions/:sid/compact on the Worker instead",
+          },
+          400,
+        );
+      }
+      if (!this.workspaceExists(ws)) {
+        return json(
+          {
+            error: "unknown workspace",
+            hint: "create one with POST /workspaces first, then mint a session",
+          },
+          404,
+        );
+      }
+      if (!sid || !this.sessionExists(ws, sid)) {
+        return json(
+          {
+            error: "unknown session",
+            hint: "mint one with POST /workspaces/:id/sessions first, then retry with that session id",
+          },
+          404,
+        );
+      }
+      return this.enqueueSessionTurn(sid, async () => {
+        const out = runCompaction(this.state.storage.sql, sid, true);
+        return json({ sid, ...out });
+      });
+    }
+
+    // GET /archive?ws=&sid=&page=N — re-read one paginated cold-storage page.
+    if (request.method === "GET" && url.pathname === "/archive") {
+      const ws = url.searchParams.get("ws") ?? "";
+      const sid = url.searchParams.get("sid") ?? "";
+      if (!ws) {
+        return json(
+          {
+            error: "missing workspace",
+            hint: "retry as GET /workspaces/:id/sessions/:sid/archive on the Worker instead",
+          },
+          400,
+        );
+      }
+      if (!this.workspaceExists(ws)) {
+        return json(
+          {
+            error: "unknown workspace",
+            hint: "create one with POST /workspaces first, then mint a session",
+          },
+          404,
+        );
+      }
+      if (!sid || !this.sessionExists(ws, sid)) {
+        return json(
+          {
+            error: "unknown session",
+            hint: "mint one with POST /workspaces/:id/sessions first, then retry with that session id",
+          },
+          404,
+        );
+      }
+      const page = Number(url.searchParams.get("page") ?? "1");
+      if (!Number.isInteger(page) || page < 1) {
+        return json(
+          {
+            error: "bad page",
+            hint: "retry with ?page=N where N is a positive integer, e.g. ?page=1",
+          },
+          400,
+        );
+      }
+      const sql = this.state.storage.sql;
+      return json({ sid, ...readArchivePage(sql, sid, page) });
     }
 
     return json(
@@ -1192,6 +1279,19 @@ export class WorkspaceDO implements DurableObject {
       404,
     );
   }
+
+  async alarm(): Promise<void> {
+    this.ensureSchema();
+    const sql = this.state.storage.sql;
+    for (const sid of pendingSessions(sql)) {
+      try {
+        runCompaction(sql, sid);
+      } catch {
+        continue;
+      }
+    }
+  }
+
   private streamHost(ws: string, sid: string): StreamHost {
     return {
       sql: this.state.storage.sql,
