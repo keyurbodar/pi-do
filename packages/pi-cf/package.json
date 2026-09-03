@@ -6,5 +6,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "verify": "node verify-env.mjs"
+  },
+  "dependencies": {
+    "diff": "^8.0.4"
   }
 }

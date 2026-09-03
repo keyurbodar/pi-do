@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// pi-do CLI driver: doctor / workspace create / session create / files put|get|ls / exec / git / run / entries.
+// pi-do CLI driver: doctor / workspace create / session create / files put|get|ls|rm / exec / git / run / entries.
 // Zero dependencies, plain JS on global fetch (node >= 18).
 import { readFile, writeFile } from "node:fs/promises";
 
@@ -14,7 +14,7 @@ commands:
   doctor                        check the worker is listening (GET BASE/)
   workspace create              create a workspace (POST /workspaces)
   session create                mint a session (POST /workspaces/:id/sessions)
-  files put|get|ls              read/write/list workspace files
+  files put|get|ls|rm           read/write/list/remove workspace files
   exec                          run a one-off shell command (POST /workspaces/:id/exec)
   git                           narrow git reads (POST /workspaces/:id/sessions/:sid/git)
   run                           one headless harness turn (POST /workspaces/:id/sessions/:sid/run)
@@ -177,22 +177,25 @@ examples:
   pi-do git --ws <ws> --sid <sid> log
 `;
 
-const FILES_HELP = `pi-do files — read/write/list workspace files
+const FILES_HELP = `pi-do files — read/write/list/remove workspace files
 
 usage:
   pi-do files put --ws WS --path P [--body STR | --body-file F] [--base URL] [--json]
   pi-do files get --ws WS --path P [--out F] [--base URL] [--json]
   pi-do files ls  --ws WS [--path DIR] [--base URL] [--json]
+  pi-do files rm  --ws WS --path P [--recursive] [--base URL] [--json]
 
 subcommands:
   put     upload raw bytes (PUT /workspaces/:id/files?path=P)
   get     download raw bytes (GET ...?path=P); stdout stays byte-exact
   ls      list entries (GET ...?list=DIR, default "")
+  rm      delete a file, or a directory tree with --recursive (DELETE ...?path=P)
 
 examples:
   pi-do files put --ws <id> --path hello.txt --body "hi"
   pi-do files get --ws <id> --path hello.txt --out ./hello.txt
   pi-do files ls --ws <id> --path ""
+  pi-do files rm --ws <id> --path hello.txt
 `;
 
 const FILES_PUT_HELP = `pi-do files put — upload raw bytes to a workspace file
@@ -252,6 +255,24 @@ exit codes:
 
 example:
   pi-do files ls --ws 550e8400-e29b-41d4-a716-446655440000 --path notes/
+`;
+const FILES_RM_HELP = `pi-do files rm — delete a workspace file or directory tree
+
+usage:
+  pi-do files rm --ws WS --path P [--recursive] [--base URL] [--json]
+
+behavior:
+  DELETEs /workspaces/:id/files?path=P. A directory needs --recursive
+  (?recursive=true) or the server refuses with a hint. Traversal outside
+  the workspace root fails closed with a 400 plus hint.
+
+exit codes:
+  0  ok
+  1  server-side failure (error + hint printed from the body)
+  2  usage error
+
+example:
+  pi-do files rm --ws 550e8400-e29b-41d4-a716-446655440000 --path notes/hi.txt
 `;
 const EXEC_HELP = `pi-do exec — run a one-off shell command in a workspace
 
@@ -446,6 +467,8 @@ function parseArgs(argv) {
       opts.limit = takeValue("--limit");
     } else if (tok.startsWith("--limit=")) {
       opts.limit = tok.slice("--limit=".length);
+    } else if (tok === "--recursive") {
+      opts.recursive = true;
     } else {
       positionals.push(tok);
     }
@@ -487,13 +510,11 @@ async function failFromResponse(res, json) {
 
 function helpFor(cmd, sub) {
   if (cmd === "doctor") return DOCTOR_HELP;
-  if (cmd === "workspace") return sub === "create" ? WORKSPACE_CREATE_HELP : WORKSPACE_HELP;
-  if (cmd === "session") return sub === "create" ? SESSION_CREATE_HELP : SESSION_HELP;
-  if (cmd === "git") return GIT_HELP;
   if (cmd === "files") {
     if (sub === "put") return FILES_PUT_HELP;
     if (sub === "get") return FILES_GET_HELP;
     if (sub === "ls") return FILES_LS_HELP;
+    if (sub === "rm") return FILES_RM_HELP;
     return FILES_HELP;
   }
   if (cmd === "exec") return EXEC_HELP;
@@ -790,6 +811,36 @@ async function doFilesLs(base, json, opts) {
   }
   process.exit(0);
 }
+async function doFilesRm(base, json, opts) {
+  if (!opts.ws) failUsage(`files rm needs --ws WS.`, FILES_RM_HELP);
+  if (opts.path === undefined) failUsage(`files rm needs --path P.`, FILES_RM_HELP);
+  if (opts.body !== undefined || opts.bodyFile !== undefined || opts.out !== undefined) {
+    failUsage(`files rm takes no --body/--body-file/--out.`, FILES_RM_HELP);
+  }
+  const rec = opts.recursive === true ? "&recursive=true" : "";
+  const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/files?path=${encodeURIComponent(opts.path)}${rec}`;
+  let res;
+  try {
+    res = await fetch(url, { method: "DELETE" });
+  } catch (e) {
+    human(`error: cannot reach server at ${base}`);
+    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
+    if (json) printJson({ error: "cannot reach server", base });
+    process.exit(1);
+  }
+  if (!res.ok) await failFromResponse(res, json);
+  const data = await res.json();
+  const removed = Array.isArray(data.removed) ? data.removed : [];
+  if (json) {
+    printJson(data);
+    human(`removed ${removed.length} path(s)`);
+  } else if (removed.length === 0) {
+    process.stdout.write(`(removed nothing)\n`);
+  } else {
+    for (const p of removed) process.stdout.write(`removed ${p}\n`);
+  }
+  process.exit(0);
+}
 
 async function doEntries(base, json, opts) {
   if (!opts.ws) failUsage(`entries needs --ws WS.`, ENTRIES_HELP);
@@ -1024,17 +1075,12 @@ async function main() {
     if (sub === undefined) failUsage(`workspace needs a subcommand (create).`, WORKSPACE_HELP);
     if (sub !== "create" || extra.length > 0) failUsage(`unknown workspace subcommand '${sub ?? ""}'.`, WORKSPACE_HELP);
     await doWorkspaceCreate(opts.base, opts.json);
-  } else if (cmd === "session") {
-    if (sub !== "create" || extra.length > 0) failUsage(`unknown session subcommand '${sub ?? ""}'.`, SESSION_HELP);
-    await doSessionCreate(opts.base, opts.json, opts);
-  } else if (cmd === "git") {
-    const gitArgv = sub === undefined ? [] : [sub, ...extra];
-    await doGit(opts.base, opts.json, opts, gitArgv);
   } else if (cmd === "files") {
-    if (sub === undefined) failUsage(`files needs a subcommand (put|get|ls).`, FILES_HELP);
+    if (sub === undefined) failUsage(`files needs a subcommand (put|get|ls|rm).`, FILES_HELP);
     if (sub === "put" && extra.length === 0) await doFilesPut(opts.base, opts.json, opts);
     else if (sub === "get" && extra.length === 0) await doFilesGet(opts.base, opts.json, opts);
     else if (sub === "ls" && extra.length === 0) await doFilesLs(opts.base, opts.json, opts);
+    else if (sub === "rm" && extra.length === 0) await doFilesRm(opts.base, opts.json, opts);
     else failUsage(`unknown files subcommand '${sub}'.`, FILES_HELP);
   } else if (cmd === "exec") {
     if (sub !== undefined || extra.length > 0) failUsage(`exec takes no subcommand.`, EXEC_HELP);

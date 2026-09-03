@@ -3,6 +3,7 @@ import { ensureEntriesSchema, entryHead, listEntries, openRun, recordTurn } from
 import { enforceFence } from "./fence";
 import { handleStream } from "./stream";
 import { createAgentSession } from "../../packages/pi-cf/src/session";
+import { normalizeWorkspacePath } from "../../packages/pi-cf/src/tools";
 import { buildRuntime, type RuntimeEnv } from "./model-runtime";
 import type { DurableObjectState } from "@cloudflare/workers-types";
 import { createWorkspaceFs, hasGitDir } from "./git-fs";
@@ -186,6 +187,62 @@ export class WorkspaceDO implements DurableObject {
         const buf = new Uint8Array(await request.arrayBuffer());
         const bytes = this.files.put(ws, path, buf, new Date().toISOString());
         return json({ path, bytes });
+      }
+      if (request.method === "DELETE") {
+        const rawPath = url.searchParams.get("path");
+        if (!rawPath) {
+          return json(
+            {
+              error: "missing path",
+              hint: "retry as DELETE /workspaces/:id/files?path=P",
+            },
+            400,
+          );
+        }
+        let path: string;
+        try {
+          path = normalizeWorkspacePath(rawPath);
+        } catch (e) {
+          if (e !== null && typeof e === "object" && "error" in e && typeof e.error === "string") {
+            const hint = "hint" in e && typeof e.hint === "string" ? e.hint : "retry with a workspace-relative path";
+            return json({ error: e.error, hint }, 400);
+          }
+          throw e;
+        }
+        if (path === "") {
+          return json(
+            {
+              error: "bad path",
+              hint: "refusing to remove the workspace root; retry with a file or directory path",
+            },
+            400,
+          );
+        }
+        if (this.files.exists(ws, path)) {
+          this.files.remove(ws, path);
+          return json({ removed: [path] });
+        }
+        const under = this.files.list(ws, `${path}/`);
+        if (under.length === 0) {
+          return json(
+            {
+              error: `no such file: ${path}`,
+              hint: "check the path with files ls first, then retry",
+            },
+            404,
+          );
+        }
+        if (url.searchParams.get("recursive") !== "true") {
+          return json(
+            {
+              error: `${path} is a directory`,
+              hint: "retry with ?recursive=true to delete the whole tree, or remove files one by one",
+            },
+            400,
+          );
+        }
+        for (const entry of under) this.files.remove(ws, entry.path);
+        return json({ removed: under.map((entry) => entry.path) });
       }
 
       if (request.method === "GET") {

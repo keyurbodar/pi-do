@@ -2,14 +2,20 @@ import {
   ComputerExecutionEnv,
   type FileStoreLike,
   type ShellLike,
-} from "./env";
-import { bashTool, readTool, textOf, type ToolContext } from "./tools";
-import { planStubTurn } from "./stub-plan";
+} from "./env.ts";
+import { bashTool, editTool, listTool, readTool, removeTool, textOf, writeTool, type ToolContext } from "./tools.ts";
+import { planStubTurn } from "./stub-plan.ts";
 
 export const sessionTools = {
   read: readTool,
+  write: writeTool,
+  edit: editTool,
+  list: listTool,
+  remove: removeTool,
   bash: bashTool,
 };
+
+export type SessionTools = typeof sessionTools;
 
 export interface SessionModel {
   id: string;
@@ -24,6 +30,7 @@ export interface CreateAgentSessionOptions {
   ws: string;
   shell: ShellLike;
   model: SessionModel;
+  tools?: Partial<SessionTools>;
 }
 
 export interface SessionToolCall {
@@ -77,6 +84,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
   run(prompt: string, runOptions?: SessionRunOptions): Promise<SessionTurn>;
 } {
   const { files, ws, shell, model } = options;
+  const tools: SessionTools = { ...sessionTools, ...options.tools };
   const env = new ComputerExecutionEnv(files, ws, shell);
   const context: ToolContext = { env };
 
@@ -94,7 +102,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
       const tool = step.kind;
       const args = step.kind === "read" ? { path: step.path } : { command: step.command };
       onUpdate?.({ kind: "toolCall", id, tool, args });
-      const toolFn = step.kind === "read" ? sessionTools.read : sessionTools.bash;
+      const toolFn = step.kind === "read" ? tools.read : tools.bash;
       const result = await toolFn.execute(id, args, signal, undefined, context);
       const output = textOf(result);
       toolCalls.push({ id, tool, args, output });

@@ -165,9 +165,9 @@ export default {
       ).fetch(inner.toString(), { method: "GET" } as RequestInit);
     }
 
-    // PUT|GET /workspaces/:id/files
+    // PUT|GET|DELETE /workspaces/:id/files
     if (
-      (request.method === "PUT" || request.method === "GET") &&
+      (request.method === "PUT" || request.method === "GET" || request.method === "DELETE") &&
       parts.length === 3 &&
       parts[0] === "workspaces" &&
       parts[2] === "files"
@@ -178,7 +178,9 @@ export default {
       for (const [k, v] of url.searchParams) inner.searchParams.set(k, v);
       const init = request.method === "PUT"
         ? { method: "PUT", body: rawBody }
-        : { method: "GET" };
+        : request.method === "DELETE"
+          ? { method: "DELETE" }
+          : { method: "GET" };
       return await env.WORKSPACE_DO.get(
         env.WORKSPACE_DO.idFromName(workspaceId),
       ).fetch(inner.toString(), init as RequestInit);
