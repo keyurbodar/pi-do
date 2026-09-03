@@ -53,11 +53,21 @@ export interface SessionToolCall {
   output: string;
 }
 
+export interface SessionUsage {
+  inTokens: number;
+  outTokens: number;
+  cacheRead: number;
+  costTotal: number;
+  elapsedMs: number;
+  tokensPerSec: number | null;
+}
+
 export interface SessionTurn {
   result: string;
   toolCalls: SessionToolCall[];
   via: "createAgentSession";
   model: string;
+  usage: SessionUsage;
 }
 
 
@@ -97,6 +107,9 @@ function abortablePause(signal: AbortSignal | undefined): Promise<void> {
 // runtime: keyless turns never reach completeSimple, so behavior there is
 // byte-identical to the planStubTurn harness it replaces.
 const MAX_MODEL_STEPS = 10;
+// Suppressed under this the rate is nonsense (cached/instant responses yield
+// absurd tok/s). Same 100ms floor as OMP calculateTokensPerSecond.
+const MIN_TURN_MS = 100;
 
 const SYSTEM_PROMPT =
   'You are a coding assistant inside a Cloudflare Worker workspace. File paths are workspace-relative ("" is the workspace root). Use the tools to inspect and change files, then answer with a short summary of what you did.';
@@ -176,6 +189,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
       toolCalls,
       via: "createAgentSession",
       model: modelId,
+      usage: { inTokens: 0, outTokens: 0, cacheRead: 0, costTotal: 0, elapsedMs: 0, tokensPerSec: null },
     };
   }
 
@@ -202,11 +216,20 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
     const toolCalls: SessionToolCall[] = [];
     let n = 0;
     let result = "";
+    const openedAt = Date.now();
+    let inTokens = 0;
+    let outTokens = 0;
+    let cacheRead = 0;
+    let costTotal = 0;
     for (let step = 0; step < MAX_MODEL_STEPS; step += 1) {
       signal?.throwIfAborted();
       await abortablePause(signal);
       const piContext: PiContext = { systemPrompt: SYSTEM_PROMPT, messages, tools: piTools };
       const answer = await completeSimple(toPiModel(model), piContext, request);
+      inTokens += answer.usage.input + answer.usage.cacheWrite;
+      outTokens += answer.usage.output;
+      cacheRead += answer.usage.cacheRead;
+      costTotal += answer.usage.cost.total;
       if (answer.stopReason === "error" || answer.stopReason === "aborted") {
         signal?.throwIfAborted();
         // {error, hint} shape so both callers stay hinted: /run returns it
@@ -253,11 +276,14 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
         });
       }
     }
+    const elapsedMs = Date.now() - openedAt;
+    const tokensPerSec = elapsedMs < MIN_TURN_MS || outTokens <= 0 ? null : (outTokens * 1000) / elapsedMs;
     return {
       result,
       toolCalls,
       via: "createAgentSession",
       model: modelId,
+      usage: { inTokens, outTokens, cacheRead, costTotal, elapsedMs, tokensPerSec },
     };
   }
 
