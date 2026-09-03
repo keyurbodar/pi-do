@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// pi-do CLI driver: doctor / workspace create / files put|get|ls.
+// pi-do CLI driver: doctor / workspace create / session create / files put|get|ls / exec / run.
 // Zero dependencies, plain JS on global fetch (node >= 18).
 import { readFile, writeFile } from "node:fs/promises";
 
@@ -13,8 +13,10 @@ usage:
 commands:
   doctor                        check the worker is listening (GET BASE/)
   workspace create              create a workspace (POST /workspaces)
+  session create                mint a session (POST /workspaces/:id/sessions)
   files put|get|ls              read/write/list workspace files
   exec                          run a one-off shell command (POST /workspaces/:id/exec)
+  run                           one headless harness turn (POST /workspaces/:id/sessions/:sid/run)
 
 global flags:
   --base URL    worker base URL (default ${DEFAULT_BASE})
@@ -74,6 +76,57 @@ exit codes:
 
 example:
   pi-do workspace create --base http://127.0.0.1:8787
+`;
+const SESSION_HELP = `pi-do session — manage sessions
+
+usage:
+  pi-do session create --ws WS [--base URL] [--json]
+
+subcommands:
+  create    mint a session (POST /workspaces/:id/sessions)
+
+example:
+  pi-do session create --ws <workspace-id>
+`;
+
+const SESSION_CREATE_HELP = `pi-do session create — mint a session in a workspace
+
+usage:
+  pi-do session create --ws WS [--base URL] [--json]
+
+behavior:
+  POSTs /workspaces/:id/sessions. Prints the new session id.
+  Without --json stdout is "session <id>"; with --json stdout is the
+  raw server JSON and the human line goes to stderr.
+
+exit codes:
+  0  created
+  1  server-side failure (error + hint printed from the body)
+  2  usage error
+
+example:
+  pi-do session create --ws 550e8400-e29b-41d4-a716-446655440000
+`;
+
+const RUN_HELP = `pi-do run — one headless harness turn in a session
+
+usage:
+  pi-do run --ws WS --sid SID --prompt T [--base URL] [--json]
+
+behavior:
+  POSTs {prompt} to /workspaces/:id/sessions/:sid/run. The stub model reads
+  seed.txt and echoes a bash marker, then answers {result, toolCalls}.
+  Real model wiring arrives in PR14.
+  Without --json stdout is the result text; with --json stdout is the raw
+  server JSON and the human line goes to stderr.
+
+exit codes:
+  0  ok
+  1  server-side failure, e.g. unknown workspace/session (error + hint printed)
+  2  usage error
+
+example:
+  pi-do run --ws <id> --sid <sid> --prompt "read seed.txt"
 `;
 
 const FILES_HELP = `pi-do files — read/write/list workspace files
@@ -187,6 +240,8 @@ function parseArgs(argv) {
     json: false,
     help: false,
     ws: undefined,
+    sid: undefined,
+    prompt: undefined,
     path: undefined,
     body: undefined,
     bodyFile: undefined,
@@ -228,6 +283,12 @@ function parseArgs(argv) {
     } else if (tok.startsWith("--workspace=")) {
       opts.workspace = undefined;
       opts.ws = tok.slice("--workspace=".length);
+    } else if (tok === "--sid" || tok === "--session") {
+      opts.sid = takeValue(tok);
+    } else if (tok.startsWith("--sid=")) {
+      opts.sid = tok.slice("--sid=".length);
+    } else if (tok.startsWith("--session=")) {
+      opts.sid = tok.slice("--session=".length);
     } else if (tok === "--path") {
       opts.path = takeValue("--path");
     } else if (tok.startsWith("--path=")) {
@@ -253,6 +314,10 @@ function parseArgs(argv) {
     } else if (tok.startsWith("--cwd=")) {
       opts.cwd = tok.slice("--cwd=".length);
       failUsage(`unknown flag ${tok.split("=")[0]}.`);
+    } else if (tok === "--prompt") {
+      opts.prompt = takeValue("--prompt");
+    } else if (tok.startsWith("--prompt=")) {
+      opts.prompt = tok.slice("--prompt=".length);
     } else {
       positionals.push(tok);
     }
@@ -295,6 +360,7 @@ async function failFromResponse(res, json) {
 function helpFor(cmd, sub) {
   if (cmd === "doctor") return DOCTOR_HELP;
   if (cmd === "workspace") return sub === "create" ? WORKSPACE_CREATE_HELP : WORKSPACE_HELP;
+  if (cmd === "session") return sub === "create" ? SESSION_CREATE_HELP : SESSION_HELP;
   if (cmd === "files") {
     if (sub === "put") return FILES_PUT_HELP;
     if (sub === "get") return FILES_GET_HELP;
@@ -302,6 +368,7 @@ function helpFor(cmd, sub) {
     return FILES_HELP;
   }
   if (cmd === "exec") return EXEC_HELP;
+  if (cmd === "run") return RUN_HELP;
   return ROOT_HELP;
 }
 
@@ -363,6 +430,59 @@ async function doWorkspaceCreate(base, json) {
     human(`workspace ${data.workspaceId}`);
   } else {
     process.stdout.write(`workspace ${data.workspaceId}\n`);
+  }
+  process.exit(0);
+}
+async function doSessionCreate(base, json, opts) {
+  if (!opts.ws) failUsage(`session create needs --ws WS.`, SESSION_CREATE_HELP);
+  const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/sessions`;
+  let res;
+  try {
+    res = await fetch(url, { method: "POST" });
+  } catch (e) {
+    human(`error: cannot reach server at ${base}`);
+    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
+    if (json) printJson({ error: "cannot reach server", base });
+    process.exit(1);
+  }
+  if (!res.ok) await failFromResponse(res, json);
+  const data = await res.json();
+  if (json) {
+    printJson(data);
+    human(`session ${data.sessionId}`);
+  } else {
+    process.stdout.write(`session ${data.sessionId}\n`);
+  }
+  process.exit(0);
+}
+
+async function doRun(base, json, opts) {
+  if (!opts.ws) failUsage(`run needs --ws WS.`, RUN_HELP);
+  if (!opts.sid) failUsage(`run needs --sid SID.`, RUN_HELP);
+  if (opts.prompt === undefined) failUsage(`run needs --prompt T.`, RUN_HELP);
+  const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/sessions/${encodeURIComponent(opts.sid)}/run`;
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt: opts.prompt }),
+    });
+  } catch (e) {
+    human(`error: cannot reach server at ${base}`);
+    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
+    if (json) printJson({ error: "cannot reach server", base });
+    process.exit(1);
+  }
+  if (!res.ok) await failFromResponse(res, json);
+  const data = await res.json();
+  const calls = Array.isArray(data.toolCalls) ? data.toolCalls : [];
+  if (json) {
+    printJson(data);
+    human(`run ok: ${calls.length} tool calls`);
+  } else {
+    if (data.result) process.stdout.write(data.result.endsWith("\n") ? data.result : `${data.result}\n`);
+    human(`run ok: ${calls.length} tool calls`);
   }
   process.exit(0);
 }
@@ -531,6 +651,13 @@ async function main() {
   } else if (cmd === "exec") {
     if (sub !== undefined || extra.length > 0) failUsage(`exec takes no subcommand.`, EXEC_HELP);
     await doExec(opts.base, opts.json, opts);
+  } else if (cmd === "session") {
+    if (sub !== "create" || extra.length > 0) failUsage(`unknown session subcommand '${sub ?? ""}'.`, SESSION_HELP);
+    await doSessionCreate(opts.base, opts.json, opts);
+  } else if (cmd === "run") {
+    if (sub !== undefined || extra.length > 0) failUsage(`run takes no subcommand.`, RUN_HELP);
+    await doRun(opts.base, opts.json, opts);
+  } else {
     failUsage(`unknown command '${cmd}'.`, ROOT_HELP);
   }
 }
