@@ -1,4 +1,5 @@
 import { createFileStore, type FileStore } from "./files";
+import { ensureEntriesSchema, listEntries, openRun, recordTurn } from "./entries";
 import { ComputerExecutionEnv } from "../../packages/pi-cf/src/env";
 import { runHeadlessTurn } from "./harness";
 import type { DurableObjectState } from "@cloudflare/workers-types";
@@ -40,9 +41,7 @@ export class WorkspaceDO implements DurableObject {
       "CREATE TABLE IF NOT EXISTS workspaces(id TEXT PRIMARY KEY, created_at TEXT)",
     );
     this.files.ensureSchema();
-    sql.exec(
-      "CREATE TABLE IF NOT EXISTS pi_entries (id INTEGER PRIMARY KEY AUTOINCREMENT, ws TEXT, sid TEXT, cursor INTEGER, type TEXT, body TEXT)",
-    );
+    ensureEntriesSchema(sql);
     sql.exec(
       "CREATE TABLE IF NOT EXISTS pi_owners(sid TEXT PRIMARY KEY, fence TEXT, rev INTEGER)",
     );
@@ -327,9 +326,13 @@ export class WorkspaceDO implements DurableObject {
           400,
         );
       }
+      const sql = this.state.storage.sql;
+      const runId = crypto.randomUUID();
+      openRun(sql, sid, runId);
       try {
         const env = new ComputerExecutionEnv(this.files, ws, this.env.SHELL_WORKER);
         const turn = await runHeadlessTurn(prompt, env);
+        recordTurn(sql, sid, runId, prompt, turn.toolCalls, turn.result);
         return json({ result: turn.result, toolCalls: turn.toolCalls });
       } catch (e) {
         if (
@@ -346,6 +349,52 @@ export class WorkspaceDO implements DurableObject {
           500,
         );
       }
+    }
+
+    // GET /entries?ws=&sid=&after=N — raw ordered replay slice.
+    // Pagination, metadata, and resume semantics stay in PR09.
+    if (request.method === "GET" && url.pathname === "/entries") {
+      const ws = url.searchParams.get("ws") ?? "";
+      const sid = url.searchParams.get("sid") ?? "";
+      if (!ws) {
+        return json(
+          {
+            error: "missing workspace",
+            hint: "retry as GET /workspaces/:id/sessions/:sid/entries on the Worker instead",
+          },
+          400,
+        );
+      }
+      if (!this.workspaceExists(ws)) {
+        return json(
+          {
+            error: "unknown workspace",
+            hint: "create one with POST /workspaces first, then mint a session",
+          },
+          404,
+        );
+      }
+      if (!sid || !this.sessionExists(ws, sid)) {
+        return json(
+          {
+            error: "unknown session",
+            hint: "mint one with POST /workspaces/:id/sessions first, then retry with that session id",
+          },
+          404,
+        );
+      }
+      const rawAfter = url.searchParams.get("after") ?? "0";
+      const after = Number(rawAfter);
+      if (!Number.isInteger(after) || after < 0) {
+        return json(
+          {
+            error: "bad after",
+            hint: "retry with ?after=N where N is a non-negative cursor, e.g. ?after=0",
+          },
+          400,
+        );
+      }
+      return json({ entries: listEntries(this.state.storage.sql, sid, after) });
     }
 
     return json(
