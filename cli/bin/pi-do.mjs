@@ -478,7 +478,9 @@ behavior:
   prints on stdout as it arrives: {entry} frames carry the storage re-read,
   {done} carries the rotated {fence, revision} plus the result text,
   {aborted} ends a cancelled turn, {busy} means a turn is already running,
-  {ping} is a heartbeat, {message}/{tool}/{agent} pass through for
+  {ping} is a heartbeat, {commands} lists extension commands,
+  {extension_ui_request} renders an extension question and {answered}
+  confirms the response landed, {message}/{tool}/{agent} pass through for
   forward-compat, anything else prints as raw JSON.
 
 stdin controls (one per line):
@@ -741,6 +743,20 @@ function printStreamFrame(frame, json) {
     process.stdout.write(`ping\n`);
   } else if (frame.error) {
     process.stdout.write(`error ${frame.error} ${frame.hint ?? ""}\n`);
+  } else if (frame.commands !== undefined) {
+    const list = Array.isArray(frame.commands) ? frame.commands : [];
+    if (list.length === 0) process.stdout.write(`commands (none)\n`);
+    else {
+      for (const c of list) {
+        const name = c !== null && typeof c === "object" && typeof c.name === "string" ? c.name : "?";
+        const desc = c !== null && typeof c === "object" && typeof c.description === "string" && c.description !== "" ? ` ${c.description}` : "";
+        process.stdout.write(`commands ${name}${desc}\n`);
+      }
+    }
+  } else if (frame.extension_ui_request) {
+    process.stdout.write(`ui-request ${frame.id ?? ""} ${frame.question ?? ""}\n`);
+  } else if (frame.answered) {
+    process.stdout.write(`ui-answered ${frame.id ?? ""}\n`);
   } else if (frame.message !== undefined) {
     process.stdout.write(`message ${JSON.stringify(frame.message)}\n`);
   } else if (frame.tool !== undefined) {

@@ -17,7 +17,7 @@ pr	title	branch	worktree	complexity	time_min	depends_on	parallel_group	scope	com
 16	lane-compact-archive	pr/16-lane-compact-archive	.worktrees/pr-16	2	12	07,24	W7	auto-trigger on window reserve via pi shouldCompact + summary entry + archived pagination keeps table bounded	100%	✅ merged (alarm-driven, manual same path, extractive summary, proof green)
 18	sdk-createPiCf	pr/18-sdk-createPiCf	.worktrees/pr-18	3	18	14,11	W9	createPiCf DO factory Workspace plus env plus harness + minimal-agent example	100%	✅ merged (modules moved to pi-cf, foreign host proven, stub only)
 19	inline-extensions	pr/19-inline-extensions	.worktrees/pr-19	3	18	18	W10	ExtensionFactory inline path registerTool registerCommand hooks sendMessage appendEntry + sample ext	100%	✅ merged (registry + sample + 3 hooks, moved-import fix, battery green)
-20	ext-wire-frames	pr/20-ext-wire-frames	.worktrees/pr-20	2	12	19,10	W11	get_commands + extension_ui_request response frames over WS plus CLI print, no viewer	0%	—
+20	ext-wire-frames	pr/20-ext-wire-frames	.worktrees/pr-20	2	12	19,10	W11	get_commands + extension_ui_request response frames over WS plus CLI print, no viewer	100%	✅ merged (truthful empty commands, UI rendezvous, battery green)
 21a	vfs-ext-loader	pr/21a-vfs-ext-loader	.worktrees/pr-21a	3	18	19	W11	trusted eval loader for workspace .pi/extensions TS in-harness, pi jiti trust, no sandbox	0%	—
 21b	vfs-ext-rpc-bridge	pr/21b-vfs-ext-rpc-bridge	.worktrees/pr-21b	3	15	21a	W12	folded into 21a unless the loader proves otherwise — no sandbox means no boundary to bridge	0%	— folded, confirm during 21a
 21c	vfs-ext-manifest	pr/21c-vfs-ext-manifest	.worktrees/pr-21c	2	10	21a	W12	npm subdir package.json pi.extensions manifest form on same loader	0%	—
