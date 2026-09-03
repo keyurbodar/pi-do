@@ -1,5 +1,9 @@
 // stream.ts — hibernation WS handlers for GET /workspaces/:id/sessions/:sid/stream.
 // Live turns over a socket: {prompt, fence, expected} in, {entry} frames out.
+// Extension frames ride the same socket: {get_commands} lists the session's
+// extension commands, {extension_ui_request} raises an extension question and
+// {extension_ui_response} answers one. UI entries persist before emit and
+// optional {fence, expected} enforces exactly like a prompt.
 // Every entry frame is re-read from storage by cursor before emit; the socket
 // is a view, pi_entries is the truth. Unknown sessions and failed fences get
 // an {error, hint} frame followed by a close frame — never a bare drop.
@@ -12,7 +16,8 @@
 // AbortController map per DO incarnation as the abort witness, plus the
 // session turn queue shared with POST /run; dropping both on eviction is safe
 // because the next openRun flips the orphaned run to interrupted.
-import { appendEntry, closeRun, getEntry, openRun, type EntriesSql } from "../../packages/pi-cf/src/entries";
+import { appendEntry, closeRun, getEntry, listEntries, openRun, type EntriesSql } from "../../packages/pi-cf/src/entries";
+import { loadInlineExtensions, type InlineExtensionFactory } from "../../packages/pi-cf/src/extensions";
 import { enforceFence } from "../../packages/pi-cf/src/fence";
 import type { FileStore } from "../../packages/pi-cf/src/vfs-dofs";
 import { buildRuntime, clampThinkingLevel, resolveProviderKey, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
@@ -31,6 +36,7 @@ export interface StreamHost {
   shell: StreamShell;
   runtimeEnv: RuntimeEnv;
   thinking: string | null;
+  extensions: InlineExtensionFactory[];
   workspaceKnown: boolean;
   sessionKnown: boolean;
   readFence(): { fence: string | null; revision: number } | null;
@@ -175,9 +181,12 @@ export async function socketMessage(
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("bad frame");
     msg = parsed as Record<string, unknown>;
   } catch {
-    sock.send({ error: "bad frame", hint: "send JSON like {prompt, fence, expected}, {abort}, or {steer, text}" });
+    sock.send({ error: "bad frame", hint: "send JSON like {prompt, fence, expected}, {abort}, {steer, text}, {get_commands}, or {extension_ui_request/response}" });
     return;
   }
+  const wantCommands = msg["get_commands"] === true || msg["type"] === "get_commands";
+  const wantUiAsk = msg["extension_ui_request"] === true || msg["type"] === "extension_ui_request";
+  const wantUiAnswer = msg["extension_ui_response"] === true || msg["type"] === "extension_ui_response";
   const isAbort = msg["abort"] === true || msg["type"] === "abort";
   const steerOn = msg["steer"] === true || msg["type"] === "steer";
   const promptValue = typeof msg["prompt"] === "string"
@@ -185,6 +194,18 @@ export async function socketMessage(
     : msg["type"] === "prompt" && typeof msg["text"] === "string"
       ? (msg["text"] as string)
       : undefined;
+  if (wantCommands) {
+    await sendCommands(host, sock);
+    return;
+  }
+  if (wantUiAsk) {
+    uiAsk(host, sock, msg);
+    return;
+  }
+  if (wantUiAnswer) {
+    uiAnswer(host, sock, msg);
+    return;
+  }
 
   if (isAbort) {
     const live = host.live.get(host.sid);
@@ -219,7 +240,112 @@ export async function socketMessage(
     await startTurn(host, sock, promptValue, msg["fence"], msg["expected"], hasFence);
     return;
   }
-  sock.send({ error: "unknown frame", hint: "send {prompt, fence, expected}, {abort}, or {steer, text}" });
+  sock.send({ error: "unknown frame", hint: "send {prompt, fence, expected}, {abort}, {steer, text}, {get_commands}, or {extension_ui_request/response}" });
+}
+
+// Extension command listing for get_commands, sourced from the session's own
+// extensions (first-party passes none, so the list is empty until PR21a's VFS
+// loader provides workspace commands). Never a sample registry: the list
+// must match what turns on this session can actually invoke.
+async function sendCommands(host: StreamHost, sock: StreamSocket): Promise<void> {
+  const ext = await loadInlineExtensions(host.extensions);
+  const commands = [...ext.commands.values()].map((c) => ({ name: c.name, description: c.description ?? "" }));
+  sock.send({ commands });
+}
+
+// Optional {fence, expected} on UI frames enforces exactly like a prompt:
+// absent means unchecked, present means both required and checked, and a
+// failed check sends the fence body and closes the stale socket.
+function checkUiFence(host: StreamHost, sock: StreamSocket, msg: Record<string, unknown>): boolean {
+  if (!("fence" in msg || "expected" in msg)) return true;
+  const fence = msg["fence"];
+  const expected = msg["expected"];
+  if (typeof fence !== "string" || fence.length === 0 || !Number.isInteger(expected) || typeof expected !== "number") {
+    sock.send({ error: "missing fence", hint: "retry the frame with both {fence, expected}, or omit both" });
+    return false;
+  }
+  const checked = enforceFence(host.readFence(), fence, expected);
+  if ("status" in checked) {
+    sock.send(checked.body);
+    sock.close(checked.status === 403 ? CLOSE_FENCED : CLOSE_CONFLICT, checked.body.hint);
+    return false;
+  }
+  return true;
+}
+
+// True when an extension_ui_request entry with this id has no later
+// extension_ui_response entry with the same id. Pending-ness is read from
+// storage on every answer, so an eviction eats no correctness state.
+function hasPendingUiRequest(sql: EntriesSql, sid: string, id: string): boolean {
+  const pending = new Set<string>();
+  let after = 0;
+  for (;;) {
+    const page = listEntries(sql, sid, after, 1000);
+    if (page.length === 0) break;
+    for (const entry of page) {
+      after = entry.cursor;
+      let body: unknown;
+      try {
+        body = JSON.parse(entry.body);
+      } catch {
+        continue;
+      }
+      if (body === null || typeof body !== "object" || !("id" in body)) continue;
+      const got = (body as Record<string, unknown>)["id"];
+      if (typeof got !== "string") continue;
+      if (entry.type === "extension_ui_request") pending.add(got);
+      else if (entry.type === "extension_ui_response") pending.delete(got);
+    }
+    if (page.length < 1000) break;
+  }
+  return pending.has(id);
+}
+
+// An extension tool asks: persist the question before emitting, then send
+// the render frame the client answers. The id is client-chosen (or assigned)
+// so scripted drivers round-trip without a turn in flight.
+function uiAsk(host: StreamHost, sock: StreamSocket, msg: Record<string, unknown>): void {
+  const question = msg["question"];
+  if (typeof question !== "string" || question.length === 0) {
+    sock.send({ error: "missing ui question", hint: "retry as {extension_ui_request: true, question, id?} with a non-empty question" });
+    return;
+  }
+  let id = msg["id"];
+  if (id === undefined) id = crypto.randomUUID();
+  if (typeof id !== "string" || id.length === 0) {
+    sock.send({ error: "bad ui id", hint: "retry with a non-empty string id, or omit id for an assigned one" });
+    return;
+  }
+  if (!checkUiFence(host, sock, msg)) return;
+  const cursor = appendEntry(host.sql, host.sid, "extension_ui_request", { id, question });
+  const row = getEntry(host.sql, host.sid, cursor);
+  if (row !== null) sock.send({ entry: row });
+  sock.send({ extension_ui_request: true, id, question });
+}
+
+// The client answers: match against a pending request, persist the answer
+// before emitting, then ack so the turn can resume. Unknown ids get a hint,
+// never a silent drop.
+function uiAnswer(host: StreamHost, sock: StreamSocket, msg: Record<string, unknown>): void {
+  const id = msg["id"];
+  if (typeof id !== "string" || id.length === 0) {
+    sock.send({ error: "missing ui id", hint: "retry as {extension_ui_response: true, id, response} with the pending request id" });
+    return;
+  }
+  const response = msg["response"];
+  if (typeof response !== "string") {
+    sock.send({ error: "missing ui response", hint: "retry with a string response answering the pending request" });
+    return;
+  }
+  if (!checkUiFence(host, sock, msg)) return;
+  if (!hasPendingUiRequest(host.sql, host.sid, id)) {
+    sock.send({ error: "unknown ui request", hint: "answer a pending extension_ui_request id; answered or unknown ids cannot resume" });
+    return;
+  }
+  const cursor = appendEntry(host.sql, host.sid, "extension_ui_response", { id, response });
+  const row = getEntry(host.sql, host.sid, cursor);
+  if (row !== null) sock.send({ entry: row });
+  sock.send({ answered: true, id });
 }
 
 async function startTurn(
