@@ -1,6 +1,12 @@
 name = "pi-do"
 main = "src/index.ts"
 compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[services]]
+binding = "SHELL_WORKER"
+service = "pi-do"
+entrypoint = "ShellWorker"
 
 [[durable_objects.bindings]]
 name = "WORKSPACE_DO"

@@ -1,9 +1,21 @@
 import { WorkspaceDO } from "./workspace-do";
+import { EXEC_TIMEOUT_MS, ShellWorker } from "./shell-worker";
 
-export { WorkspaceDO };
+export { WorkspaceDO, ShellWorker };
+
+interface ShellWorkerEntrypoint {
+  exec(input: {
+    command: string;
+    cwd?: string;
+    env?: Record<string, string>;
+  }): Promise<{ stdout: string; stderr: string; exit: number; timedOut: boolean }>;
+}
 
 interface Env {
   WORKSPACE_DO: DurableObjectNamespace;
+  // Service binding pinned to the ShellWorker entrypoint
+  // (wrangler.toml [[services]] entrypoint = "ShellWorker").
+  SHELL_WORKER: ShellWorkerEntrypoint;
 }
 
 export default {
@@ -43,6 +55,73 @@ export default {
       return await env.WORKSPACE_DO.get(
         env.WORKSPACE_DO.idFromName(workspaceId),
       ).fetch(inner.toString(), init as RequestInit);
+    }
+
+    // POST /workspaces/:id/exec → one-off shell via the ShellWorker entrypoint
+    if (
+      request.method === "POST" &&
+      parts.length === 3 &&
+      parts[0] === "workspaces" &&
+      parts[2] === "exec"
+    ) {
+      const workspaceId = parts[1];
+      const probe = await env.WORKSPACE_DO.get(
+        env.WORKSPACE_DO.idFromName(workspaceId),
+      ).fetch(`http://do/exists?ws=${encodeURIComponent(workspaceId)}`);
+      if (probe.status === 404) {
+        return Response.json(
+          {
+            error: "unknown workspace",
+            hint: "create one with POST /workspaces first",
+          },
+          { status: 404 },
+        );
+      }
+      let body: { command?: unknown; cwd?: unknown; env?: unknown };
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        return Response.json(
+          {
+            error: "missing command",
+            hint: 'retry as POST /workspaces/:id/exec with JSON {"command": "echo hi"}',
+          },
+          { status: 400 },
+        );
+      }
+      if (typeof body?.command !== "string" || body.command.length === 0) {
+        return Response.json(
+          {
+            error: "missing command",
+            hint: 'retry as POST /workspaces/:id/exec with JSON {"command": "echo hi"}',
+          },
+          { status: 400 },
+        );
+      }
+      if (body.cwd !== undefined && typeof body.cwd !== "string") {
+        return Response.json(
+          {
+            error: "bad cwd",
+            hint: 'cwd must be a string path, e.g. {"command": "pwd", "cwd": "/workspace"}',
+          },
+          { status: 400 },
+        );
+      }
+      const result = await env.SHELL_WORKER.exec({
+        command: body.command,
+        cwd: body.cwd,
+        env: body.env as Record<string, string> | undefined,
+      });
+      if (result.timedOut) {
+        return Response.json(
+          {
+            error: `exec timed out after ${EXEC_TIMEOUT_MS}ms`,
+            hint: "retry with a shorter command; kill support arrives in PR12",
+          },
+          { status: 408 },
+        );
+      }
+      return Response.json({ stdout: result.stdout, stderr: result.stderr, exit: result.exit });
     }
 
     return new Response(
