@@ -1,6 +1,6 @@
-import { createDofsVfs, type FileStore } from "./vfs-dofs";
-import { appendEntry, ensureEntriesSchema, entryHead, listEntries, openRun, recordTurnWithOpen, runInSyncTx, sumResultUsage, withSessionRates } from "./entries";
-import { enforceFence } from "./fence";
+import { createDofsVfs, type FileStore } from "../../packages/pi-cf/src/vfs-dofs";
+import { appendEntry, ensureEntriesSchema, entryHead, listEntries, openRun, recordTurnWithOpen, runInSyncTx, sumResultUsage, withSessionRates } from "../../packages/pi-cf/src/entries";
+import { enforceFence } from "../../packages/pi-cf/src/fence";
 import { acceptStream, readAttachment, socketClosed, socketMessage, wrapSocket, type StreamHost } from "./stream";
 import { createAgentSession } from "../../packages/pi-cf/src/session";
 import { normalizeWorkspacePath } from "../../packages/pi-cf/src/tools";
