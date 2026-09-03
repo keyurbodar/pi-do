@@ -5,9 +5,10 @@
 // and the owner-fence. Same modules as the first-party Worker, so the wire
 // shapes match and the same CLI drives either host.
 //
-// What it is not: no WS stream, no git/exec/model routes, no extensions.
-// Those ride the first-party Worker until a foreign host needs them (PR19+).
+// What it is not: no WS stream, no git/exec/model routes. Extensions ride
+// along as inline factories (PR19); VFS loading and wire frames come later.
 import { createDofsVfs, type FileStore } from "./vfs-dofs.ts";
+import type { InlineExtensionFactory } from "./extensions.ts";
 import {
   ensureEntriesSchema,
   entryHead,
@@ -39,6 +40,10 @@ export interface CreatePiCfOptions {
   // to pass a real binding (first-party passes its SHELL_WORKER service).
   shell?: ShellLike;
   apiKey?: string;
+  // Inline extension factories on pi's ExtensionFactory contract (same three
+  // powers: tools, commands, turn hooks). Empty by default; foreign hosts
+  // pass their own, the first-party Worker passes none.
+  extensions?: InlineExtensionFactory[];
 }
 
 // Structural DO state: the real DurableObjectState satisfies this, and the
@@ -79,6 +84,7 @@ export function createPiCf(options: CreatePiCfOptions = {}): new (
   const tools = options.tools;
   const shell = options.shell ?? echoShell;
   const apiKey = options.apiKey;
+  const extensions = options.extensions ?? [];
 
   return class PiCfAgent {
     private state: PiCfState;
@@ -380,7 +386,7 @@ export function createPiCf(options: CreatePiCfOptions = {}): new (
           const sql = this.state.storage.sql;
           const runId = crypto.randomUUID();
           try {
-            const session = createAgentSession({ files: this.files, ws, shell, model, tools, apiKey });
+            const session = createAgentSession({ files: this.files, ws, shell, model, tools, apiKey, extensions });
             const turn = await session.run(prompt);
             recordTurnWithOpen(sql, sid, runId, prompt, turn.toolCalls, turn.result, turn.usage);
             const out = {

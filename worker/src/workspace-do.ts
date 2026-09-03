@@ -1031,6 +1031,8 @@ export class WorkspaceDO implements DurableObject {
           ws,
           shell: this.env.SHELL_WORKER,
           model: turnModel,
+          // First-party host: no inline extensions (PR19 keeps behavior unchanged).
+          extensions: [],
           apiKey: resolveProviderKey(this.env as unknown as RuntimeEnv, respProvider),
         });
         const turn = await session.run(prompt, { thinking: effThinking });
