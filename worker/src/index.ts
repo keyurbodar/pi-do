@@ -97,7 +97,7 @@ export default {
       } as RequestInit);
     }
 
-    // GET /workspaces/:id/sessions/:sid/entries → raw ordered replay slice.
+    // GET /workspaces/:id/sessions/:sid/entries → ordered replay slice (?after=N&limit=L).
     if (
       request.method === "GET" &&
       parts.length === 5 &&
@@ -112,6 +112,26 @@ export default {
       inner.searchParams.set("sid", sessionId);
       const after = url.searchParams.get("after");
       if (after !== null) inner.searchParams.set("after", after);
+      const limit = url.searchParams.get("limit");
+      if (limit !== null) inner.searchParams.set("limit", limit);
+      return await env.WORKSPACE_DO.get(
+        env.WORKSPACE_DO.idFromName(workspaceId),
+      ).fetch(inner.toString(), { method: "GET" } as RequestInit);
+    }
+
+    // GET /workspaces/:id/sessions/:sid/meta → resume cursor.
+    if (
+      request.method === "GET" &&
+      parts.length === 5 &&
+      parts[0] === "workspaces" &&
+      parts[2] === "sessions" &&
+      parts[4] === "meta"
+    ) {
+      const workspaceId = parts[1];
+      const sessionId = parts[3];
+      const inner = new URL("http://do/meta");
+      inner.searchParams.set("ws", workspaceId);
+      inner.searchParams.set("sid", sessionId);
       return await env.WORKSPACE_DO.get(
         env.WORKSPACE_DO.idFromName(workspaceId),
       ).fetch(inner.toString(), { method: "GET" } as RequestInit);
