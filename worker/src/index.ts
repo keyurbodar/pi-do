@@ -22,6 +22,13 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const parts = url.pathname.split("/").filter(Boolean);
+    // Buffer client bodies before forwarding: the DO answers early 4xx on
+    // several routes without reading the body, and a half-forwarded stream
+    // kills the dev server. Bodies here are prompts and small files.
+    const rawBody =
+      request.method === "POST" || request.method === "PUT"
+        ? await request.arrayBuffer()
+        : undefined;
     // GET / → health (doctor probe)
     if (request.method === "GET" && parts.length === 0) {
       return Response.json({ ok: true, service: "pi-do" });
@@ -70,7 +77,7 @@ export default {
         env.WORKSPACE_DO.idFromName(workspaceId),
       ).fetch(
         inner.toString(),
-        { method: "POST", headers: { "content-type": "application/json" }, body: request.body, duplex: "half" } as RequestInit,
+        { method: "POST", headers: { "content-type": "application/json" }, body: rawBody } as RequestInit,
       );
     }
 
@@ -92,8 +99,7 @@ export default {
       ).fetch(inner.toString(), {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: request.body,
-        duplex: "half",
+        body: rawBody,
       } as RequestInit);
     }
 
@@ -115,8 +121,7 @@ export default {
       ).fetch(inner.toString(), {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: request.body,
-        duplex: "half",
+        body: rawBody,
       } as RequestInit);
     }
 
@@ -172,7 +177,7 @@ export default {
       inner.searchParams.set("ws", workspaceId);
       for (const [k, v] of url.searchParams) inner.searchParams.set(k, v);
       const init = request.method === "PUT"
-        ? { method: "PUT", body: request.body, duplex: "half" }
+        ? { method: "PUT", body: rawBody }
         : { method: "GET" };
       return await env.WORKSPACE_DO.get(
         env.WORKSPACE_DO.idFromName(workspaceId),
@@ -201,7 +206,7 @@ export default {
       }
       let body: { command?: unknown; cwd?: unknown; env?: unknown };
       try {
-        body = (await request.json()) as typeof body;
+        body = JSON.parse(new TextDecoder().decode(rawBody)) as typeof body;
       } catch {
         return Response.json(
           {
