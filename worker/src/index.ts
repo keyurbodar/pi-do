@@ -211,6 +211,44 @@ export default {
       } as RequestInit);
     }
 
+    // POST /workspaces/:id/sessions/:sid/compact → manual compaction (same path as the alarm).
+    if (
+      request.method === "POST" &&
+      parts.length === 5 &&
+      parts[0] === "workspaces" &&
+      parts[2] === "sessions" &&
+      parts[4] === "compact"
+    ) {
+      const workspaceId = parts[1];
+      const sessionId = parts[3];
+      const inner = new URL("http://do/compact");
+      inner.searchParams.set("ws", workspaceId);
+      inner.searchParams.set("sid", sessionId);
+      return await env.WORKSPACE_DO.get(
+        env.WORKSPACE_DO.idFromName(workspaceId),
+      ).fetch(inner.toString(), { method: "POST" } as RequestInit);
+    }
+
+    // GET /workspaces/:id/sessions/:sid/archive → one cold page (?page=N).
+    if (
+      request.method === "GET" &&
+      parts.length === 5 &&
+      parts[0] === "workspaces" &&
+      parts[2] === "sessions" &&
+      parts[4] === "archive"
+    ) {
+      const workspaceId = parts[1];
+      const sessionId = parts[3];
+      const inner = new URL("http://do/archive");
+      inner.searchParams.set("ws", workspaceId);
+      inner.searchParams.set("sid", sessionId);
+      const page = url.searchParams.get("page");
+      if (page !== null) inner.searchParams.set("page", page);
+      return await env.WORKSPACE_DO.get(
+        env.WORKSPACE_DO.idFromName(workspaceId),
+      ).fetch(inner.toString(), { method: "GET" } as RequestInit);
+    }
+
     // GET /workspaces/:id/sessions/:sid/entries → ordered replay slice (?after=N&limit=L).
     if (
       request.method === "GET" &&
