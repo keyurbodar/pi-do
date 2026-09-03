@@ -12,7 +12,7 @@ interface ShellWorkerEntrypoint {
     sid?: string;
   }): Promise<{ stdout: string; stderr: string; exit: number; timedOut: boolean; killed: boolean }>;
   kill(input: { sid: string }): Promise<{ killed: boolean }>;
-  dispose(input: { sid: string }): Promise<{ disposed: true }>;
+  dispose(input: { sid: string }): Promise<{ disposed: true; stdoutBytes: number; stderrBytes: number }>;
 }
 
 interface Env {
@@ -211,6 +211,44 @@ export default {
       } as RequestInit);
     }
 
+    // POST /workspaces/:id/sessions/:sid/compact → manual compaction (same path as the alarm).
+    if (
+      request.method === "POST" &&
+      parts.length === 5 &&
+      parts[0] === "workspaces" &&
+      parts[2] === "sessions" &&
+      parts[4] === "compact"
+    ) {
+      const workspaceId = parts[1];
+      const sessionId = parts[3];
+      const inner = new URL("http://do/compact");
+      inner.searchParams.set("ws", workspaceId);
+      inner.searchParams.set("sid", sessionId);
+      return await env.WORKSPACE_DO.get(
+        env.WORKSPACE_DO.idFromName(workspaceId),
+      ).fetch(inner.toString(), { method: "POST" } as RequestInit);
+    }
+
+    // GET /workspaces/:id/sessions/:sid/archive → one cold page (?page=N).
+    if (
+      request.method === "GET" &&
+      parts.length === 5 &&
+      parts[0] === "workspaces" &&
+      parts[2] === "sessions" &&
+      parts[4] === "archive"
+    ) {
+      const workspaceId = parts[1];
+      const sessionId = parts[3];
+      const inner = new URL("http://do/archive");
+      inner.searchParams.set("ws", workspaceId);
+      inner.searchParams.set("sid", sessionId);
+      const page = url.searchParams.get("page");
+      if (page !== null) inner.searchParams.set("page", page);
+      return await env.WORKSPACE_DO.get(
+        env.WORKSPACE_DO.idFromName(workspaceId),
+      ).fetch(inner.toString(), { method: "GET" } as RequestInit);
+    }
+
     // GET /workspaces/:id/sessions/:sid/entries → ordered replay slice (?after=N&limit=L).
     if (
       request.method === "GET" &&
@@ -352,6 +390,24 @@ export default {
             { status: 409 },
           );
         }
+        if (message.startsWith("exec sessions full")) {
+          return Response.json(
+            {
+              error: message,
+              hint: "drop an idle session via POST /workspaces/:id/exec/dispose, then retry",
+            },
+            { status: 429 },
+          );
+        }
+        if (message.startsWith("exec cwd escapes")) {
+          return Response.json(
+            {
+              error: message,
+              hint: "stay under /workspace, e.g. {\"command\": \"pwd\", \"cwd\": \"/workspace\"}",
+            },
+            { status: 400 },
+          );
+        }
         throw e;
       }
       if (result.killed) {
@@ -478,7 +534,7 @@ export default {
         );
       }
       const outcome = await env.SHELL_WORKER.dispose({ sid: body.sid });
-      return Response.json({ disposed: outcome.disposed });
+      return Response.json({ disposed: outcome.disposed, stdoutBytes: outcome.stdoutBytes, stderrBytes: outcome.stderrBytes });
     }
 
     // GET /workspaces/:id/sessions/:sid/stream → WS upgrade for live turns.

@@ -24,6 +24,8 @@ commands:
   models                        list catalog models (GET /models)
   settings                      workspace default model triple (PUT|GET /workspaces/:id/settings)
   entries                       raw replay slice (GET /workspaces/:id/sessions/:sid/entries)
+  compact                       summarize plus archive the live table (POST /workspaces/:id/sessions/:sid/compact)
+  archive                       re-read one cold page (GET /workspaces/:id/sessions/:sid/archive)
   stream                        live turns over WS (GET /workspaces/:id/sessions/:sid/stream)
   meta                          resume cursor (GET /workspaces/:id/sessions/:sid/meta)
 
@@ -426,6 +428,44 @@ exit codes:
 example:
   pi-do meta --ws <id> --sid <sid>
 `;
+const COMPACT_HELP = `pi-do compact — summarize old entries and archive the originals
+
+usage:
+  pi-do compact --ws WS --sid SID [--base URL] [--json]
+
+behavior:
+  POSTs /workspaces/:id/sessions/:sid/compact. Runs the same compaction the
+  alarm runs: old entries move to paginated cold storage, one compaction
+  summary entry plus the live tail stay in the table. Without --json stdout
+  is a human line; with --json stdout is the raw server JSON.
+
+exit codes:
+  0  ok
+  1  server-side failure, e.g. unknown workspace/session (error + hint printed)
+  2  usage error
+
+example:
+  pi-do compact --ws <id> --sid <sid>
+`;
+const ARCHIVE_HELP = `pi-do archive — re-read one paginated cold-storage page
+
+usage:
+  pi-do archive --ws WS --sid SID [--page N] [--base URL] [--json]
+
+behavior:
+  GETs /workspaces/:id/sessions/:sid/archive?page=N. Returns the archived
+  entries for that page plus {page, pages, total}. Without --json stdout is
+  one "CURSOR TYPE BODY" line per entry; with --json stdout is the raw
+  server JSON.
+
+exit codes:
+  0  ok
+  1  server-side failure, e.g. unknown workspace/session (error + hint printed)
+  2  usage error
+
+example:
+  pi-do archive --ws <id> --sid <sid> --page 1
+`;
 const STREAM_HELP = `pi-do stream — live turns over a WebSocket
 
 usage:
@@ -476,6 +516,7 @@ function parseArgs(argv) {
     expected: undefined,
     after: undefined,
     limit: undefined,
+    page: undefined,
     path: undefined,
     body: undefined,
     bodyFile: undefined,
@@ -571,6 +612,10 @@ function parseArgs(argv) {
       opts.limit = takeValue("--limit");
     } else if (tok.startsWith("--limit=")) {
       opts.limit = tok.slice("--limit=".length);
+    } else if (tok === "--page") {
+      opts.page = takeValue("--page");
+    } else if (tok.startsWith("--page=")) {
+      opts.page = tok.slice("--page=".length);
     } else if (tok === "--model") {
       opts.model = takeValue("--model");
     } else if (tok.startsWith("--model=")) {
@@ -733,6 +778,8 @@ function helpFor(cmd, sub) {
   if (cmd === "models") return MODELS_HELP;
   if (cmd === "settings") return SETTINGS_HELP;
   if (cmd === "entries") return ENTRIES_HELP;
+  if (cmd === "compact") return COMPACT_HELP;
+  if (cmd === "archive") return ARCHIVE_HELP;
   if (cmd === "meta") return META_HELP;
   if (cmd === "stream") return STREAM_HELP;
   return ROOT_HELP;
@@ -1283,6 +1330,55 @@ async function doMeta(base, json, opts) {
   }
   process.exit(0);
 }
+async function doCompact(base, json, opts) {
+  if (!opts.ws) failUsage(`compact needs --ws WS.`, COMPACT_HELP);
+  if (!opts.sid) failUsage(`compact needs --sid SID.`, COMPACT_HELP);
+  const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/sessions/${encodeURIComponent(opts.sid)}/compact`;
+  let res;
+  try {
+    res = await fetch(url, { method: "POST" });
+  } catch (e) {
+    human(`error: cannot reach server at ${base}`);
+    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
+    if (json) printJson({ error: "cannot reach server", base });
+    process.exit(1);
+  }
+  if (!res.ok) await failFromResponse(res, json);
+  const data = await res.json();
+  if (json) {
+    printJson(data);
+  } else {
+    process.stdout.write(`compacted ${data.compacted} live ${data.live} archived ${data.archived} summary ${data.summaryCursor ?? "null"} pages ${data.pages}\n`);
+  }
+  human(`compacted ${data.compacted} live ${data.live}`);
+  process.exit(0);
+}
+async function doArchive(base, json, opts) {
+  if (!opts.ws) failUsage(`archive needs --ws WS.`, ARCHIVE_HELP);
+  if (!opts.sid) failUsage(`archive needs --sid SID.`, ARCHIVE_HELP);
+  const page = opts.page ?? "1";
+  if (!/^[1-9][0-9]*$/.test(page)) failUsage(`archive needs --page N (a positive integer).`, ARCHIVE_HELP);
+  const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/sessions/${encodeURIComponent(opts.sid)}/archive?page=${encodeURIComponent(page)}`;
+  let res;
+  try {
+    res = await fetch(url);
+  } catch (e) {
+    human(`error: cannot reach server at ${base}`);
+    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
+    if (json) printJson({ error: "cannot reach server", base });
+    process.exit(1);
+  }
+  if (!res.ok) await failFromResponse(res, json);
+  const data = await res.json();
+  const entries = Array.isArray(data.entries) ? data.entries : [];
+  if (json) {
+    printJson(data);
+  } else {
+    for (const e of entries) printEntryPretty(e);
+  }
+  human(`archive page ${data.page}/${data.pages} entries ${entries.length} total ${data.total}`);
+  process.exit(0);
+}
 async function doStream(base, json, opts) {
   if (!opts.ws) failUsage(`stream needs --ws WS.`, STREAM_HELP);
   if (!opts.sid) failUsage(`stream needs --sid SID.`, STREAM_HELP);
@@ -1473,6 +1569,12 @@ async function main() {
   } else if (cmd === "meta") {
     if (sub !== undefined || extra.length > 0) failUsage(`meta takes no subcommand.`, META_HELP);
     await doMeta(opts.base, opts.json, opts);
+  } else if (cmd === "compact") {
+    if (sub !== undefined || extra.length > 0) failUsage(`compact takes no subcommand.`, COMPACT_HELP);
+    await doCompact(opts.base, opts.json, opts);
+  } else if (cmd === "archive") {
+    if (sub !== undefined || extra.length > 0) failUsage(`archive takes no subcommand.`, ARCHIVE_HELP);
+    await doArchive(opts.base, opts.json, opts);
   } else if (cmd === "session") {
     if (sub !== "create" || extra.length > 0) failUsage(`unknown session subcommand '${sub ?? ""}'.`, SESSION_HELP);
     await doSessionCreate(opts.base, opts.json, opts);
