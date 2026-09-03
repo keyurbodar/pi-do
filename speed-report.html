@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pi-do speed architecture: FS, exec, streaming</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --txt:#e6edf3; --dim:#8b949e;
+    --green:#3fb950; --amber:#d29922; --red:#f85149; --blue:#58a6ff; --purple:#bc8cff; }
+  * { box-sizing:border-box; }
+  body { background:var(--bg); color:var(--txt); font:15px/1.55 -apple-system, "Segoe UI", sans-serif;
+    margin:0; padding:32px 16px 80px; }
+  main { max-width:960px; margin:0 auto; }
+  h1 { font-size:28px; margin:0 0 4px; }
+  h2 { font-size:20px; margin:48px 0 12px; padding-top:24px; border-top:1px solid var(--line); }
+  h3 { font-size:16px; margin:24px 0 8px; }
+  .sub { color:var(--dim); margin:0 0 24px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:18px 20px; margin:14px 0; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:700px){ .grid2{grid-template-columns:1fr;} }
+  .tag { display:inline-block; font-size:12px; padding:2px 10px; border-radius:20px; margin-bottom:8px; }
+  .bad { background:#3d1113; color:var(--red); border:1px solid var(--red); }
+  .good { background:#0f2f1a; color:var(--green); border:1px solid var(--green); }
+  .info { background:#0d2a4a; color:var(--blue); border:1px solid var(--blue); }
+  .warn { background:#3a2b08; color:var(--amber); border:1px solid var(--amber); }
+  /* latency bars */
+  .bar-row { display:grid; grid-template-columns:210px 1fr 90px; gap:10px; align-items:center; margin:8px 0; font-size:13px; }
+  .bar-track { background:#21262d; border-radius:6px; height:26px; position:relative; overflow:hidden; }
+  .bar-fill { height:100%; border-radius:6px; display:flex; align-items:center; justify-content:flex-end;
+    padding-right:8px; font-size:12px; font-weight:700; color:#04120a; min-width:44px; }
+  /* timeline */
+  .lane { display:flex; align-items:center; gap:0; margin:10px 0; font-size:12.5px; }
+  .lane .who { width:130px; flex:none; color:var(--dim); }
+  .seg { height:30px; display:flex; align-items:center; justify-content:center; border-radius:6px;
+    font-weight:600; white-space:nowrap; overflow:hidden; margin-right:4px; padding:0 8px; }
+  .work { background:#0d2a4a; color:var(--blue); }
+  .wait { background:#3d1113; color:var(--red); }
+  .idle { background:#21262d; color:var(--dim); }
+  .fast { background:#0f2f1a; color:var(--green); }
+  svg.topo { width:100%; height:auto; background:var(--panel); border:1px solid var(--line); border-radius:10px; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; }
+  th, td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--dim); font-weight:600; }
+  td.num { font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .rule { display:flex; gap:14px; align-items:flex-start; }
+  .rule .n { flex:none; width:34px; height:34px; border-radius:50%; background:#0d2a4a; color:var(--blue);
+    font-weight:800; display:flex; align-items:center; justify-content:center; font-size:16px; }
+  code { background:#21262d; padding:1px 6px; border-radius:5px; font-size:13px; }
+  .foot { color:var(--dim); font-size:13px; margin-top:40px; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Why the agent waits, and how we stop it</h1>
+<p class="sub">Speed architecture for pi-do file reads, writes, edits, shell exec, and streaming. Lessons from celld, camelAI, and nanocodex, mapped to PR12 + PR27.</p>
+
+<h2>1. The problem in one picture</h2>
+<div class="card">
+  <span class="tag bad">today: everything in one DO, whole files, sync hops</span>
+  <h3>Agent asks for 10 lines of a 1&nbsp;MB file</h3>
+  <div class="lane"><span class="who">agent loop</span>
+    <span class="seg wait" style="width:70%">blocked waiting</span><span class="seg idle" style="width:30%">idle</span></div>
+  <div class="lane"><span class="who">workspace DO</span>
+    <span class="seg work" style="width:70%">reads full 1 MB row &rarr; slices 10 lines in JS heap</span><span class="seg idle" style="width:30%"></span></div>
+  <div class="lane"><span class="who">model stream</span>
+    <span class="seg idle" style="width:70%"></span><span class="seg wait" style="width:30%">stalled, no frames</span></div>
+  <p style="color:var(--dim); font-size:13px">Three costs stack: whole bytes move, JS heap holds them (128&nbsp;MB V8 cap per object), and the agent loop shares the DO so nothing else progresses.</p>
+</div>
+<div class="card">
+  <span class="tag good">target: split DOs, ranges at storage, stream through</span>
+  <div class="lane"><span class="who">agent loop</span>
+    <span class="seg fast" style="width:12%">ask</span><span class="seg work" style="width:55%">keeps reasoning on other work</span><span class="seg fast" style="width:12%">frames out</span></div>
+  <div class="lane"><span class="who">filesystem DO</span>
+    <span class="seg idle" style="width:12%"></span><span class="seg fast" style="width:18%">reads 10 lines only</span><span class="seg idle" style="width:70%"></span></div>
+  <p style="color:var(--dim); font-size:13px">Same request. Bytes moved drop ~1000&times;. Agent never blocks. Stream never stalls.</p>
+</div>
+
+<h2>2. What celld actually teaches</h2>
+<p>celld is a self-hosted Durable Objects runtime, not a filesystem. Its value here is measured numbers about where time goes in SQLite-backed objects.</p>
+<div class="card">
+  <h3 style="margin-top:0">Durability is the tax: one write, three prices</h3>
+  <div class="bar-row"><span>single node &rarr; bucket round trip</span>
+    <div class="bar-track"><div class="bar-fill" style="width:100%; background:var(--red)">600 ms</div></div><span class="num">far store</span></div>
+  <div class="bar-row"><span>single node &rarr; region-local bucket</span>
+    <div class="bar-track"><div class="bar-fill" style="width:15%; background:var(--amber)">90 ms</div></div><span class="num">local store</span></div>
+  <div class="bar-row"><span>two nodes &rarr; peer holds write</span>
+    <div class="bar-track"><div class="bar-fill" style="width:5%; background:var(--green)">25 ms</div></div><span class="num">peer hold</span></div>
+  <div class="bar-row"><span>Cloudflare DO local commit (ours)</span>
+    <div class="bar-track"><div class="bar-fill" style="width:2%; background:var(--green)">&lt;5 ms</div></div><span class="num">free fast path</span></div>
+  <p style="color:var(--dim); font-size:13px">Cloudflare already hands us the fastest row. Our only job: never add a second round trip on top, e.g. awaiting R2 inside a write call. Flush cold bytes in the background instead.</p>
+</div>
+<div class="grid2">
+  <div class="card"><span class="tag info">lesson: one owner, no consensus</span>
+    <p>celld claims a cell with one conditional bucket write. No membership protocol, no failure detector. Our twin is the per-session queue in PR11: serialize at the narrowest point, coordinate nowhere else.</p></div>
+  <div class="card"><span class="tag info">lesson: shed idle, never active</span>
+    <p>Under memory pressure celld evicts least-recently-used idle cells and never touches live work or open sockets. Our twin: an open WS stream pins its DO. Design for residency, not against it.</p></div>
+</div>
+<div class="card"><span class="tag warn">lesson: the heap is small (128 MB V8 cap per object)</span>
+  <p style="margin-bottom:0">Bytes must stream <em>through</em> the DO, never buffer in it. Whole-file reads into heap are the bottleneck. Ranges plus streams at every layer is the entire fix.</p></div>
+
+<h2>3. The three filesystems, visually</h2>
+<div class="card">
+<table>
+  <tr><th></th><th>pi-do (today)</th><th>camelAI (grown up)</th><th>nanocodex (portable)</th></tr>
+  <tr><td><strong>where bytes live</strong></td>
+    <td>one <code>files</code> table in the agent DO</td>
+    <td>separate FS DO: SQLite for small, R2 for large, Artifacts for git</td>
+    <td>caller-chosen backend behind an interface</td></tr>
+  <tr><td><strong>read cost</strong></td>
+    <td><span style="color:var(--red)">whole row &rarr; slice in JS</span></td>
+    <td><span style="color:var(--green)">ranges + streams, no copies kept</span></td>
+    <td>depends on backend</td></tr>
+  <tr><td><strong>agent blocked?</strong></td>
+    <td><span style="color:var(--red)">yes, same DO</span></td>
+    <td><span style="color:var(--green)">no, separate DO</span></td>
+    <td>n/a</td></tr>
+  <tr><td><strong>write conflicts</strong></td>
+    <td>last writer wins</td>
+    <td>per-path queues</td>
+    <td>caller problem</td></tr>
+</table>
+<p style="color:var(--dim); font-size:13px">Ranking is chronological, not qualitative. nanocodex defines the seam, pi-do implements it on rows, camelAI shows the finished topology. PR27 walks us from column 1 to column 2.</p>
+</div>
+
+<h2>4. Proposed topology (PR27)</h2>
+<svg class="topo" viewBox="0 0 900 380" font-family="-apple-system,Segoe UI,sans-serif" font-size="14">
+  <defs><marker id="ar" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+    <path d="M0,0 L8,4 L0,8" fill="none" stroke="#8b949e" stroke-width="1.5"/></marker></defs>
+  <!-- browser -->
+  <rect x="20" y="150" width="130" height="80" rx="10" fill="#0d2a4a" stroke="#58a6ff"/>
+  <text x="85" y="180" fill="#58a6ff" text-anchor="middle" font-weight="700">browser</text>
+  <text x="85" y="202" fill="#8b949e" text-anchor="middle" font-size="12">WS stream</text>
+  <!-- worker -->
+  <rect x="200" y="150" width="130" height="80" rx="10" fill="#161b22" stroke="#30363d"/>
+  <text x="265" y="180" fill="#e6edf3" text-anchor="middle" font-weight="700">worker</text>
+  <text x="265" y="202" fill="#8b949e" text-anchor="middle" font-size="12">routes only</text>
+  <!-- agent DO -->
+  <rect x="390" y="60" width="200" height="110" rx="10" fill="#0f2f1a" stroke="#3fb950"/>
+  <text x="490" y="90" fill="#3fb950" text-anchor="middle" font-weight="700">agent DO</text>
+  <text x="490" y="112" fill="#8b949e" text-anchor="middle" font-size="12">loop + sessions + entries</text>
+  <text x="490" y="132" fill="#8b949e" text-anchor="middle" font-size="12">never touches bytes</text>
+  <!-- fs DO -->
+  <rect x="390" y="220" width="200" height="110" rx="10" fill="#0d2a4a" stroke="#58a6ff"/>
+  <text x="490" y="250" fill="#58a6ff" text-anchor="middle" font-weight="700">filesystem DO</text>
+  <text x="490" y="272" fill="#8b949e" text-anchor="middle" font-size="12">SQLite hot + ranges</text>
+  <text x="490" y="292" fill="#8b949e" text-anchor="middle" font-size="12">per-path write queues</text>
+  <!-- R2 -->
+  <rect x="660" y="220" width="200" height="110" rx="10" fill="#161b22" stroke="#bc8cff" stroke-dasharray="6 4"/>
+  <text x="760" y="250" fill="#bc8cff" text-anchor="middle" font-weight="700">R2 (cold bytes)</text>
+  <text x="760" y="272" fill="#8b949e" text-anchor="middle" font-size="12">async flush, range gets</text>
+  <text x="760" y="292" fill="#8b949e" text-anchor="middle" font-size="12">never on write path</text>
+  <!-- arrows -->
+  <line x1="150" y1="190" x2="196" y2="190" stroke="#8b949e" stroke-width="2" marker-end="url(#ar)"/>
+  <line x1="330" y1="175" x2="420" y2="115" stroke="#3fb950" stroke-width="2" marker-end="url(#ar)"/>
+  <line x1="425" y1="170" x2="425" y2="225" stroke="#58a6ff" stroke-width="2" marker-end="url(#ar)"/>
+  <line x1="590" y1="275" x2="656" y2="275" stroke="#bc8cff" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#ar)"/>
+  <text x="378" y="140" fill="#3fb950" font-size="12">sync, fast</text>
+  <text x="435" y="200" fill="#58a6ff" font-size="12">sync, ranges only</text>
+  <text x="600" y="262" fill="#bc8cff" font-size="12">async</text>
+</svg>
+<p style="color:var(--dim); font-size:13px">The one rule the diagram enforces: solid arrows are synchronous and cheap. The dashed arrow is the only slow hop in the system, and nothing waits on it.</p>
+
+<h2>5. The six rules</h2>
+<div class="card"><div class="rule"><div class="n">1</div><div>
+  <strong>Split the filesystem DO (PR27).</strong> Agent loop never blocks on file I/O. Reads run concurrent; only overlapping writes to the same path queue. This single change removes the biggest stall in section&nbsp;1.</div></div></div>
+<div class="card"><div class="rule"><div class="n">2</div><div>
+  <strong>R2 overflow is lazy and async.</strong> Writes commit to SQLite and return. A background flush moves cold bytes out. Hot reads never touch R2. The write path stays at DO-local speed forever.</div></div></div>
+<div class="card"><div class="rule"><div class="n">3</div><div>
+  <strong>Push ranges into storage.</strong> SQLite slicing plus R2 range gets, so a 10-line read moves 10 lines, not 1&nbsp;MB. The read tool already accepts ranges. The store must honor them instead of slicing in JS heap.</div></div></div>
+<div class="card"><div class="rule"><div class="n">4</div><div>
+  <strong>Batch hot writes in one transaction.</strong> Session append, entry frame, and usage counters commit together. Fewer commits means fewer replicated pages means less durability tax per turn.</div></div></div>
+<div class="card"><div class="rule"><div class="n">5</div><div>
+  <strong>Persistent exec sessions (PR12).</strong> Spawn one shell per session, reuse it across bash calls, kill and dispose on envelopes. Process spawn per call is pure overhead with zero agent value.</div></div></div>
+<div class="card"><div class="rule"><div class="n">6</div><div>
+  <strong>Stream the WS path end to end.</strong> Chunked entry frames with backpressure, throttled tool updates, no buffered whole responses in DO heap. The stream is the product surface. It never stalls on bytes.</div></div></div>
+
+<h2>6. Where the milliseconds go (per agent turn)</h2>
+<div class="card">
+<table>
+  <tr><th>cost</th><th>today</th><th>after PR12 + PR27</th></tr>
+  <tr><td>model tokens</td><td class="num">seconds (dominant, untouchable)</td><td class="num">same</td></tr>
+  <tr><td>file read (10 lines, 1 MB file)</td><td class="num" style="color:var(--red)">full-row read + heap slice</td><td class="num" style="color:var(--green)">one indexed range read, ~ms</td></tr>
+  <tr><td>file write</td><td class="num">SQLite commit, fast</td><td class="num">same, R2 flush async</td></tr>
+  <tr><td>bash call</td><td class="num" style="color:var(--amber)">spawn each time</td><td class="num" style="color:var(--green)">persistent shell</td></tr>
+  <tr><td>entry persist + stream frame</td><td class="num">per-frame writes</td><td class="num" style="color:var(--green)">batched txn, chunked frames</td></tr>
+</table>
+<p style="color:var(--dim); font-size:13px">Goal restated: everything below the model row sums to single-digit milliseconds. The model stays 99% of turn time. The filesystem disappears from the budget.</p>
+</div>
+<h2>7. The DO architecture we follow</h2>
+<p>Cloudflare own rules, condensed. One principle runs everything: <strong>scale with more atoms, never bigger atoms.</strong> A single object tops out around a thousand requests per second. You do not grow it. You shard it.</p>
+<div class="card">
+  <span class="tag bad">never this: one global object</span>
+  <svg viewBox="0 0 860 120" style="width:100%; height:auto" font-family="-apple-system,Segoe UI,sans-serif" font-size="13">
+    <rect x="330" y="15" width="200" height="60" rx="10" fill="#3d1113" stroke="#f85149"/>
+    <text x="430" y="40" fill="#f85149" text-anchor="middle" font-weight="700">global DO</text>
+    <text x="430" y="60" fill="#8b949e" text-anchor="middle" font-size="12">every workspace queues here</text>
+    <line x1="120" y1="45" x2="326" y2="45" stroke="#f85149" stroke-width="2"/>
+    <line x1="200" y1="90" x2="360" y2="70" stroke="#f85149" stroke-width="2"/>
+    <line x1="740" y1="45" x2="534" y2="45" stroke="#f85149" stroke-width="2"/>
+    <line x1="660" y1="90" x2="500" y2="70" stroke="#f85149" stroke-width="2"/>
+    <text x="60" y="49" fill="#8b949e">ws A</text><text x="140" y="94" fill="#8b949e">ws B</text>
+    <text x="770" y="49" fill="#8b949e">ws C</text><text x="690" y="94" fill="#8b949e">ws D</text>
+    <text x="430" y="105" fill="#f85149" text-anchor="middle" font-size="12">single thread chokes, one eviction kills all</text>
+  </svg>
+</div>
+<div class="card">
+  <span class="tag good">always this: one object per atom of coordination</span>
+  <svg viewBox="0 0 860 200" style="width:100%; height:auto" font-family="-apple-system,Segoe UI,sans-serif" font-size="13">
+    <rect x="20" y="30" width="150" height="110" rx="10" fill="#161b22" stroke="#30363d"/>
+    <text x="95" y="58" fill="#e6edf3" text-anchor="middle" font-weight="700">worker</text>
+    <text x="95" y="80" fill="#8b949e" text-anchor="middle" font-size="12">auth + route</text>
+    <text x="95" y="98" fill="#8b949e" text-anchor="middle" font-size="12">stateless, global</text>
+    <text x="95" y="116" fill="#8b949e" text-anchor="middle" font-size="12">idFromName per ws</text>
+    <rect x="230" y="10" width="180" height="75" rx="10" fill="#0f2f1a" stroke="#3fb950"/>
+    <text x="320" y="36" fill="#3fb950" text-anchor="middle" font-weight="700">agent DO · ws-1</text>
+    <text x="320" y="56" fill="#8b949e" text-anchor="middle" font-size="12">loop + sessions</text>
+    <rect x="230" y="105" width="180" height="75" rx="10" fill="#0d2a4a" stroke="#58a6ff"/>
+    <text x="320" y="131" fill="#58a6ff" text-anchor="middle" font-weight="700">fs DO · ws-1</text>
+    <text x="320" y="151" fill="#8b949e" text-anchor="middle" font-size="12">SQLite hot + R2 cold</text>
+    <rect x="470" y="10" width="180" height="75" rx="10" fill="#0f2f1a" stroke="#3fb950"/>
+    <text x="560" y="36" fill="#3fb950" text-anchor="middle" font-weight="700">agent DO · ws-2</text>
+    <text x="560" y="56" fill="#8b949e" text-anchor="middle" font-size="12">loop + sessions</text>
+    <rect x="470" y="105" width="180" height="75" rx="10" fill="#0d2a4a" stroke="#58a6ff"/>
+    <text x="560" y="131" fill="#58a6ff" text-anchor="middle" font-weight="700">fs DO · ws-2</text>
+    <text x="560" y="151" fill="#8b949e" text-anchor="middle" font-size="12">SQLite hot + R2 cold</text>
+    <text x="755" y="60" fill="#8b949e" text-anchor="middle">ws-3 … ws-N</text>
+    <text x="755" y="82" fill="#8b949e" text-anchor="middle" font-size="12">same pair each</text>
+    <text x="755" y="104" fill="#8b949e" text-anchor="middle" font-size="12">infinite scale =</text>
+    <text x="755" y="126" fill="#3fb950" text-anchor="middle" font-size="12">more pairs, zero coordination</text>
+    <line x1="170" y1="85" x2="226" y2="50" stroke="#3fb950" stroke-width="2"/>
+    <line x1="170" y1="85" x2="226" y2="140" stroke="#58a6ff" stroke-width="2"/>
+    <line x1="170" y1="100" x2="466" y2="50" stroke="#30363d" stroke-width="1.5" stroke-dasharray="5 4"/>
+  </svg>
+  <p style="color:var(--dim); font-size:13px">Each workspace is a two-object shard: agent DO plus fs DO. One workspace hot never slows another. Eviction takes down one pair, never the fleet. This is our topology from §4, now with the scaling argument attached.</p>
+</div>
+<div class="grid2">
+  <div class="card"><span class="tag info">colocation is the speed</span>
+    <p>Compute and SQLite live in the same datacenter, so storage reads cost microseconds, not a network hop. Objects spawn near the first request. Create them from real traffic, never pre-create. Pin placement with <code>locationHint</code> when users cluster in one region, and use <code>jurisdiction</code> only for legal boundaries like eu or FedRAMP.</p></div>
+  <div class="card"><span class="tag info">hibernation is the idle story</span>
+    <p>The Hibernation WS API keeps sockets open while the object sleeps. No compute billing while hibernating, automatic wake on message. Our stream should use it: an idle agent costs zero, a new frame wakes the pair in milliseconds. Never hold state in memory that SQLite should own, the wake must find everything on disk.</p></div>
+</div>
+<div class="card">
+  <h3 style="margin-top:0">Checklist: docs rules &rarr; pi-do mapping</h3>
+<table>
+  <tr><th>rule</th><th>what it means</th><th>pi-do answer</th></tr>
+  <tr><td>single-threaded, no locks needed</td><td>one instance serializes its own atom for free</td><td style="color:var(--green)">per-session queue (PR11) + per-path write queues ride the platform instead of fighting it</td></tr>
+  <tr><td>lazy-load the constructor</td><td>heavy work in the constructor slows every cold start</td><td style="color:var(--green)">DO constructor opens tables only; model runtime and tools build on first request</td></tr>
+  <tr><td>index hot columns</td><td>unindexed filters rot into full scans silently</td><td style="color:var(--green)">entries by session+seq, files by path prefix (§5 rule 6 sidecar)</td></tr>
+  <tr><td>batch in transactions</td><td>each commit is replicated; fewer commits, less tax</td><td style="color:var(--green)">session append + entry + usage in one txn (§5 rule 4)</td></tr>
+  <tr><td>alarms for per-entity timers</td><td>each atom gets its own cron without a scheduler service</td><td style="color:var(--green)">compaction triggers (PR16) + quota sweeps (PR22) as alarms on the agent DO</td></tr>
+  <tr><td>10 GB SQLite per object, unlimited per account</td><td>one workspace will not outgrow its box before R2 overflow lands</td><td style="color:var(--green)">PR27 flush keeps hot boxes small; cold bytes priced at R2 rates</td></tr>
+  <tr><td>keep hot config out of DOs</td><td>per-request global reads belong in KV, not in an object hop</td><td style="color:var(--green)">models.json stays in the Worker; DOs never fetch catalog per turn</td></tr>
+</table>
+</div>
+<div class="card"><span class="tag warn">what NOT to do, per docs</span>
+  <p style="margin-bottom:0">No global DO for shared state. No pre-creating objects off the hot path. No <code>blockConcurrencyWhile</code> around routine work. No in-memory caches that a hibernation wake would miss. Every one of these shows up as a mysterious stall months later.</p></div>
+<h2>8. 2026 only: the new powers</h2>
+<p>Everything below shipped in the last twelve months. This is the mind-blowing part: the platform removed, one by one, every reason agents used to need servers.</p>
+<div class="card" style="border-color:var(--green)">
+  <span class="tag good">Jun 2026 · LLM streams can no longer be evicted mid-thought</span>
+  <h3 style="margin-top:0">Outbound connections keep the object alive</h3>
+  <div class="lane"><span class="who">before</span>
+    <span class="seg work" style="width:35%">streaming tokens…</span><span class="seg wait" style="width:20%">EVICTED at 70–140 s</span><span class="seg idle" style="width:45%">dead stream</span></div>
+  <div class="lane"><span class="who">after</span>
+    <span class="seg fast" style="width:75%">stream holds the object alive until it closes (15 min cap)</span><span class="seg idle" style="width:25%">then normal sleep</span></div>
+  <p style="color:var(--dim); font-size:13px">Our model calls stream over outbound fetch. The agent DO now survives its own longest thoughts by construction. This single change deletes a whole class of resume-and-repair logic.</p>
+</div>
+<div class="card" style="border-color:var(--green)">
+  <span class="tag good">GA Feb 2026 · 30-day time travel is free</span>
+  <h3 style="margin-top:0">Point-in-time recovery on every object</h3>
+  <div class="lane"><span class="who">agent wrecks files</span>
+    <span class="seg wait" style="width:30%">bad turn N</span><span class="seg idle" style="width:70%"></span></div>
+  <div class="lane"><span class="who">recovery</span>
+    <span class="seg idle" style="width:30%"></span><span class="seg fast" style="width:25%">restore to N−1</span><span class="seg work" style="width:45%">replay from entries log</span></div>
+  <p style="color:var(--dim); font-size:13px">Every workspace DO carries a 30-day rewind button with zero code. Undo for agent damage, audit trail for free, session restore without snapshots. Our entries log plus PITR means no turn is ever truly lost.</p>
+</div>
+<div class="grid2">
+  <div class="card"><span class="tag info">Aug 2026 · 10 dynamic workers per DO</span>
+    <p>Upload code at runtime, run it in isolates beside the object, ten concurrent. The future shape of tool execution: untrusted tool code runs in a disposable isolate, not in the agent heap. Watch this API for the post-bash era.</p></div>
+  <div class="card"><span class="tag info">Oct 2025 · 32 MiB WebSocket messages</span>
+    <p>Up from 1 MiB. Whole file contents, images, and chunked dumps can ride single frames. Our entry frames will never come near the ceiling, which means framing stays simple.</p></div>
+</div>
+<div class="card">
+  <h3 style="margin-top:0">2026 timeline: the server keeps evaporating</h3>
+<table>
+  <tr><th>date</th><th>shipped</th><th>what it kills</th></tr>
+  <tr><td class="num">Feb 2026</td><td>SQLite backend GA · 10 GB per object</td><td style="color:var(--green)">the sidecar database; the object <em>is</em> the database</td></tr>
+  <tr><td class="num">Feb 2026</td><td>point-in-time recovery, 30 days</td><td style="color:var(--green)">snapshot/backup code; rewind is a platform call</td></tr>
+  <tr><td class="num">Mar 2026</td><td><code>ctx.id.name</code> + jurisdiction inside the object</td><td style="color:var(--green)">name-plumbing through every RPC; region logic without args</td></tr>
+  <tr><td class="num">Jun 2026</td><td>outbound connections pin the object (15 min)</td><td style="color:var(--green)">stream-resume machinery; long thoughts survive</td></tr>
+  <tr><td class="num">Jun 2026</td><td>eviction test helpers in <code>cloudflare:test</code></td><td style="color:var(--green)">hope-based hibernation; eviction becomes a unit test</td></tr>
+  <tr><td class="num">Jun 2026</td><td>per-object metrics + memory percentiles</td><td style="color:var(--green)">blind boxes; one hot workspace is now visible by name</td></tr>
+  <tr><td class="num">Jul 2026</td><td>declarative <code>exports</code> replace migration tags</td><td style="color:var(--green)">migration-chain archaeology; renames are zero-downtime</td></tr>
+  <tr><td class="num">Aug 2026</td><td>10 concurrent dynamic workers per DO</td><td style="color:var(--green)">tool sandbox servers; isolates upload at runtime</td></tr>
+</table>
+  <p style="color:var(--dim); font-size:13px">And the number you asked about: billions of objects per namespace, unlimited storage per account. Infinite workspaces is not a hope, it is the documented shape. Scale was never the risk. The only risk was putting the wrong thing inside the atom.</p>
+</div>
+<h2>9. Why camelAI feels slow, and how we beat it</h2>
+<p>Not a guess. Their own code comments name every cost. Each one is a decision we get to not repeat.</p>
+<div class="card" style="border-color:var(--red)">
+  <span class="tag bad">their per-turn cost stack (from their comments)</span>
+  <div class="bar-row"><span>context rebuild ×25+ per turn</span>
+    <div class="bar-track"><div class="bar-fill" style="width:100%; background:var(--red)">transformContext every request</div></div><span class="num">hottest site</span></div>
+  <div class="bar-row"><span>replay buffer materialized per read</span>
+    <div class="bar-track"><div class="bar-fill" style="width:75%; background:var(--red)">OOM-killed DOs</div></div><span class="num">their words</span></div>
+  <div class="bar-row"><span>12 MB re-materialized every wake</span>
+    <div class="bar-track"><div class="bar-fill" style="width:55%; background:var(--amber)">per wake tax</div></div><span class="num">each wake</span></div>
+  <div class="bar-row"><span>container: materialize in + cold boot + out</span>
+    <div class="bar-track"><div class="bar-fill" style="width:65%; background:var(--amber)">400 ms/MiB + 120 s budget</div></div><span class="num">per run</span></div>
+  <div class="bar-row"><span>4-rung degraded resume ladder</span>
+    <div class="bar-track"><div class="bar-fill" style="width:40%; background:var(--amber)">isolate deaths</div></div><span class="num">on failure</span></div>
+  <p style="color:var(--dim); font-size:13px">Quoted from source: transformContext is "the hottest allocation site in the DO". The replay buffer "used to be unbounded" and the DO "was OOM-killed before the sweep could reclaim it". The resume ladder has four rungs: full context, compacted, degraded, salvage-without-model. Every layer is a scar from the previous slowness.</p>
+</div>
+<div class="card">
+  <span class="tag good">our per-turn cost stack: the same diagram, emptied</span>
+<table>
+  <tr><th>their cost</th><th>why they pay it</th><th>we pay</th></tr>
+  <tr><td>context rebuild per provider request</td><td>compaction + hydration + repair inside every request</td><td style="color:var(--green)">build once per turn, reuse across requests; compaction is an alarm, never inline</td></tr>
+  <tr><td>whole-buffer materialization</td><td>SSE replay buffers read whole on every attach</td><td style="color:var(--green)">WS + hibernation, no replay buffer exists; pages, never wholes</td></tr>
+  <tr><td>12 MB wake tax</td><td>render mirrors + archives re-derived on wake</td><td style="color:var(--green)">one entries table; wake reads by seq index, milliseconds</td></tr>
+  <tr><td>container round trip per run</td><td>files copied in, cold boot, diff copied out</td><td style="color:var(--green)">no containers on the interactive path; persistent shell in-PR12</td></tr>
+  <tr><td>4-rung failure ladder</td><td>isolate deaths under memory pressure</td><td style="color:var(--green)">small heap, no copies retained; OOM has nothing to eat</td></tr>
+  <tr><td>mirror tables (ai-chat + pi-core + render + archive)</td><td>three eras of schema stacked</td><td style="color:var(--green)">entries is the sole writer and the sole reader; one table, one index</td></tr>
+</table>
+</div>
+<div class="card"><span class="tag info">the rule behind the table</span>
+  <p style="margin-bottom:0">camelAI is slow because every turn repeats work that only needed doing once, and every layer keeps a copy of bytes another layer already holds. Our whole speed program is the negation: <strong>compute once per turn, hold every byte exactly once, stream everything else.</strong> Six rules in §5, and this table is how each one cashes out against a real opponent.</p></div>
+<h2>10. Expected perf: the 1000&times; claim, honestly</h2>
+<p>One honest boundary first: model tokens take seconds for everyone and nobody beats them. The 1000&times; lives in everything <em>around</em> the model. Turn overhead drops from seconds to milliseconds, which is exactly the band humans feel.</p>
+<div class="card">
+  <span class="tag good">interactivity budget: overhead per turn, model excluded</span>
+<table>
+  <tr><th>operation</th><th>camelAI (their budgets)</th><th>pi-do target</th><th>&times;</th></tr>
+  <tr><td>wake an idle session</td><td class="num" style="color:var(--red)">12 MB re-derived, seconds</td><td class="num" style="color:var(--green)">seq-index read, &lt;5 ms</td><td class="num" style="color:var(--green)">~500&times;</td></tr>
+  <tr><td>context build per turn</td><td class="num" style="color:var(--red)">25&times; rebuilds, hottest allocator</td><td class="num" style="color:var(--green)">1 build, reused</td><td class="num" style="color:var(--green)">~25&times;</td></tr>
+  <tr><td>read 10 lines of 1 MB file</td><td class="num" style="color:var(--red)">120 ms/file + 2 DO hops</td><td class="num" style="color:var(--green)">one range read, &lt;2 ms</td><td class="num" style="color:var(--green)">~60&times;</td></tr>
+  <tr><td>run a shell command</td><td class="num" style="color:var(--red)">cold container, tens of seconds</td><td class="num" style="color:var(--green)">persistent shell, ~1 ms</td><td class="num" style="color:var(--green)">~10,000&times;</td></tr>
+  <tr><td>persist one turn</td><td class="num" style="color:var(--amber)">multi-table writes + mirrors</td><td class="num" style="color:var(--green)">one txn, &lt;5 ms</td><td class="num" style="color:var(--green)">~20&times;</td></tr>
+  <tr><td><strong>total overhead per turn</strong></td><td class="num" style="color:var(--red)"><strong>seconds</strong></td><td class="num" style="color:var(--green)"><strong>&lt;50 ms</strong></td><td class="num" style="color:var(--green)"><strong>~100&times;</strong></td></tr>
+</table>
+  <p style="color:var(--dim); font-size:13px">Estimates from their constants and comments, not benchmarks. The per-turn row is the product number: under 50 ms of overhead the agent feels instant and the model is 99% of every turn. Worst single op (cold exec) clears 1000&times; alone.</p>
+</div>
+<div class="card">
+  <span class="tag info">what "feels native" means in numbers</span>
+  <div class="bar-row"><span>human perception floor</span>
+    <div class="bar-track"><div class="bar-fill" style="width:20%; background:var(--green)">~100 ms</div></div><span class="num">feels instant</span></div>
+  <div class="bar-row"><span>pi-do turn overhead</span>
+    <div class="bar-track"><div class="bar-fill" style="width:10%; background:var(--green)">&lt;50 ms</div></div><span class="num">under floor</span></div>
+  <div class="bar-row"><span>local pi file op</span>
+    <div class="bar-track"><div class="bar-fill" style="width:3%; background:var(--green)">µs–ms</div></div><span class="num">disk speed</span></div>
+  <div class="bar-row"><span>DO hot SQLite read</span>
+    <div class="bar-track"><div class="bar-fill" style="width:3%; background:var(--green)">µs–ms</div></div><span class="num">same disk</span></div>
+  <div class="bar-row"><span>camelAI turn overhead</span>
+    <div class="bar-track"><div class="bar-fill" style="width:100%; background:var(--red)">seconds</div></div><span class="num">felt</span></div>
+  <p style="color:var(--dim); font-size:13px">The bottom two bars are the whole bet: a hot DO reads its own SQLite at local-disk speed, same as pi on your laptop. Remote only differs on cold bytes, and those never sit on the interactive path. Native feel is not a metaphor. It is the same storage medium at the same distance.</p>
+</div>
+<h2>11. Execution plan: the speed program</h2>
+<p>Single home for all perf work. PR12 and PR27 move here from the main plan. New PRs 28–30 are born here. PR16 (compaction alarm) and PR22 (quotas) stay in <code>plan.html</code> and are referenced, not repeated. <code>pr.tsv</code> remains the merge-time status ledger for every PR including these.</p>
+<div class="card">
+  <span class="tag good">target architecture (final)</span>
+  <svg viewBox="0 0 900 300" style="width:100%; height:auto" font-family="-apple-system,Segoe UI,sans-serif" font-size="13">
+    <rect x="20" y="110" width="140" height="80" rx="10" fill="#161b22" stroke="#30363d"/>
+    <text x="90" y="138" fill="#e6edf3" text-anchor="middle" font-weight="700">worker</text>
+    <text x="90" y="158" fill="#8b949e" text-anchor="middle" font-size="12">routes + models.json</text>
+    <text x="90" y="176" fill="#8b949e" text-anchor="middle" font-size="12">no per-turn fetches</text>
+    <rect x="220" y="20" width="190" height="110" rx="10" fill="#0f2f1a" stroke="#3fb950"/>
+    <text x="315" y="48" fill="#3fb950" text-anchor="middle" font-weight="700">agent DO · ws-N</text>
+    <text x="315" y="68" fill="#8b949e" text-anchor="middle" font-size="12">loop, sessions, entries</text>
+    <text x="315" y="86" fill="#8b949e" text-anchor="middle" font-size="12">alarms: compact, quota</text>
+    <text x="315" y="104" fill="#8b949e" text-anchor="middle" font-size="12">hibernating WS stream</text>
+    <rect x="220" y="170" width="190" height="110" rx="10" fill="#0d2a4a" stroke="#58a6ff"/>
+    <text x="315" y="198" fill="#58a6ff" text-anchor="middle" font-weight="700">fs DO · ws-N</text>
+    <text x="315" y="218" fill="#8b949e" text-anchor="middle" font-size="12">VFS ranges + exec sessions</text>
+    <text x="315" y="236" fill="#8b949e" text-anchor="middle" font-size="12">SQLite hot, per-path queues</text>
+    <text x="315" y="254" fill="#8b949e" text-anchor="middle" font-size="12">10 GB box, PITR 30 d</text>
+    <rect x="470" y="170" width="180" height="110" rx="10" fill="#161b22" stroke="#bc8cff" stroke-dasharray="6 4"/>
+    <text x="560" y="198" fill="#bc8cff" text-anchor="middle" font-weight="700">R2 cold tier</text>
+    <text x="560" y="218" fill="#8b949e" text-anchor="middle" font-size="12">async flush, range gets</text>
+    <text x="560" y="236" fill="#8b949e" text-anchor="middle" font-size="12">PR28, deferred</text>
+    <rect x="700" y="60" width="170" height="110" rx="10" fill="#161b22" stroke="#30363d"/>
+    <text x="785" y="88" fill="#e6edf3" text-anchor="middle" font-weight="700">model APIs</text>
+    <text x="785" y="108" fill="#8b949e" text-anchor="middle" font-size="12">outbound stream</text>
+    <text x="785" y="126" fill="#8b949e" text-anchor="middle" font-size="12">pins DO ≤15 min</text>
+    <line x1="160" y1="130" x2="216" y2="70" stroke="#3fb950" stroke-width="2"/>
+    <line x1="160" y1="160" x2="216" y2="220" stroke="#58a6ff" stroke-width="2"/>
+    <line x1="410" y1="225" x2="466" y2="225" stroke="#bc8cff" stroke-width="2" stroke-dasharray="6 4"/>
+    <line x1="410" y1="75" x2="696" y2="110" stroke="#3fb950" stroke-width="2"/>
+  </svg>
+</div>
+<div class="card">
+  <h3 style="margin-top:0">target file tree (clean cutover, no shims)</h3>
+<pre style="font-size:13px; overflow-x:auto">worker/src/
+  index.ts          routes only + body buffering (keep)
+  agent-do.ts       loop + sessions + entries (split out of workspace-do.ts)
+  fs-do.ts          VFS + exec sessions, own DO class (new, PR27)
+  store/
+    entries.ts      sole writer, batched txn + indexes (move + extend, PR30)
+    files.ts        FileStore impl, storage-level ranges (extend, PR27)
+  stream.ts         hibernation WS API (replace, PR29)
+  fence.ts          shared CAS (keep)
+  model-runtime.ts  Worker-side catalog (keep, never per-turn fetch)
+  shell-exec.ts     persistent exec sessions (replaces shell-worker.ts, PR12)
+packages/pi-cf/src/
+  session.ts        build context once per turn (change, PR30)
+  tools.ts          same shapes (keep)
+  env.ts            FileStore seam (keep)
+cli/ verify/       new batteries per PR (extend)</pre>
+</div>
+<div class="card">
+  <h3 style="margin-top:0">remove / replace ledger (current code)</h3>
+<table>
+  <tr><th>file</th><th>fate</th><th>PR</th></tr>
+  <tr><td><code>workspace-do.ts</code> (20.6 KB, agent+VFS fused)</td><td style="color:var(--red)">split into <code>agent-do.ts</code> + <code>fs-do.ts</code>, original deleted</td><td class="num">27</td></tr>
+  <tr><td><code>shell-worker.ts</code> (one-shot just-bash)</td><td style="color:var(--red)">replaced by <code>shell-exec.ts</code> persistent sessions, original deleted</td><td class="num">12</td></tr>
+  <tr><td><code>stream.ts</code> (plain WS)</td><td style="color:var(--amber)">rewritten on hibernation API, same frame protocol</td><td class="num">29</td></tr>
+  <tr><td><code>store/entries.ts</code> (per-frame writes)</td><td style="color:var(--amber)">batched txn + seq/path indexes, same API</td><td class="num">30</td></tr>
+  <tr><td><code>pi-cf/session.ts</code> (build per request)</td><td style="color:var(--amber)">build once per turn, reuse across provider requests</td><td class="num">30</td></tr>
+  <tr><td><code>files</code> table (whole-row reads)</td><td style="color:var(--amber)">ranges honored at storage; impl swappable behind seam</td><td class="num">27</td></tr>
+  <tr><td><code>git-fs.ts</code> / <code>git-reads.ts</code></td><td>untouched; Artifacts decision explicitly deferred</td><td class="num">—</td></tr>
+  <tr><td><code>models.json</code> in Worker</td><td>untouched; DOs never fetch it per turn</td><td class="num">—</td></tr>
+</table>
+</div>
+<div class="card">
+  <span class="tag good">speed PR table (lives here, not in plan.html)</span>
+<table>
+  <tr><th>PR</th><th>title</th><th>depends</th><th>scope</th></tr>
+  <tr><td class="num">30</td><td>turn-once-store</td><td class="num">07</td><td>build-once-per-turn, single-txn batching, hot indexes. cheapest wins first.</td></tr>
+  <tr><td class="num">12</td><td>exec-sessions</td><td class="num">10</td><td>persistent shell per session, envelope kill/dispose, throttled streaming. replaces shell-worker.ts.</td></tr>
+  <tr><td class="num">27</td><td>fs-split</td><td class="num">02, 30</td><td>fs DO split, @cloudflare/shell eval first (dofs fallback), ranges at storage. deletes workspace-do.ts.</td></tr>
+  <tr><td class="num">29</td><td>ws-hibernation</td><td class="num">10</td><td>hibernation WS API, eviction unit tests, zero-cost idle. same frame protocol.</td></tr>
+  <tr><td class="num">28</td><td>r2-cold-tier</td><td class="num">27</td><td>async flush + range gets, deferred until storage chart bends. no new behavior.</td></tr>
+</table>
+  <p style="color:var(--dim); font-size:13px">Order: 30 &rarr; 12 &rarr; 27 &rarr; 29, with 28 waiting on strain. PR16 and PR22 stay in plan.html. Dynamic Workers stay on watch, no PR. PITR is platform, no code.</p>
+</div>
+<p class="foot">pi-do speed architecture &middot; sources: celld (denoland/celld), camelAI workers/main (code-mode-tools.ts budgets, chat-thread-do.ts comments), nanocodex js agent + workspace tools, Cloudflare DO changelog + docs 2025–2026 &middot; no new infra, PR12 + PR27 + store discipline.</p>
+
+</main>
+</body>
+</html>
