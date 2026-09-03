@@ -1,5 +1,5 @@
 import { createDofsVfs, type FileStore } from "./vfs-dofs";
-import { appendEntry, ensureEntriesSchema, entryHead, listEntries, openRun, recordTurnWithOpen, runInSyncTx } from "./entries";
+import { appendEntry, ensureEntriesSchema, entryHead, listEntries, openRun, recordTurnWithOpen, runInSyncTx, sumResultUsage, withSessionRates } from "./entries";
 import { enforceFence } from "./fence";
 import { acceptStream, readAttachment, socketClosed, socketMessage, wrapSocket, type StreamHost } from "./stream";
 import { createAgentSession } from "../../packages/pi-cf/src/session";
@@ -136,6 +136,19 @@ export class WorkspaceDO implements DurableObject {
       id: typeof raw.modelId === "string" ? raw.modelId : null,
       thinking: typeof raw.thinkingLevel === "string" ? raw.thinkingLevel : null,
     };
+  }
+
+  // resolveCatalogModel throws on unknown ids; meta reports null instead of guessing.
+  private sessionContextWindow(triple: { provider: string | null; id: string | null } | null): number | null {
+    try {
+      if (triple?.provider && triple?.id) {
+        const window = resolveCatalogModel(triple.provider, triple.id).contextWindow;
+        if (typeof window === "number" && window > 0) return window;
+      }
+    } catch {
+      return null;
+    }
+    return null;
   }
 
   private readSettings(ws: string): { provider: string | null; id: string | null; thinking: string | null } {
@@ -1019,13 +1032,14 @@ export class WorkspaceDO implements DurableObject {
           apiKey: resolveProviderKey(this.env as unknown as RuntimeEnv, respProvider),
         });
         const turn = await session.run(prompt, { thinking: effThinking });
-        recordTurnWithOpen(sql, sid, runId, prompt, turn.toolCalls, turn.result);
+        recordTurnWithOpen(sql, sid, runId, prompt, turn.toolCalls, turn.result, turn.usage);
         const runtimeOut = { via: turn.via, model: turn.model, provider: respProvider, thinking: effThinking };
         if (rotated !== null) {
           return json({
             result: turn.result,
             toolCalls: turn.toolCalls,
             runtime: runtimeOut,
+            usage: turn.usage,
             fence: rotated.fence,
             revision: rotated.revision,
           });
@@ -1034,6 +1048,7 @@ export class WorkspaceDO implements DurableObject {
           result: turn.result,
           toolCalls: turn.toolCalls,
           runtime: runtimeOut,
+          usage: turn.usage,
         });
       } catch (e) {
         // The open now commits with the turn, so a failed turn re-opens here
@@ -1167,7 +1182,9 @@ export class WorkspaceDO implements DurableObject {
         }
       }
       const triple = this.readTriple(sid);
-      return json({ sid, ws, created, head, count, openRun, model: { provider: triple?.provider ?? null, id: triple?.id ?? null }, thinking: triple?.thinking ?? null });
+      const sums = sumResultUsage(sql, sid);
+      const usage = withSessionRates(sums, this.sessionContextWindow(triple));
+      return json({ sid, ws, created, head, count, openRun, model: { provider: triple?.provider ?? null, id: triple?.id ?? null }, thinking: triple?.thinking ?? null, usage });
     }
 
     return json(
