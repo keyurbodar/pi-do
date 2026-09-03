@@ -232,40 +232,41 @@ WS /workspaces/:id/sessions/:sid/stream
     <table style="font-size:12px">
       <tr><th>PR</th><th>title</th><th>branch · worktree</th><th>cx</th><th>min</th><th>depends</th><th>wave</th><th>lane</th><th>scope</th><th>done</th><th>note</th></tr>
       <tr><td>01</td><td>workspace-do-scope</td><td><code>pr/01-workspace-do-scope</code><br><span class="dim">.worktrees/pr-01</span></td><td>2</td><td>15</td><td>—</td><td>W1</td><td>ship · v1</td><td>DO per workspaceId + pi_entries/pi_owners schema + POST /workspaces round-trip</td><td>100%</td><td>✅ shipped + verified (round-trip PASS)</td></tr>
-      <tr><td>02</td><td>vfs-files-api</td><td><code>pr/02-vfs-files-api</code><br><span class="dim">.worktrees/pr-02</span></td><td>2</td><td>15</td><td>01</td><td>W2</td><td>ship · v1</td><td>fs read/stat/readdir via GET /files, write/mkdir via PUT /files</td><td>100%</td><td>✅ shipped + verified (direct SQLite; dofs swap later)</td></tr>
+      <tr><td>02</td><td>vfs-files-api</td><td><code>pr/02-vfs-files-api</code><br><span class="dim">.worktrees/pr-02</span></td><td>2</td><td>15</td><td>01</td><td>W2</td><td>ship · v1</td><td>fs read/stat/readdir via GET /files, write/mkdir via PUT /files</td><td>100%</td><td>✅ merged (direct SQLite; split lands in speed §11 PR27)</td></tr>
       <tr><td>03</td><td>env-fs-adapter</td><td><code>pr/03-env-fs-adapter</code><br><span class="dim">.worktrees/pr-03</span></td><td>2</td><td>12</td><td>02</td><td>W3</td><td>ship · v1</td><td>ComputerExecutionEnv FileSystem → workspace.fs only</td><td>100%</td><td>✅ merged (tsc x2, verify-env, roundtrip PASS)</td></tr>
-      <tr><td>04</td><td>shell-justbash-exec</td><td><code>pr/04-shell-justbash-exec</code><br><span class="dim">.worktrees/pr-04</span></td><td>3</td><td>18</td><td>01</td><td>W2</td><td>ship · v1</td><td>worker-shell just-bash sync:none + POST /exec one-off shell</td><td>100%</td><td>✅ merged (exec, timeout 10.1s, no-entries, regression PASS)</td></tr>
+      <tr><td>04</td><td>shell-justbash-exec</td><td><code>pr/04-shell-justbash-exec</code><br><span class="dim">.worktrees/pr-04</span></td><td>3</td><td>18</td><td>01</td><td>W2</td><td>ship · v1</td><td>worker-shell just-bash sync:none + POST /exec one-off shell</td><td>100%</td><td>✅ merged (one-shot; persistent sessions in speed §11 PR12)</td></tr>
       <tr><td>05</td><td>git-narrow-api</td><td><code>pr/05-git-narrow-api</code><br><span class="dim">.worktrees/pr-05</span></td><td>2</td><td>12</td><td>02</td><td>W3</td><td>ship · v1</td><td>workspace.git status/log/diff via POST sessions/:sid/git argv allowlist</td><td>100%</td><td>✅ merged (allowlist, real-repo reads, adversarial shut; writes deferred)</td></tr>
       <tr><td>06</td><td>harness-headless-loop</td><td><code>pr/06-harness-headless-loop</code><br><span class="dim">.worktrees/pr-06</span></td><td>3</td><td>20</td><td>03,04</td><td>W4</td><td>ship · v1</td><td>pi harness headless prompt → read+bash tool call in DO, no socket yet</td><td>100%</td><td>✅ merged (stub turn read+bash, run route, 5 batteries green)</td></tr>
       <tr><td>07</td><td>session-persist-append</td><td><code>pr/07-session-persist-append</code><br><span class="dim">.worktrees/pr-07</span></td><td>3</td><td>18</td><td>06</td><td>W5</td><td>ship · v1</td><td>every onUpdate appended to pi_entries before emit + interrupted open ops</td><td>100%</td><td>✅ merged (entries sole-writer, runs ledger, raw replay; pagination in PR09)</td></tr>
       <tr><td>08</td><td>fence-revision-cas</td><td><code>pr/08-fence-revision-cas</code><br><span class="dim">.worktrees/pr-08</span></td><td>3</td><td>15</td><td>07</td><td>W6</td><td>ship · v1</td><td>owner-fence + revision CAS; stale socket gets Fenced/Conflict</td><td>100%</td><td>✅ merged (claim+fenced run over HTTP, enforceFence helper, pi_owners dropped)</td></tr>
       <tr><td>09</td><td>entries-replay-api</td><td><code>pr/09-entries-replay-api</code><br><span class="dim">.worktrees/pr-09</span></td><td>2</td><td>12</td><td>07</td><td>W6</td><td>ship · v1</td><td>GET session metadata + GET entries?after=n pagination for resume</td><td>100%</td><td>✅ merged (paged entries+meta, paged byte-equals full)</td></tr>
-      <tr><td>10</td><td>ws-stream-protocol</td><td><code>pr/10-ws-stream-protocol</code><br><span class="dim">.worktrees/pr-10</span></td><td>3</td><td>20</td><td>08,09</td><td>W7</td><td>ship · v1</td><td>WS prompt/abort/steer in, message/tool/agent/entry frames out</td><td>100%</td><td>✅ merged (stream/abort/steer, CAS-at-done, 9 batteries green)</td></tr>
-      <tr><td>11</td><td>per-session-queue</td><td><code>pr/11-per-session-queue</code><br><span class="dim">.worktrees/pr-11</span></td><td>2</td><td>12</td><td>10</td><td>W8</td><td>ship · v1</td><td>per-session promise queue + withFileMutationQueue for edits</td><td>0%</td><td>—</td></tr>
+      <tr><td>10</td><td>ws-stream-protocol</td><td><code>pr/10-ws-stream-protocol</code><br><span class="dim">.worktrees/pr-10</span></td><td>3</td><td>20</td><td>08,09</td><td>W7</td><td>ship · v1</td><td>WS prompt/abort/steer in, message/tool/agent/entry frames out</td><td>100%</td><td>✅ merged (hibernation upgrade in speed §11 PR29)</td></tr>
+      <tr><td>11</td><td>per-session-queue</td><td><code>pr/11-per-session-queue</code><br><span class="dim">.worktrees/pr-11</span></td><td>2</td><td>12</td><td>10</td><td>W8</td><td>ship · v1</td><td>per-session promise queue + withFileMutationQueue for edits</td><td>0%</td><td>◐ live session, awaiting delivery</td></tr>
       <tr><td>13</td><td>exec-descriptions</td><td><code>pr/13-exec-descriptions</code><br><span class="dim">.worktrees/pr-13</span></td><td>1</td><td>10</td><td>06</td><td>W5</td><td>ship · v1</td><td>per-backend exec descriptions into bash tool text</td><td>100%</td><td>✅ merged (just-bash limits in description, assert in smoke)</td></tr>
       <tr><td>14</td><td>model-runtime-wiring</td><td><code>pr/14-model-runtime-wiring</code><br><span class="dim">.worktrees/pr-14</span></td><td>3</td><td>18</td><td>06</td><td>W5</td><td>ship · v1</td><td>ModelRuntime + default tools via env, createAgentSession shape</td><td>100%</td><td>✅ merged (runtime+factory, tools live in pi-cf, 6 batteries green)</td></tr>
-      <tr><td>15</td><td>edit-write-tools</td><td><code>pr/15-edit-write-tools</code><br><span class="dim">.worktrees/pr-15</span></td><td>2</td><td>12</td><td>14</td><td>W7</td><td>ship · v1</td><td>write/edit via env through mutation queue, recorded as entries</td><td>0%</td><td>—</td></tr>
-      <tr><td>16</td><td>lane-compact-archive</td><td><code>pr/16-lane-compact-archive</code><br><span class="dim">.worktrees/pr-16</span></td><td>2</td><td>12</td><td>07,24</td><td>W7</td><td>harden · post-v1</td><td>auto-trigger on window reserve via pi shouldCompact + summary entry + archived pagination, bounded table</td><td>0%</td><td>—</td></tr>
-      <tr><td>17</td><td>cli-client</td><td><code>pr/17-cli-client</code><br><span class="dim">.worktrees/pr-17</span></td><td>2</td><td>15</td><td>10</td><td>W8</td><td>ship · v1</td><td>thin CLI: prompt/abort/steer sender + frame printer over WS</td><td>70%</td><td>◐ doctor/workspace/files/session/git/exec/run land via feature PRs; entries/stream/commands pending</td></tr>
-      <tr><td>18</td><td>sdk-createPiCf</td><td><code>pr/18-sdk-createPiCf</code><br><span class="dim">.worktrees/pr-18</span></td><td>3</td><td>18</td><td>14,11</td><td>W9</td><td>feature · later</td><td>createPiCf DO factory + minimal-agent example</td><td>0%</td><td>—</td></tr>
-      <tr><td>19</td><td>inline-extensions</td><td><code>pr/19-inline-extensions</code><br><span class="dim">.worktrees/pr-19</span></td><td>3</td><td>18</td><td>18</td><td>W10</td><td>feature · later</td><td>ExtensionFactory inline path + sample tool/command/hook ext</td><td>0%</td><td>—</td></tr>
-      <tr><td>20</td><td>ext-wire-frames</td><td><code>pr/20-ext-wire-frames</code><br><span class="dim">.worktrees/pr-20</span></td><td>2</td><td>12</td><td>19,10</td><td>W11</td><td>feature · later</td><td>get_commands + extension_ui_request/response over wire</td><td>0%</td><td>—</td></tr>
-      <tr><td>21a</td><td>vfs-ext-sandbox</td><td><code>pr/21a-vfs-ext-sandbox</code><br><span class="dim">.worktrees/pr-21a</span></td><td>3</td><td>18</td><td>19</td><td>W11</td><td>feature · later</td><td>.pi/extensions/*.ts sandbox eval via worker-javascript graph</td><td>0%</td><td>—</td></tr>
-      <tr><td>21b</td><td>vfs-ext-rpc-bridge</td><td><code>pr/21b-vfs-ext-rpc-bridge</code><br><span class="dim">.worktrees/pr-21b</span></td><td>3</td><td>15</td><td>21a</td><td>W12</td><td>feature · later</td><td>sandboxed ext RPC bridge back to harness registry</td><td>0%</td><td>—</td></tr>
-      <tr><td>21c</td><td>vfs-ext-manifest</td><td><code>pr/21c-vfs-ext-manifest</code><br><span class="dim">.worktrees/pr-21c</span></td><td>2</td><td>10</td><td>21b</td><td>W12</td><td>feature · later</td><td>npm subdir package.json pi.extensions manifest on same loader</td><td>0%</td><td>—</td></tr>
-      <tr><td>22</td><td>shell-caps-quotas</td><td><code>pr/22-shell-caps-quotas</code><br><span class="dim">.worktrees/pr-22</span></td><td>2</td><td>10</td><td>12</td><td>W9</td><td>harden · post-v1</td><td>64 live sessions, 1MiB output cap, cwd pinned per call</td><td>0%</td><td>—</td></tr>
-      <tr><td>23</td><td>web-viewer-minimal</td><td><code>pr/23-web-viewer-minimal</code><br><span class="dim">.worktrees/pr-23</span></td><td>2</td><td>15</td><td>10</td><td>W12</td><td>feature · later</td><td>minimal web viewer: entries replay + live stream frames</td><td>0%</td><td>—</td></tr>
+      <tr><td>15</td><td>edit-write-tools</td><td><code>pr/15-edit-write-tools</code><br><span class="dim">.worktrees/pr-15</span></td><td>2</td><td>12</td><td>14</td><td>W7</td><td>ship · v1</td><td>write/edit via env through mutation queue, recorded as entries</td><td>0%</td><td>◐ live session, awaiting delivery</td></tr>
+      <tr><td>16</td><td>lane-compact-archive</td><td><code>pr/16-lane-compact-archive</code><br><span class="dim">.worktrees/pr-16</span></td><td>2</td><td>12</td><td>07,24</td><td>W7</td><td>harden · post-v1</td><td>compaction as alarm via pi shouldCompact + summary entry, bounded table, never inline (speed §9)</td><td>0%</td><td>⏳ queued post-v1</td></tr>
+      <tr><td>17</td><td>cli-client</td><td><code>pr/17-cli-client</code><br><span class="dim">.worktrees/pr-17</span></td><td>2</td><td>15</td><td>10</td><td>W8</td><td>ship · v1</td><td>thin CLI: prompt/abort/steer sender + frame printer over WS</td><td>70%</td><td>◐ entries/stream frames proven via PR09/10; model commands close with PR26</td></tr>
+      <tr><td>22</td><td>shell-caps-quotas</td><td><code>pr/22-shell-caps-quotas</code><br><span class="dim">.worktrees/pr-22</span></td><td>2</td><td>10</td><td>12</td><td>W9</td><td>harden · post-v1</td><td>64 live sessions, 1MiB output cap, cwd pinned per call</td><td>0%</td><td>⏳ queued post-v1 (needs speed §11 PR12)</td></tr>
       <tr><td>24</td><td>model-catalog</td><td><code>pr/24-model-catalog</code><br><span class="dim">.worktrees/pr-24</span></td><td>2</td><td>15</td><td>14</td><td>W5</td><td>ship · v1</td><td>buildRuntime resolves through pi-ai provider slices, contextWindow + cost carried</td><td>100%</td><td>✅ merged (anthropic+openai slices, wrangler 4 for import-attrs parse, 6 batteries green)</td></tr>
       <tr><td>25</td><td>model-providers</td><td><code>pr/25-model-providers</code><br><span class="dim">.worktrees/pr-25</span></td><td>3</td><td>18</td><td>24</td><td>W5</td><td>ship · v1</td><td>all API-key provider slices + models.json custom providers, env-only keys</td><td>100%</td><td>✅ merged (33 providers, models.json customs, 8 batteries green)</td></tr>
-      <tr><td>26</td><td>model-switching</td><td><code>pr/26-model-switching</code><br><span class="dim">.worktrees/pr-26</span></td><td>2</td><td>15</td><td>25</td><td>W6</td><td>ship · v1</td><td>session model+thinking columns, model/thinking routes, pi entry types, /run reads session</td><td>0%</td><td>—</td></tr>
+      <tr><td>26</td><td>model-switching</td><td><code>pr/26-model-switching</code><br><span class="dim">.worktrees/pr-26</span></td><td>2</td><td>15</td><td>25</td><td>W6</td><td>ship · v1</td><td>session model+thinking columns, model/thinking routes, pi entry types, /run reads session</td><td>0%</td><td>◐ live session, awaiting delivery</td></tr>
     </table>
     <p style="font-size:13px">Speed program lives in <code>speed-report.html</code> §11: PR12 exec-sessions, PR27 fs-split, new PR28 r2-cold-tier, PR29 ws-hibernation, PR30 turn-once-store. Status for all PRs stays in <code>pr.tsv</code>.</p>
+    <h3>On-demand backlog (not planned, not dropped)</h3>
+    <table style="font-size:12px">
+      <tr><th>PR</th><th>title</th><th>depends</th><th>why parked</th></tr>
+      <tr><td>18</td><td>sdk-createPiCf</td><td>14,11</td><td>⏸ no consumer yet; revive on first external driver</td></tr>
+      <tr><td>19–20</td><td>inline-extensions + wire frames</td><td>18</td><td>⏸ no extension demand; revive with a real ext</td></tr>
+      <tr><td>21a–c</td><td>ext sandbox + RPC + manifest</td><td>19</td><td>⏸ approach stale: dynamic workers (Aug 2026) may replace worker-javascript sandbox; rethink on revive</td></tr>
+      <tr><td>23</td><td>web-viewer-minimal</td><td>10</td><td>⏸ CLI proves the protocol; viewer waits for a user</td></tr>
+    </table>
     </div>
     <h3>Dependency chains (critical path)</h3>
 <pre>01 → 02 → 03 ─┐
 01 → 04 ───────┴→ 06 → 07 → 08 ─┐
-                  06 → 14 → 15  ├→ 10 → 11 → 18 → 19 → 21a → 21b → 21c
-                  07 → 09 ──────┘   10 → 22 (via speed §11 PR12) · 10 → 17 / 23 (leaves)</pre>
+                  06 → 14 → 15 (+26) ┤→ 10 → 11 → v1 cut (15, 17 close)
+                  07 → 09 ──────────┘   10 → 22 post-v1 (via speed §11 PR12)</pre>
     <h3>Parallel waves</h3>
     <ul>
       <li><b>W1:</b> 01 alone (root).</li>
@@ -276,13 +277,13 @@ WS /workspaces/:id/sessions/:sid/stream
       <li><b>W6:</b> 08 + 09 in parallel (both need only 07).</li>
       <li><b>W7:</b> 10 (joins 08+09); 15 + 16 in parallel alongside.</li>
       <li><b>W8:</b> 11 + 17 in parallel (both need only 10). Speed PRs run from speed-report §11.</li>
-      <li><b>W9–W12:</b> 18 → 19 → {20, 21a} → 21b → {21c, 22, 23}.</li>
+      <li><b>Post-v1:</b> 16, 22, then speed §11 (30 → 12 → 27 → 29, 28 on strain). Backlog above only on demand.</li>
     </ul>
-    <div class="ok-box"><b>Merge order:</b> land waves in numeric order; within a wave land in PR-number order. No PR exceeds complexity 3 or 20 min — 21 was split into 21a/b/c to hold that bound.</div>
+    <div class="ok-box"><b>Merge order:</b> land waves in numeric order; within a wave land in PR-number order. No PR exceeds complexity 3 or 20 min. v1 cuts when 11 + 15 + 26 + 17 land.</div>
   </div>
 </section>
 
-<footer>pi-do plan · generated 2026-09-03 · next step on approval: P0 skeleton. No code written.</footer>
+<footer>pi-do plan · updated 2026-09-03 · v1 = PR11 + PR15 + PR26 + PR17. Speed program in speed-report.html §11.</footer>
 
 </div>
 </body>
