@@ -26,7 +26,7 @@ export interface StreamDeps {
   workspaceKnown: boolean;
   sessionKnown: boolean;
   readFence(): { fence: string | null; revision: number } | null;
-  rotateFence(next: { fence: string; revision: number }): void;
+  casRotateFence(oldFence: string, oldRevision: number, next: { fence: string; revision: number }): boolean;
 }
 
 const HEARTBEAT_MS = 15000;
@@ -143,18 +143,21 @@ export function handleStream(request: Request, deps: StreamDeps): Response {
       return;
     }
     busy = true;
-    const cur = deps.readFence();
-    let creds: { fence: string; revision: number } | null = null;
+    let held: { fence: string; revision: number } | null = null;
     if (hasFence) {
-      const checked = enforceFence(cur, fence, expected);
+      if (typeof fence !== "string" || fence.length === 0 || !Number.isInteger(expected) || typeof expected !== "number") {
+        busy = false;
+        send({ error: "missing fence", hint: "retry the turn with both {fence, expected}, or omit both" });
+        return;
+      }
+      const checked = enforceFence(deps.readFence(), fence, expected);
       if ("status" in checked) {
         busy = false;
         send(checked.body);
         closeSocket(checked.status === 403 ? CLOSE_FENCED : CLOSE_CONFLICT, checked.body.hint);
         return;
       }
-      deps.rotateFence(checked);
-      creds = checked;
+      held = { fence, revision: expected };
     }
     const turnId = crypto.randomUUID();
     runId = turnId;
@@ -162,7 +165,6 @@ export function handleStream(request: Request, deps: StreamDeps): Response {
     controller = turnController;
     try {
       openRun(deps.sql, deps.sid, turnId);
-      if (creds !== null) send({ started: true, runId: turnId, fence: creds.fence, revision: creds.revision });
       emitAppend("prompt", { runId: turnId, prompt });
       const runtime = buildRuntime(deps.runtimeEnv);
       const session = createAgentSession({
@@ -183,8 +185,16 @@ export function handleStream(request: Request, deps: StreamDeps): Response {
       });
       emitAppend("result", { runId: turnId, result: turn.result });
       closeRun(deps.sql, deps.sid, turnId);
-      if (creds !== null) send({ done: true, fence: creds.fence, revision: creds.revision, result: turn.result });
-      else send({ done: true, result: turn.result });
+      if (held !== null) {
+        const next = { fence: crypto.randomUUID(), revision: held.revision + 1 };
+        if (!deps.casRotateFence(held.fence, held.revision, next)) {
+          const cur = deps.readFence();
+          send({ error: "revision conflict", hint: "a concurrent holder rotated mid-turn; re-claim and retry", revision: cur?.revision ?? 0 });
+          closeSocket(CLOSE_CONFLICT, "concurrent rotation mid-turn");
+          return;
+        }
+        send({ done: true, fence: next.fence, revision: next.revision, result: turn.result });
+      } else send({ done: true, result: turn.result });
     } catch (e) {
       if (turnController.signal.aborted) {
         deps.sql.exec(

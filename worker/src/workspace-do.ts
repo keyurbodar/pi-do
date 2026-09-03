@@ -71,6 +71,17 @@ export class WorkspaceDO implements DurableObject {
   private rotateFence(sid: string, next: { fence: string; revision: number }): void {
     this.state.storage.sql.exec("UPDATE sessions SET ownerFence = ?, revision = ? WHERE sid = ?", next.fence, next.revision, sid);
   }
+  private casRotateFence(
+    sid: string,
+    oldFence: string,
+    oldRevision: number,
+    next: { fence: string; revision: number },
+  ): boolean {
+    const cur = this.readFence(sid);
+    if (cur === null || cur.fence !== oldFence || cur.revision !== oldRevision) return false;
+    this.rotateFence(sid, next);
+    return true;
+  }
 
   private sessionExists(ws: string, sid: string): boolean {
     const rows = [
@@ -498,7 +509,7 @@ export class WorkspaceDO implements DurableObject {
         workspaceKnown: ws !== "" && this.workspaceExists(ws),
         sessionKnown: ws !== "" && sid !== "" && this.sessionExists(ws, sid),
         readFence: () => this.readFence(sid),
-        rotateFence: (next) => this.rotateFence(sid, next),
+        casRotateFence: (oldFence, oldRevision, next) => this.casRotateFence(sid, oldFence, oldRevision, next),
       });
     }
 
