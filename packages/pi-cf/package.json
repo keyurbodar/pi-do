@@ -1,0 +1,10 @@
+{
+  "name": "pi-cf",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "verify": "node verify-env.mjs"
+  }
+}
