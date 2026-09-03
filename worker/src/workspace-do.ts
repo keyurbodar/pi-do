@@ -12,7 +12,10 @@ interface ShellWorkerBinding {
     command: string;
     cwd?: string;
     env?: Record<string, string>;
-  }): Promise<{ stdout: string; stderr: string; exit: number; timedOut: boolean }>;
+    sid?: string;
+  }): Promise<{ stdout: string; stderr: string; exit: number; timedOut: boolean; killed: boolean }>;
+  kill(input: { sid: string }): Promise<{ killed: boolean }>;
+  dispose(input: { sid: string }): Promise<{ disposed: true }>;
 }
 interface Env {
   WORKSPACE_DO: DurableObjectNamespace;

@@ -1,5 +1,5 @@
 import { WorkspaceDO } from "./workspace-do";
-import { EXEC_TIMEOUT_MS, ShellWorker } from "./shell-worker";
+import { EXEC_TIMEOUT_MS, ShellWorker } from "./shell-exec";
 import { listCatalogModels } from "./model-runtime";
 
 export { WorkspaceDO, ShellWorker };
@@ -9,7 +9,10 @@ interface ShellWorkerEntrypoint {
     command: string;
     cwd?: string;
     env?: Record<string, string>;
-  }): Promise<{ stdout: string; stderr: string; exit: number; timedOut: boolean }>;
+    sid?: string;
+  }): Promise<{ stdout: string; stderr: string; exit: number; timedOut: boolean; killed: boolean }>;
+  kill(input: { sid: string }): Promise<{ killed: boolean }>;
+  dispose(input: { sid: string }): Promise<{ disposed: true }>;
 }
 
 interface Env {
@@ -269,7 +272,9 @@ export default {
       ).fetch(inner.toString(), init as RequestInit);
     }
 
-    // POST /workspaces/:id/exec → one-off shell via the ShellWorker entrypoint
+    // POST /workspaces/:id/exec → shell via the ShellWorker entrypoint.
+    // No sid is the one-off path; with sid the call runs on that exec
+    // session so `export` and `cd` persist across calls.
     if (
       request.method === "POST" &&
       parts.length === 3 &&
@@ -289,7 +294,7 @@ export default {
           { status: 404 },
         );
       }
-      let body: { command?: unknown; cwd?: unknown; env?: unknown };
+      let body: { command?: unknown; cwd?: unknown; env?: unknown; sid?: unknown };
       try {
         body = JSON.parse(new TextDecoder().decode(rawBody)) as typeof body;
       } catch {
@@ -319,21 +324,161 @@ export default {
           { status: 400 },
         );
       }
-      const result = await env.SHELL_WORKER.exec({
-        command: body.command,
-        cwd: body.cwd,
-        env: body.env as Record<string, string> | undefined,
-      });
+      if (body.sid !== undefined && (typeof body.sid !== "string" || body.sid.length === 0)) {
+        return Response.json(
+          {
+            error: "bad sid",
+            hint: 'sid must be a session id string, e.g. {"command": "echo hi", "sid": "exec-1"}',
+          },
+          { status: 400 },
+        );
+      }
+      let result;
+      try {
+        result = await env.SHELL_WORKER.exec({
+          command: body.command,
+          cwd: body.cwd,
+          env: body.env as Record<string, string> | undefined,
+          sid: body.sid,
+        });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        if (message.startsWith("exec busy")) {
+          return Response.json(
+            {
+              error: message,
+              hint: "wait for the run to settle, or stop it via POST /workspaces/:id/exec/kill",
+            },
+            { status: 409 },
+          );
+        }
+        throw e;
+      }
+      if (result.killed) {
+        return Response.json(
+          {
+            error: "exec killed by kill request",
+            hint: "retry the command, or drop the session via POST /workspaces/:id/exec/dispose",
+          },
+          { status: 408 },
+        );
+      }
       if (result.timedOut) {
         return Response.json(
           {
             error: `exec timed out after ${EXEC_TIMEOUT_MS}ms`,
-            hint: "retry with a shorter command; kill support arrives in PR12",
+            hint: "retry with a shorter command, or stop a live run via POST /workspaces/:id/exec/kill",
           },
           { status: 408 },
         );
       }
       return Response.json({ stdout: result.stdout, stderr: result.stderr, exit: result.exit });
+    }
+
+    // POST /workspaces/:id/exec/kill → abort the live run on an exec session.
+    if (
+      request.method === "POST" &&
+      parts.length === 4 &&
+      parts[0] === "workspaces" &&
+      parts[2] === "exec" &&
+      parts[3] === "kill"
+    ) {
+      const workspaceId = parts[1];
+      const probe = await env.WORKSPACE_DO.get(
+        env.WORKSPACE_DO.idFromName(workspaceId),
+      ).fetch(`http://do/exists?ws=${encodeURIComponent(workspaceId)}`);
+      if (probe.status === 404) {
+        return Response.json(
+          {
+            error: "unknown workspace",
+            hint: "create one with POST /workspaces first",
+          },
+          { status: 404 },
+        );
+      }
+      let body: { sid?: unknown };
+      try {
+        body = JSON.parse(new TextDecoder().decode(rawBody)) as typeof body;
+      } catch {
+        return Response.json(
+          {
+            error: "missing sid",
+            hint: 'retry as POST /workspaces/:id/exec/kill with JSON {"sid": "exec-1"}',
+          },
+          { status: 400 },
+        );
+      }
+      if (typeof body?.sid !== "string" || body.sid.length === 0) {
+        return Response.json(
+          {
+            error: "missing sid",
+            hint: 'retry as POST /workspaces/:id/exec/kill with JSON {"sid": "exec-1"}',
+          },
+          { status: 400 },
+        );
+      }
+      try {
+        const outcome = await env.SHELL_WORKER.kill({ sid: body.sid });
+        return Response.json({ killed: outcome.killed });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        if (message.startsWith("no such exec session")) {
+          return Response.json(
+            {
+              error: message,
+              hint: "run one command with that sid first to create the session",
+            },
+            { status: 404 },
+          );
+        }
+        throw e;
+      }
+    }
+
+    // POST /workspaces/:id/exec/dispose → drop an exec session and its state.
+    if (
+      request.method === "POST" &&
+      parts.length === 4 &&
+      parts[0] === "workspaces" &&
+      parts[2] === "exec" &&
+      parts[3] === "dispose"
+    ) {
+      const workspaceId = parts[1];
+      const probe = await env.WORKSPACE_DO.get(
+        env.WORKSPACE_DO.idFromName(workspaceId),
+      ).fetch(`http://do/exists?ws=${encodeURIComponent(workspaceId)}`);
+      if (probe.status === 404) {
+        return Response.json(
+          {
+            error: "unknown workspace",
+            hint: "create one with POST /workspaces first",
+          },
+          { status: 404 },
+        );
+      }
+      let body: { sid?: unknown };
+      try {
+        body = JSON.parse(new TextDecoder().decode(rawBody)) as typeof body;
+      } catch {
+        return Response.json(
+          {
+            error: "missing sid",
+            hint: 'retry as POST /workspaces/:id/exec/dispose with JSON {"sid": "exec-1"}',
+          },
+          { status: 400 },
+        );
+      }
+      if (typeof body?.sid !== "string" || body.sid.length === 0) {
+        return Response.json(
+          {
+            error: "missing sid",
+            hint: 'retry as POST /workspaces/:id/exec/dispose with JSON {"sid": "exec-1"}',
+          },
+          { status: 400 },
+        );
+      }
+      const outcome = await env.SHELL_WORKER.dispose({ sid: body.sid });
+      return Response.json({ disposed: outcome.disposed });
     }
 
     // GET /workspaces/:id/sessions/:sid/stream → WS upgrade for live turns.

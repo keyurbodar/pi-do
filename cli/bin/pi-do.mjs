@@ -369,7 +369,7 @@ usage:
 behavior:
   POSTs {command, cwd} to /workspaces/:id/exec. The command runs once in
   an isolated shell (no workspace files or entries are touched) with output
-  capped at 1 MiB and a fixed runtime timeout (kill arrives in PR12).
+  capped at 1 MiB and a fixed runtime timeout (live session runs stop via POST /workspaces/:id/exec/kill).
   Without --json stdout is the command stdout plus an "exit N" line on
   stderr; with --json stdout is the raw server JSON {stdout, stderr, exit}.
 
