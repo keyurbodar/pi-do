@@ -452,6 +452,7 @@ function helpFor(cmd, sub) {
   if (cmd === "exec") return EXEC_HELP;
   if (cmd === "run") return RUN_HELP;
   if (cmd === "claim") return CLAIM_HELP;
+  if (cmd === "entries") return ENTRIES_HELP;
   return ROOT_HELP;
 }
 

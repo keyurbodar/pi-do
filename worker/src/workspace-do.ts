@@ -42,9 +42,7 @@ export class WorkspaceDO implements DurableObject {
     );
     this.files.ensureSchema();
     ensureEntriesSchema(sql);
-    sql.exec(
-      "CREATE TABLE IF NOT EXISTS pi_owners(sid TEXT PRIMARY KEY, fence TEXT, rev INTEGER)",
-    );
+    sql.exec("DROP TABLE IF EXISTS pi_owners");
     sql.exec(
       "CREATE TABLE IF NOT EXISTS sessions(sid TEXT PRIMARY KEY, ws TEXT, created_at TEXT, ownerFence TEXT, revision INTEGER NOT NULL DEFAULT 0)",
     );
@@ -66,6 +64,38 @@ export class WorkspaceDO implements DurableObject {
     const fence = typeof raw.ownerFence === "string" ? raw.ownerFence : null;
     const revision = typeof raw.revision === "number" ? raw.revision : 0;
     return { fence, revision };
+  }
+  private enforceFence(
+    sid: string,
+    fence: unknown,
+    expected: unknown,
+  ): { fence: string; revision: number } | { status: 403 | 409; body: unknown } {
+    const cur = this.readFence(sid);
+    if (cur === null || cur.fence === null || cur.fence !== fence) {
+      return {
+        status: 403,
+        body: {
+          error: "fence mismatch",
+          hint: "Fenced: stale holder; claim with the live fence or mint a fresh session",
+          revision: cur?.revision ?? 0,
+        },
+      };
+    }
+    if (cur.revision !== expected) {
+      return {
+        status: 409,
+        body: {
+          error: "revision conflict",
+          hint: `Conflict: expected revision ${String(expected)} but current revision is ${cur.revision}; re-read and retry with expected ${cur.revision}`,
+          revision: cur.revision,
+        },
+      };
+    }
+    return { fence: crypto.randomUUID(), revision: cur.revision + 1 };
+  }
+
+  private rotateFence(sid: string, next: { fence: string; revision: number }): void {
+    this.state.storage.sql.exec("UPDATE sessions SET ownerFence = ?, revision = ? WHERE sid = ?", next.fence, next.revision, sid);
   }
 
   private sessionExists(ws: string, sid: string): boolean {
@@ -354,31 +384,10 @@ export class WorkspaceDO implements DurableObject {
           400,
         );
       }
-      const cur = this.readFence(sid);
-      if (cur === null || cur.fence === null || cur.fence !== fence) {
-        return json(
-          {
-            error: "fence mismatch",
-            hint: "Fenced: stale holder; claim with the live fence or mint a fresh session",
-            revision: cur?.revision ?? 0,
-          },
-          403,
-        );
-      }
-      if (cur.revision !== expected) {
-        return json(
-          {
-            error: "revision conflict",
-            hint: `Conflict: expected revision ${String(expected)} but current revision is ${cur.revision}; re-read and retry with expected ${cur.revision}`,
-            revision: cur.revision,
-          },
-          409,
-        );
-      }
-      const nextFence = crypto.randomUUID();
-      const nextRevision = cur.revision + 1;
-      this.state.storage.sql.exec("UPDATE sessions SET ownerFence = ?, revision = ? WHERE sid = ?", nextFence, nextRevision, sid);
-      return json({ sessionId: sid, fence: nextFence, revision: nextRevision });
+      const checked = this.enforceFence(sid, fence, expected);
+      if ("status" in checked) return json(checked.body, checked.status);
+      this.rotateFence(sid, checked);
+      return json({ sessionId: sid, fence: checked.fence, revision: checked.revision });
     }
 
     if (request.method === "POST" && url.pathname === "/run") {
@@ -452,34 +461,10 @@ export class WorkspaceDO implements DurableObject {
             400,
           );
         }
-        const cur = this.readFence(sid);
-        if (cur === null || cur.fence === null || cur.fence !== fence) {
-          return json(
-            {
-              error: "fence mismatch",
-              hint: "Fenced: stale holder; claim with the live fence or mint a fresh session",
-              revision: cur?.revision ?? 0,
-            },
-            403,
-          );
-        }
-        if (cur.revision !== expected) {
-          return json(
-            {
-              error: "revision conflict",
-              hint: `Conflict: expected revision ${String(expected)} but current revision is ${cur.revision}; re-read and retry with expected ${cur.revision}`,
-              revision: cur.revision,
-            },
-            409,
-          );
-        }
-        rotated = { fence: crypto.randomUUID(), revision: cur.revision + 1 };
-        this.state.storage.sql.exec(
-          "UPDATE sessions SET ownerFence = ?, revision = ? WHERE sid = ?",
-          rotated.fence,
-          rotated.revision,
-          sid,
-        );
+        const checked = this.enforceFence(sid, fence, expected);
+        if ("status" in checked) return json(checked.body, checked.status);
+        this.rotateFence(sid, checked);
+        rotated = checked;
       }
       const sql = this.state.storage.sql;
       const runId = crypto.randomUUID();

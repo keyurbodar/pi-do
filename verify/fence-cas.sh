@@ -1,10 +1,5 @@
 #!/bin/sh
 # fence-cas.sh — proves stale holders never overwrite a live session: mint a
-# session (fence F0, revision 0), claim with a wrong fence (403 Fenced,
-# revision unchanged), claim with a stale revision (409 Conflict, fence
-# unrotated), claim clean (fence rotates, revision bumps), then run with the
-# old fence (403, no entries written) and the new fence (turn executes,
-# entries persist).
 # Usage: sh verify/fence-cas.sh [BASE]
 # Exit 0 on pass, 1 otherwise. Writes artifacts/RUN_ID/fence-cas/.
 set -u
