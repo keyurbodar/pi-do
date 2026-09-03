@@ -12,7 +12,7 @@ interface ShellWorkerEntrypoint {
     sid?: string;
   }): Promise<{ stdout: string; stderr: string; exit: number; timedOut: boolean; killed: boolean }>;
   kill(input: { sid: string }): Promise<{ killed: boolean }>;
-  dispose(input: { sid: string }): Promise<{ disposed: true }>;
+  dispose(input: { sid: string }): Promise<{ disposed: true; stdoutBytes: number; stderrBytes: number }>;
 }
 
 interface Env {
@@ -390,6 +390,24 @@ export default {
             { status: 409 },
           );
         }
+        if (message.startsWith("exec sessions full")) {
+          return Response.json(
+            {
+              error: message,
+              hint: "drop an idle session via POST /workspaces/:id/exec/dispose, then retry",
+            },
+            { status: 429 },
+          );
+        }
+        if (message.startsWith("exec cwd escapes")) {
+          return Response.json(
+            {
+              error: message,
+              hint: "stay under /workspace, e.g. {\"command\": \"pwd\", \"cwd\": \"/workspace\"}",
+            },
+            { status: 400 },
+          );
+        }
         throw e;
       }
       if (result.killed) {
@@ -516,7 +534,7 @@ export default {
         );
       }
       const outcome = await env.SHELL_WORKER.dispose({ sid: body.sid });
-      return Response.json({ disposed: outcome.disposed });
+      return Response.json({ disposed: outcome.disposed, stdoutBytes: outcome.stdoutBytes, stderrBytes: outcome.stderrBytes });
     }
 
     // GET /workspaces/:id/sessions/:sid/stream → WS upgrade for live turns.

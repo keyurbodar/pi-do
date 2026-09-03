@@ -30,6 +30,51 @@ export interface ShellExecResult {
 export const DEFAULT_CWD = "/workspace";
 export const MAX_OUTPUT_BYTES = 1024 * 1024;
 export const EXEC_TIMEOUT_MS = 10_000;
+export const MAX_LIVE_SESSIONS = 64;
+const WORKSPACE_ROOT = DEFAULT_CWD;
+
+export interface DisposeResult {
+  disposed: true;
+  stdoutBytes: number;
+  stderrBytes: number;
+}
+
+function resolveCwd(requested: string | undefined, base: string): string {
+  const raw = requested ?? base;
+  const abs = raw.startsWith("/") ? raw : `${base}/${raw}`;
+  const out: string[] = [];
+  for (const part of abs.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") out.pop();
+    else out.push(part);
+  }
+  const resolved = `/${out.join("/")}`;
+  if (resolved !== WORKSPACE_ROOT && !resolved.startsWith(`${WORKSPACE_ROOT}/`)) {
+    throw new Error(`exec cwd escapes the workspace root (${WORKSPACE_ROOT}): ${raw}`);
+  }
+  return resolved;
+}
+
+function evictOldestIdle(sessions: Map<string, ExecSession>): never {
+  let oldest: string | undefined;
+  let oldestUsed = Infinity;
+  for (const [sid, session] of sessions) {
+    if (session.running !== null) continue;
+    if (session.lastUsed < oldestUsed) {
+      oldest = sid;
+      oldestUsed = session.lastUsed;
+    }
+  }
+  if (oldest === undefined) {
+    throw new Error(
+      `exec sessions full (${MAX_LIVE_SESSIONS} live, all running): kill or dispose one first`,
+    );
+  }
+  sessions.delete(oldest);
+  throw new Error(
+    `exec sessions full (${MAX_LIVE_SESSIONS} live): disposed oldest idle session ${oldest} to make room, retry the command`,
+  );
+}
 
 interface ExecSession {
   bash: Bash;
@@ -37,6 +82,9 @@ interface ExecSession {
   cwd: string;
   running: AbortController | null;
   killRequested: boolean;
+  lastUsed: number;
+  stdoutBytes: number;
+  stderrBytes: number;
 }
 
 function truncate(s: string): string {
@@ -77,10 +125,13 @@ export class ShellWorker<Env = unknown> extends WorkerEntrypoint<Env> {
       throw new Error("exec needs a session id string");
     }
     let session = this.sessions.get(sid);
+    const cwd = resolveCwd(input.cwd, session?.cwd ?? DEFAULT_CWD);
     if (session === undefined) {
-      session = { bash: freshBash(), env: {}, cwd: DEFAULT_CWD, running: null, killRequested: false };
+      if (this.sessions.size >= MAX_LIVE_SESSIONS) evictOldestIdle(this.sessions);
+      session = { bash: freshBash(), env: {}, cwd: DEFAULT_CWD, running: null, killRequested: false, lastUsed: Date.now(), stdoutBytes: 0, stderrBytes: 0 };
       this.sessions.set(sid, session);
     }
+    session.lastUsed = Date.now();
     if (session.running !== null) {
       throw new Error(`exec busy on session ${sid}: kill or wait before retrying`);
     }
@@ -94,17 +145,25 @@ export class ShellWorker<Env = unknown> extends WorkerEntrypoint<Env> {
     }, EXEC_TIMEOUT_MS);
     try {
       const result = await session.bash.exec(command, {
-        cwd: input.cwd ?? session.cwd,
+        cwd,
         env: { ...session.env, ...input.env },
         signal: controller.signal,
       });
       if (timedOut || session.killRequested || controller.signal.aborted) {
         return aborted(session, timedOut);
       }
+      session.stdoutBytes += new TextEncoder().encode(result.stdout).length;
+      session.stderrBytes += new TextEncoder().encode(result.stderr).length;
       if (result.env !== undefined) {
         session.env = { ...result.env };
         const pwd = result.env["PWD"];
-        if (typeof pwd === "string" && pwd.startsWith("/")) session.cwd = pwd;
+        if (typeof pwd === "string" && pwd.startsWith("/")) {
+          try {
+            session.cwd = resolveCwd(pwd, session.cwd);
+          } catch {
+            session.cwd = DEFAULT_CWD;
+          }
+        }
       }
       return {
         stdout: truncate(result.stdout),
@@ -118,7 +177,9 @@ export class ShellWorker<Env = unknown> extends WorkerEntrypoint<Env> {
         return aborted(session, timedOut);
       }
       const message = error instanceof Error ? error.message : String(error);
-      return { stdout: "", stderr: truncate(`${message}\n`), exit: 1, timedOut: false, killed: false };
+      const stderr = truncate(`${message}\n`);
+      session.stderrBytes += new TextEncoder().encode(stderr).length;
+      return { stdout: "", stderr, exit: 1, timedOut: false, killed: false };
     } finally {
       clearTimeout(timer);
       if (session.running === controller) session.running = null;
@@ -130,27 +191,28 @@ export class ShellWorker<Env = unknown> extends WorkerEntrypoint<Env> {
     if (typeof sid !== "string" || sid.length === 0) {
       throw new Error("kill needs a session id string");
     }
-    const session = this.sessions.get(sid);
-    if (session === undefined) {
+    const killSession = this.sessions.get(sid);
+    if (killSession === undefined) {
       throw new Error(`no such exec session: ${sid}`);
     }
-    if (session.running === null) return { killed: false };
-    session.killRequested = true;
-    session.running.abort(new Error("Execution killed"));
+    if (killSession.running === null) return { killed: false };
+    killSession.killRequested = true;
+    killSession.running.abort(new Error("Execution killed"));
     return { killed: true };
   }
 
-  async dispose(input: { sid: string }): Promise<{ disposed: true }> {
-    const sid = input?.sid;
-    if (typeof sid !== "string" || sid.length === 0) {
+  async dispose(input: { sid: string }): Promise<DisposeResult> {
+    const disposeSid = input?.sid;
+    if (typeof disposeSid !== "string" || disposeSid.length === 0) {
       throw new Error("dispose needs a session id string");
     }
-    const session = this.sessions.get(sid);
+    const session = this.sessions.get(disposeSid);
     if (session !== undefined) {
       session.running?.abort(new Error("Session disposed"));
-      this.sessions.delete(sid);
+      this.sessions.delete(disposeSid);
+      return { disposed: true, stdoutBytes: session.stdoutBytes, stderrBytes: session.stderrBytes };
     }
-    return { disposed: true };
+    return { disposed: true, stdoutBytes: 0, stderrBytes: 0 };
   }
 }
 
@@ -161,6 +223,7 @@ function aborted(session: ExecSession, timedOut: boolean): ShellExecResult {
 }
 
 async function runOneOff(command: string, cwd?: string, env?: Record<string, string>): Promise<ShellExecResult> {
+  const resolvedCwd = resolveCwd(cwd, DEFAULT_CWD);
   const controller = new AbortController();
   let timedOut = false;
   const timer = setTimeout(() => {
@@ -169,7 +232,7 @@ async function runOneOff(command: string, cwd?: string, env?: Record<string, str
   }, EXEC_TIMEOUT_MS);
   try {
     const result = await freshBash().exec(command, {
-      cwd: cwd ?? DEFAULT_CWD,
+      cwd: resolvedCwd,
       env,
       signal: controller.signal,
     });
