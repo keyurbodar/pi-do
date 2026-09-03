@@ -57,11 +57,53 @@ export interface RuntimeModel {
   contextWindow: Model<Api>["contextWindow"];
   maxTokens: Model<Api>["maxTokens"];
   cost: Model<Api>["cost"];
+  reasoning?: boolean;
+  thinkingLevelMap?: Record<string, string | null>;
 }
 
 export interface ModelRuntime {
   model: RuntimeModel;
   stub: boolean;
+}
+
+// pi thinking universe, mirroring pi-ai EXTENDED_THINKING_LEVELS
+// (refs/pi packages/ai src/models.ts): every level a caller may name.
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export type ThinkingLevelName = (typeof THINKING_LEVELS)[number];
+
+export interface ThinkingModelLike {
+  reasoning?: boolean;
+  thinkingLevelMap?: Record<string, string | null>;
+}
+
+// Same semantics as pi-ai getSupportedThinkingLevels: non-reasoning models
+// support only off; xhigh/max need an explicit map entry, null maps exclude.
+export function supportedThinkingLevels(model: ThinkingModelLike): string[] {
+  if (!model.reasoning) return ["off"];
+  return (THINKING_LEVELS as readonly string[]).filter((level) => {
+    const mapped = model.thinkingLevelMap?.[level];
+    if (mapped === null) return false;
+    if (level === "xhigh" || level === "max") return mapped !== undefined;
+    return true;
+  });
+}
+
+// Same semantics as pi-ai clampThinkingLevel: known levels settle on the
+// nearest supported one (up first, then down); unknown input falls to off.
+export function clampThinkingLevel(model: ThinkingModelLike, level: string): string {
+  const available = supportedThinkingLevels(model);
+  if (available.includes(level)) return level;
+  const requestedIndex = (THINKING_LEVELS as readonly string[]).indexOf(level);
+  if (requestedIndex === -1) return available[0] ?? "off";
+  for (let i = requestedIndex; i < THINKING_LEVELS.length; i++) {
+    const candidate = THINKING_LEVELS[i];
+    if (available.includes(candidate)) return candidate;
+  }
+  for (let i = requestedIndex - 1; i >= 0; i--) {
+    const candidate = THINKING_LEVELS[i];
+    if (available.includes(candidate)) return candidate;
+  }
+  return available[0] ?? "off";
 }
 
 export interface RuntimeEnv {
@@ -366,6 +408,8 @@ function toRuntime(provider: string, entry: Model<Api>): RuntimeModel {
     contextWindow: entry.contextWindow,
     maxTokens: entry.maxTokens,
     cost: entry.cost,
+    reasoning: entry.reasoning,
+    thinkingLevelMap: entry.thinkingLevelMap,
   };
 }
 
@@ -474,10 +518,10 @@ function stubRuntime(): ModelRuntime {
   };
 }
 
-export function buildRuntime(
-  env: RuntimeEnv,
-  customDoc: unknown = bundledModelsJson,
-): ModelRuntime {
+// Full merged catalog (built-ins plus models.json customs), independent of
+// keys: session switches validate against this so fail-closed naming works
+// keyless, while inference still needs a keyed provider below.
+export function buildAllProviders(customDoc: unknown = bundledModelsJson): KeyedProvider[] {
   const customs = loadCustomProviders(customDoc);
   const seen = new Set<string>();
   const providers: KeyedProvider[] = [];
@@ -505,7 +549,67 @@ export function buildRuntime(
       catalog: mergedCatalog(id, new Map(), customs.get(id)),
     });
   }
-  const keyed = providers.filter(
+  return providers;
+}
+
+export function providerIdList(providers: KeyedProvider[]): string {
+  return providers.map((provider) => provider.id).sort().join(", ");
+}
+
+// Session/model lookup against the full catalog: unknown provider names the
+// provider id list, unknown id names that provider's models. Throws
+// {error, hint} like the buildRuntime paths below.
+export function resolveCatalogModel(
+  providerId: string,
+  modelId: string,
+  customDoc: unknown = bundledModelsJson,
+): RuntimeModel {
+  const providers = buildAllProviders(customDoc);
+  const scoped = providers.find((provider) => provider.id === providerId);
+  if (!scoped)
+    fail(
+      `unknown provider: ${providerId}`,
+      `available providers: ${providerIdList(providers)}`,
+    );
+  const entry = (scoped as KeyedProvider).catalog.get(modelId);
+  if (!entry)
+    fail(
+      `unknown model: ${providerId}/${modelId}`,
+      `available ${providerId} models: ${[...(scoped as KeyedProvider).catalog.keys()].sort().join(", ")}`,
+    );
+  return entry as RuntimeModel;
+}
+
+export interface CatalogLine {
+  provider: string;
+  id: string;
+  name: string;
+  contextWindow: RuntimeModel["contextWindow"];
+  maxTokens: RuntimeModel["maxTokens"];
+}
+
+export function listCatalogModels(customDoc: unknown = bundledModelsJson): CatalogLine[] {
+  const out: CatalogLine[] = [];
+  for (const provider of buildAllProviders(customDoc))
+    for (const entry of provider.catalog.values())
+      out.push({
+        provider: provider.id,
+        id: entry.id,
+        name: entry.name,
+        contextWindow: entry.contextWindow,
+        maxTokens: entry.maxTokens,
+      });
+  out.sort((a, b) => a.provider.localeCompare(b.provider) || a.id.localeCompare(b.id));
+  return out;
+}
+
+// Providers with keys in env, in buildRuntime precedence order. Empty means
+// the keyless stub stands in and inference records the session triple.
+export function keyedProviders(
+  env: RuntimeEnv,
+  customDoc: unknown = bundledModelsJson,
+): KeyedProvider[] {
+  return buildAllProviders(customDoc).filter(
     (provider) =>
       BUILTINS.some(
         (builtin) =>
@@ -513,6 +617,37 @@ export function buildRuntime(
           hasKey(env, builtin.envVar),
       ) || hasKey(env, customKeyEnvVar(provider.id)),
   );
+}
+
+// Inference-time lookup: same unknown-id fail-closed shapes as buildRuntime,
+// scoped to the keyed providers.
+export function resolveKeyedModel(
+  env: RuntimeEnv,
+  providerId: string,
+  modelId: string,
+  customDoc: unknown = bundledModelsJson,
+): RuntimeModel {
+  const keyed = keyedProviders(env, customDoc);
+  const scoped = keyed.find((provider) => provider.id === providerId);
+  if (!scoped)
+    fail(
+      `unknown provider: ${providerId}`,
+      `providers with keys: ${providerIdList(keyed)}`,
+    );
+  const entry = scoped.catalog.get(modelId);
+  if (!entry)
+    fail(
+      `unknown model: ${providerId}/${modelId}`,
+      `available ${providerId} models: ${[...scoped.catalog.keys()].sort().join(", ")}`,
+    );
+  return entry;
+}
+
+export function buildRuntime(
+  env: RuntimeEnv,
+  customDoc: unknown = bundledModelsJson,
+): ModelRuntime {
+  const keyed = keyedProviders(env, customDoc);
   if (keyed.length === 0) return stubRuntime();
 
   const override =

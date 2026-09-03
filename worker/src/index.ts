@@ -1,5 +1,6 @@
 import { WorkspaceDO } from "./workspace-do";
 import { EXEC_TIMEOUT_MS, ShellWorker } from "./shell-worker";
+import { listCatalogModels } from "./model-runtime";
 
 export { WorkspaceDO, ShellWorker };
 
@@ -101,6 +102,88 @@ export default {
         headers: { "content-type": "application/json" },
         body: rawBody,
       } as RequestInit);
+    }
+
+    // POST /workspaces/:id/sessions/:sid/model → persist a model switch as a pi entry
+    if (
+      request.method === "POST" &&
+      parts.length === 5 &&
+      parts[0] === "workspaces" &&
+      parts[2] === "sessions" &&
+      parts[4] === "model"
+    ) {
+      const workspaceId = parts[1];
+      const sessionId = parts[3];
+      const inner = new URL("http://do/model");
+      inner.searchParams.set("ws", workspaceId);
+      inner.searchParams.set("sid", sessionId);
+      return await env.WORKSPACE_DO.get(
+        env.WORKSPACE_DO.idFromName(workspaceId),
+      ).fetch(inner.toString(), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: rawBody,
+      } as RequestInit);
+    }
+
+    // POST /workspaces/:id/sessions/:sid/thinking → persist a thinking switch as a pi entry
+    if (
+      request.method === "POST" &&
+      parts.length === 5 &&
+      parts[0] === "workspaces" &&
+      parts[2] === "sessions" &&
+      parts[4] === "thinking"
+    ) {
+      const workspaceId = parts[1];
+      const sessionId = parts[3];
+      const inner = new URL("http://do/thinking");
+      inner.searchParams.set("ws", workspaceId);
+      inner.searchParams.set("sid", sessionId);
+      return await env.WORKSPACE_DO.get(
+        env.WORKSPACE_DO.idFromName(workspaceId),
+      ).fetch(inner.toString(), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: rawBody,
+      } as RequestInit);
+    }
+
+    // PUT|GET /workspaces/:id/settings → workspace default model triple for session mint
+    if (
+      (request.method === "PUT" || request.method === "POST" || request.method === "GET") &&
+      parts.length === 3 &&
+      parts[0] === "workspaces" &&
+      parts[2] === "settings"
+    ) {
+      const workspaceId = parts[1];
+      const inner = new URL("http://do/settings");
+      inner.searchParams.set("ws", workspaceId);
+      const init = request.method === "GET"
+        ? { method: "GET" }
+        : { method: "PUT", headers: { "content-type": "application/json" }, body: rawBody };
+      return await env.WORKSPACE_DO.get(
+        env.WORKSPACE_DO.idFromName(workspaceId),
+      ).fetch(inner.toString(), init as RequestInit);
+    }
+
+    // GET /models[?provider=P] → catalog ids with context windows, no keys needed
+    if (
+      request.method === "GET" &&
+      parts.length === 1 &&
+      parts[0] === "models"
+    ) {
+      const only = url.searchParams.get("provider");
+      const models = listCatalogModels().filter((m) => only === null || m.provider === only);
+      if (only !== null && models.length === 0) {
+        return Response.json(
+          {
+            error: `unknown provider: ${only}`,
+            hint: "retry GET /models without ?provider to list the catalog",
+          },
+          { status: 404 },
+        );
+      }
+      return Response.json({ models });
     }
 
     // POST /workspaces/:id/sessions/:sid/run → one headless harness turn

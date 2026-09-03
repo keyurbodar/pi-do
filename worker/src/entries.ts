@@ -106,7 +106,7 @@ export function entryHead(sql: EntriesSql, sid: string): { count: number; head: 
   return { count: 0, head: 0 };
 }
 
-function runInSyncTx(sql: EntriesSql, fn: () => void): void {
+export function runInSyncTx(sql: EntriesSql, fn: () => void): void {
   const tx = sql.transactionSync;
   if (typeof tx === "function") tx.call(sql, fn);
   else fn();
