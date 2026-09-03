@@ -1,11 +1,19 @@
 import { createFileStore, type FileStore } from "./files";
-
+import { ComputerExecutionEnv } from "../../packages/pi-cf/src/env";
+import { runHeadlessTurn } from "./harness";
 import type { DurableObjectState } from "@cloudflare/workers-types";
 import { createWorkspaceFs, hasGitDir } from "./git-fs";
 import { gateArgv, notARepoBody, NotARepoError, runGitRead } from "./git-reads";
-
+interface ShellWorkerBinding {
+  exec(input: {
+    command: string;
+    cwd?: string;
+    env?: Record<string, string>;
+  }): Promise<{ stdout: string; stderr: string; exit: number; timedOut: boolean }>;
+}
 interface Env {
   WORKSPACE_DO: DurableObjectNamespace;
+  SHELL_WORKER: ShellWorkerBinding;
 }
 
 function json(data: unknown, status = 200): Response {
@@ -267,6 +275,75 @@ export class WorkspaceDO implements DurableObject {
         return json(
           { error: msg.slice(0, 300), hint: "retry with argv [status|log|diff|show]; writes are deferred" },
           400,
+        );
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/run") {
+      const ws = url.searchParams.get("ws") ?? "";
+      const sid = url.searchParams.get("sid") ?? "";
+      if (!ws) {
+        return json(
+          {
+            error: "missing workspace",
+            hint: "call POST /workspaces/:id/sessions/:sid/run on the Worker instead",
+          },
+          400,
+        );
+      }
+      if (!this.workspaceExists(ws)) {
+        return json(
+          {
+            error: "unknown workspace",
+            hint: "create one with POST /workspaces first, then mint a session",
+          },
+          404,
+        );
+      }
+      if (!sid || !this.sessionExists(ws, sid)) {
+        return json(
+          {
+            error: "unknown session",
+            hint: "mint one with POST /workspaces/:id/sessions first, then retry with that session id",
+          },
+          404,
+        );
+      }
+      let prompt: unknown;
+      try {
+        const body: unknown = await request.json();
+        if (body !== null && typeof body === "object" && "prompt" in body) {
+          prompt = body.prompt;
+        }
+      } catch {
+        prompt = undefined;
+      }
+      if (typeof prompt !== "string" || prompt.length === 0) {
+        return json(
+          {
+            error: "missing prompt",
+            hint: 'retry as POST /workspaces/:id/sessions/:sid/run with JSON {"prompt": "read seed.txt"}',
+          },
+          400,
+        );
+      }
+      try {
+        const env = new ComputerExecutionEnv(this.files, ws, this.env.SHELL_WORKER);
+        const turn = await runHeadlessTurn(prompt, env);
+        return json({ result: turn.result, toolCalls: turn.toolCalls });
+      } catch (e) {
+        if (
+          e !== null &&
+          typeof e === "object" &&
+          "error" in e &&
+          typeof e.error === "string"
+        ) {
+          const hint = "hint" in e && typeof e.hint === "string" ? e.hint : "retry the run";
+          return json({ error: e.error, hint }, 500);
+        }
+        return json(
+          { error: "run failed", hint: "retry the run with a simpler prompt" },
+          500,
         );
       }
     }

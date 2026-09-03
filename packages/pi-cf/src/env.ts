@@ -25,13 +25,26 @@ function toBytes(body: ArrayBuffer | Uint8Array): Uint8Array {
   return body instanceof Uint8Array ? body : new Uint8Array(body);
 }
 
+export interface ShellExecResult {
+  stdout: string;
+  stderr: string;
+  exit: number;
+  timedOut: boolean;
+}
+
+export interface ShellLike {
+  exec(input: { command: string; cwd?: string }): Promise<ShellExecResult>;
+}
+
 export class ComputerExecutionEnv {
   private store: FileStoreLike;
   private ws: string;
+  private shell: ShellLike | undefined;
 
-  constructor(store: FileStoreLike, ws: string) {
+  constructor(store: FileStoreLike, ws: string, shell?: ShellLike) {
     this.store = store;
     this.ws = ws;
+    this.shell = shell;
   }
 
   readFile(path: string): Uint8Array {
@@ -60,6 +73,23 @@ export class ComputerExecutionEnv {
 
   readdir(dir: string): FileStat[] {
     return this.store.list(this.ws, dir);
+  }
+
+  async exec(command: string, cwd?: string): Promise<{ stdout: string; stderr: string; exit: number }> {
+    if (!this.shell) {
+      throw {
+        error: "shell unavailable",
+        hint: "construct ComputerExecutionEnv with a shell binding to run commands",
+      };
+    }
+    const result = await this.shell.exec({ command, cwd });
+    if (result.timedOut) {
+      throw {
+        error: "exec timed out",
+        hint: "retry with a shorter command; kill support arrives in PR12",
+      };
+    }
+    return { stdout: result.stdout, stderr: result.stderr, exit: result.exit };
   }
 
   rm(path: string): { path: string } {
