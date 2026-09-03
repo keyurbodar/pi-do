@@ -12,9 +12,9 @@
 // AbortController map per DO incarnation as the abort witness, plus the
 // session turn queue shared with POST /run; dropping both on eviction is safe
 // because the next openRun flips the orphaned run to interrupted.
-import { appendEntry, closeRun, getEntry, openRun, type EntriesSql } from "./entries";
-import { enforceFence } from "./fence";
-import type { FileStore } from "./vfs-dofs";
+import { appendEntry, closeRun, getEntry, openRun, type EntriesSql } from "../../packages/pi-cf/src/entries";
+import { enforceFence } from "../../packages/pi-cf/src/fence";
+import type { FileStore } from "../../packages/pi-cf/src/vfs-dofs";
 import { buildRuntime, clampThinkingLevel, resolveProviderKey, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
 import { createAgentSession } from "../../packages/pi-cf/src/session";
 export interface StreamShell {

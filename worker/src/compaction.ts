@@ -14,7 +14,7 @@
 // never rewritten). A compaction moves the old prefix into pi_archive pages
 // and leaves one "compaction" summary entry plus the live tail, so resume
 // replay equals summary plus tail.
-import { appendEntry, entryHead, listEntries, runInSyncTx, type EntriesSql, type EntryRow } from "./entries";
+import { appendEntry, entryHead, listEntries, runInSyncTx, type EntriesSql, type EntryRow } from "../../packages/pi-cf/src/entries";
 
 export const LIVE_ENTRY_BUDGET = 50;
 // Reserve under the budget; a freshly compacted table holds
