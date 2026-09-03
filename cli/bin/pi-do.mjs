@@ -679,6 +679,23 @@ function printEntryPretty(entry) {
   process.stdout.write(`${entry.cursor} ${entry.type} ${entry.body}\n`);
 }
 
+function formatCount(n) {
+  return Number(n).toLocaleString("en-US");
+}
+
+function formatElapsed(ms) {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+}
+
+// in covers input plus cacheWrite (cache writes bill as input).
+function formatUsageRow(usage) {
+  const parts = [`in ${formatCount(usage.inTokens ?? 0)}`, `out ${formatCount(usage.outTokens ?? 0)}`];
+  if ((usage.cacheRead ?? 0) > 0) parts.push(`cache ${formatCount(usage.cacheRead)}`);
+  parts.push(`t ${formatElapsed(usage.elapsedMs ?? 0)}`);
+  if (usage.tokensPerSec !== null && usage.tokensPerSec !== undefined) parts.push(`${usage.tokensPerSec.toFixed(1)}/s`);
+  return parts.join("  ");
+}
+
 function printEntriesPayload(data, opts) {
   const entries = Array.isArray(data.entries) ? data.entries : [];
   if (opts.json) {
@@ -715,6 +732,7 @@ function printStreamFrame(frame, json) {
     if (typeof frame.fence === "string") process.stdout.write(`done fence=${frame.fence} revision=${frame.revision}\n`);
     else process.stdout.write(`done\n`);
     if (frame.result) process.stdout.write(frame.result.endsWith("\n") ? frame.result : `${frame.result}\n`);
+    if (frame.usage) process.stdout.write(`usage ${formatUsageRow(frame.usage)}\n`);
   } else if (frame.aborted) {
     process.stdout.write(`aborted run=${frame.runId ?? ""}\n`);
   } else if (frame.busy) {
@@ -893,6 +911,7 @@ async function doRun(base, json, opts) {
   } else {
     if (data.result) process.stdout.write(data.result.endsWith("\n") ? data.result : `${data.result}\n`);
     human(`run ok: ${calls.length} tool calls`);
+    if (data.usage) human(`usage ${formatUsageRow(data.usage)}`);
   }
   process.exit(0);
 }
