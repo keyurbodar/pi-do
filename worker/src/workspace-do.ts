@@ -1,3 +1,5 @@
+import { createFileStore, type FileStore } from "./files";
+
 import type { DurableObjectState } from "@cloudflare/workers-types";
 
 interface Env {
@@ -14,10 +16,12 @@ function json(data: unknown, status = 200): Response {
 export class WorkspaceDO implements DurableObject {
   private state: DurableObjectState;
   private env: Env;
+  private files: FileStore;
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
     this.env = env;
+    this.files = createFileStore(state.storage.sql);
   }
 
   private ensureSchema(): void {
@@ -25,9 +29,7 @@ export class WorkspaceDO implements DurableObject {
     sql.exec(
       "CREATE TABLE IF NOT EXISTS workspaces(id TEXT PRIMARY KEY, created_at TEXT)",
     );
-    sql.exec(
-      "CREATE TABLE IF NOT EXISTS files(ws TEXT, path TEXT, body BLOB, updated_at TEXT, PRIMARY KEY(ws, path))",
-    );
+    this.files.ensureSchema();
     sql.exec(
       "CREATE TABLE IF NOT EXISTS pi_entries (id INTEGER PRIMARY KEY AUTOINCREMENT, ws TEXT, sid TEXT, cursor INTEGER, type TEXT, body TEXT)",
     );
@@ -108,29 +110,15 @@ export class WorkspaceDO implements DurableObject {
           );
         }
         const buf = new Uint8Array(await request.arrayBuffer());
-        this.state.storage.sql.exec(
-          "INSERT OR REPLACE INTO files(ws, path, body, updated_at) VALUES (?, ?, ?, ?)",
-          ws,
-          path,
-          buf,
-          new Date().toISOString(),
-        );
-        return json({ path, bytes: buf.byteLength });
+        const bytes = this.files.put(ws, path, buf, new Date().toISOString());
+        return json({ path, bytes });
       }
 
       if (request.method === "GET") {
         if (url.searchParams.has("list")) {
           const dir = url.searchParams.get("list") ?? "";
-          const rows = [
-            ...this.state.storage.sql.exec(
-              "SELECT path, length(body) AS bytes FROM files WHERE ws = ? AND path LIKE (? || '%') ORDER BY path",
-              ws,
-              dir,
-            ),
-          ] as unknown as Array<{ path: string; bytes: number }>;
-          return json({
-            entries: rows.map((r) => ({ path: r.path, bytes: r.bytes })),
-          });
+          const entries = this.files.list(ws, dir);
+          return json({ entries });
         }
         const path = url.searchParams.get("path");
         if (!path) {
@@ -142,14 +130,8 @@ export class WorkspaceDO implements DurableObject {
             400,
           );
         }
-        const rows = [
-          ...this.state.storage.sql.exec(
-            "SELECT body FROM files WHERE ws = ? AND path = ?",
-            ws,
-            path,
-          ),
-        ] as unknown as Array<{ body: ArrayBuffer }>;
-        if (rows.length === 0) {
+        const body = this.files.get(ws, path);
+        if (body === undefined) {
           return json(
             {
               error: `no such file: ${path}`,
@@ -158,7 +140,7 @@ export class WorkspaceDO implements DurableObject {
             404,
           );
         }
-        return new Response(rows[0].body as BodyInit, {
+        return new Response(body as BodyInit, {
           status: 200,
           headers: { "content-type": "application/octet-stream" },
         });
