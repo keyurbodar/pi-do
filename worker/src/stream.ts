@@ -27,6 +27,7 @@ export interface StreamDeps {
   sessionKnown: boolean;
   readFence(): { fence: string | null; revision: number } | null;
   casRotateFence(oldFence: string, oldRevision: number, next: { fence: string; revision: number }): boolean;
+  enqueue: <T>(fn: () => Promise<T>) => Promise<T>;
 }
 
 const HEARTBEAT_MS = 15000;
@@ -53,7 +54,6 @@ export function handleStream(request: Request, deps: StreamDeps): Response {
   const server = pair[1];
   server.accept();
 
-  let busy = false;
   let runId: string | null = null;
   let controller: AbortController | null = null;
   let closed = false;
@@ -135,24 +135,15 @@ export function handleStream(request: Request, deps: StreamDeps): Response {
   }
 
   async function startTurn(prompt: string, fence: unknown, expected: unknown, hasFence: boolean): Promise<void> {
-    if (busy) {
-      send({
-        busy: true,
-        hint: "a turn is already running on this socket; wait for {done} or {aborted} before sending the next prompt",
-      });
-      return;
-    }
-    busy = true;
+    await deps.enqueue(async () => {
     let held: { fence: string; revision: number } | null = null;
     if (hasFence) {
       if (typeof fence !== "string" || fence.length === 0 || !Number.isInteger(expected) || typeof expected !== "number") {
-        busy = false;
         send({ error: "missing fence", hint: "retry the turn with both {fence, expected}, or omit both" });
         return;
       }
       const checked = enforceFence(deps.readFence(), fence, expected);
       if ("status" in checked) {
-        busy = false;
         send(checked.body);
         closeSocket(checked.status === 403 ? CLOSE_FENCED : CLOSE_CONFLICT, checked.body.hint);
         return;
@@ -212,10 +203,10 @@ export function handleStream(request: Request, deps: StreamDeps): Response {
         send({ error: message.slice(0, 300), hint: "retry the prompt with a simpler request" });
       }
     } finally {
-      busy = false;
       runId = null;
       controller = null;
     }
+    });
   }
 
   server.addEventListener("message", (event: MessageEvent) => {
