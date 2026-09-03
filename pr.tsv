@@ -6,8 +6,8 @@ pr	title	branch	worktree	complexity	time_min	depends_on	parallel_group	scope	com
 05	git-narrow-api	pr/05-git-narrow-api	.worktrees/pr-05	2	12	02	W3	narrow workspace.git status/log/diff via POST sessions/:sid/git argv allowlist	100%	✅ merged (allowlist, real-repo reads, adversarial shut; writes deferred)
 06	harness-headless-loop	pr/06-harness-headless-loop	.worktrees/pr-06	3	20	03,04	W4	pi harness headless prompt to read+bash tool call inside DO no socket yet	100%	✅ merged (stub turn read+bash, run route, 5 batteries green)
 07	session-persist-append	pr/07-session-persist-append	.worktrees/pr-07	3	18	06	W5	append every harness onUpdate to pi_entries before emit + findOpenOperations interrupted mark	100%	✅ merged (entries sole-writer, runs ledger, raw replay; pagination in PR09)
-08	fence-revision-cas	pr/08-fence-revision-cas	.worktrees/pr-08	3	15	07	W6	owner-fence token + revision CAS on replace stale socket gets Fenced Conflict never overwrites	0%	—
-09	entries-replay-api	pr/09-entries-replay-api	.worktrees/pr-09	2	12	07	W6	GET session metadata + GET entries after cursor pagination for resume replay	0%	—
+08	fence-revision-cas	pr/08-fence-revision-cas	.worktrees/pr-08	3	15	07	W6	owner-fence token + revision CAS on replace stale socket gets Fenced Conflict never overwrites	100%	✅ merged (claim+fenced run over HTTP, enforceFence helper, pi_owners dropped)
+09	entries-replay-api	pr/09-entries-replay-api	.worktrees/pr-09	2	12	07	W6	GET session metadata + GET entries after cursor pagination for resume replay	100%	✅ merged (paged entries+meta, paged byte-equals full)
 10	ws-stream-protocol	pr/10-ws-stream-protocol	.worktrees/pr-10	3	20	08,09	W7	WS stream prompt abort steer in + message tool agent entry frames out persisted first	0%	—
 11	per-session-queue	pr/11-per-session-queue	.worktrees/pr-11	2	12	10	W8	per-session promise queue one prompt at a time + withFileMutationQueue for overlapping edits	0%	—
 12	bash-stream-abort	pr/12-bash-stream-abort	.worktrees/pr-12	3	15	10	W8	throttled tool_update bash streaming + AbortSignal to ExecHandle kill path	0%	—
