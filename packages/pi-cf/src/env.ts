@@ -86,7 +86,7 @@ export class ComputerExecutionEnv {
     if (result.timedOut) {
       throw {
         error: "exec timed out",
-        hint: "retry with a shorter command; kill support arrives in PR12",
+        hint: "retry with a shorter command, or stop a live exec session via the exec kill route",
       };
     }
     return { stdout: result.stdout, stderr: result.stderr, exit: result.exit };
