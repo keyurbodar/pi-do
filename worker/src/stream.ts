@@ -76,7 +76,6 @@ export function handleStream(request: Request, deps: StreamDeps): Response {
       // Socket already gone; the error frame above carries the hint.
     }
   };
-  // Append first, then re-read the row and emit that copy.
   const emitAppend = (type: string, body: unknown): void => {
     const cursor = appendEntry(deps.sql, deps.sid, type, body);
     const row = getEntry(deps.sql, deps.sid, cursor);
@@ -110,7 +109,6 @@ export function handleStream(request: Request, deps: StreamDeps): Response {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  // Stale-fence connect: ?fence=&expected= checked at upgrade, close on failure.
   try {
     const query = new URL(request.url).searchParams;
     if (query.has("fence") || query.has("expected")) {
