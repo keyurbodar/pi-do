@@ -91,6 +91,9 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
   async function run(prompt: string, runOptions?: SessionRunOptions): Promise<SessionTurn> {
     const signal = runOptions?.signal;
     const onUpdate = runOptions?.onUpdate;
+    const readFn = tools.read;
+    const bashFn = tools.bash;
+    const modelId = model.id;
     const toolCalls: SessionToolCall[] = [];
     const outputs: string[] = [];
     let n = 0;
@@ -102,7 +105,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
       const tool = step.kind;
       const args = step.kind === "read" ? { path: step.path } : { command: step.command };
       onUpdate?.({ kind: "toolCall", id, tool, args });
-      const toolFn = step.kind === "read" ? tools.read : tools.bash;
+      const toolFn = step.kind === "read" ? readFn : bashFn;
       const result = await toolFn.execute(id, args, signal, undefined, context);
       const output = textOf(result);
       toolCalls.push({ id, tool, args, output });
@@ -113,7 +116,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
       result: outputs.join("\n"),
       toolCalls,
       via: "createAgentSession",
-      model: model.id,
+      model: modelId,
     };
   }
 
