@@ -3,7 +3,7 @@ pr	title	branch	worktree	complexity	time_min	depends_on	parallel_group	scope	com
 02	vfs-files-api	pr/02-vfs-files-api	.worktrees/pr-02	2	15	01	W2	WorkspaceFilesystem read/stat/readdir via GET /files and write/mkdir via PUT /files	100%	✅ shipped + verified (direct SQLite; dofs swap later)
 03	env-fs-adapter	pr/03-env-fs-adapter	.worktrees/pr-03	2	12	02	W3	ComputerExecutionEnv FileSystem methods mapped to workspace.fs only	100%	✅ merged (tsc x2, verify-env, roundtrip PASS)
 04	shell-justbash-exec	pr/04-shell-justbash-exec	.worktrees/pr-04	3	18	01	W2	worker-shell just-bash backend sync:none + POST /exec one-off shell outside loop	100%	✅ merged (exec, timeout 10.1s, no-entries, regression PASS)
-05	git-narrow-api	pr/05-git-narrow-api	.worktrees/pr-05	2	12	02	W3	narrow workspace.git status/log/diff via POST sessions/:sid/git argv allowlist	80%	❌ seeded-repo status fails: stat lacks mtime (cause found); fix pending
+05	git-narrow-api	pr/05-git-narrow-api	.worktrees/pr-05	2	12	02	W3	narrow workspace.git status/log/diff via POST sessions/:sid/git argv allowlist	100%	✅ merged (allowlist, real-repo reads, adversarial shut; writes deferred)
 06	harness-headless-loop	pr/06-harness-headless-loop	.worktrees/pr-06	3	20	03,04	W4	pi harness headless prompt to read+bash tool call inside DO no socket yet	0%	—
 07	session-persist-append	pr/07-session-persist-append	.worktrees/pr-07	3	18	06	W5	append every harness onUpdate to pi_entries before emit + findOpenOperations interrupted mark	0%	—
 08	fence-revision-cas	pr/08-fence-revision-cas	.worktrees/pr-08	3	15	07	W6	owner-fence token + revision CAS on replace stale socket gets Fenced Conflict never overwrites	0%	—
