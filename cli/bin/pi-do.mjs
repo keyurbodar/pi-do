@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// pi-do CLI driver: doctor / workspace create / session create / files put|get|ls / exec / git / run.
+// pi-do CLI driver: doctor / workspace create / session create / files put|get|ls / exec / git / run / entries.
 // Zero dependencies, plain JS on global fetch (node >= 18).
 import { readFile, writeFile } from "node:fs/promises";
 
@@ -18,6 +18,7 @@ commands:
   exec                          run a one-off shell command (POST /workspaces/:id/exec)
   git                           narrow git reads (POST /workspaces/:id/sessions/:sid/git)
   run                           one headless harness turn (POST /workspaces/:id/sessions/:sid/run)
+  entries                       raw replay slice (GET /workspaces/:id/sessions/:sid/entries)
 
 global flags:
   --base URL    worker base URL (default ${DEFAULT_BASE})
@@ -248,6 +249,27 @@ example:
   pi-do exec --ws 550e8400-e29b-41d4-a716-446655440000 --command "echo hi"
 `;
 
+const ENTRIES_HELP = `pi-do entries — raw replay slice of persisted session entries
+
+usage:
+  pi-do entries --ws WS --sid SID [--after N] [--base URL] [--json]
+
+behavior:
+  GETs /workspaces/:id/sessions/:sid/entries?after=N. Returns the raw
+  ordered entry list ({entries: [{cursor, type, body}]}) with no pagination
+  promises: pagination, metadata, and resume semantics stay in PR09.
+  Without --json stdout is one "CURSOR TYPE BODY" line per entry; with
+  --json stdout is the raw server JSON.
+
+exit codes:
+  0  ok
+  1  server-side failure, e.g. unknown workspace/session (error + hint printed)
+  2  usage error
+
+example:
+  pi-do entries --ws <id> --sid <sid> --after 0
+`;
+
 
 function failUsage(message, help) {
   process.stderr.write(`pi-do: ${message}\n`);
@@ -264,6 +286,7 @@ function parseArgs(argv) {
     ws: undefined,
     sid: undefined,
     prompt: undefined,
+    after: undefined,
     path: undefined,
     body: undefined,
     bodyFile: undefined,
@@ -340,6 +363,10 @@ function parseArgs(argv) {
       opts.prompt = takeValue("--prompt");
     } else if (tok.startsWith("--prompt=")) {
       opts.prompt = tok.slice("--prompt=".length);
+    } else if (tok === "--after") {
+      opts.after = takeValue("--after");
+    } else if (tok.startsWith("--after=")) {
+      opts.after = tok.slice("--after=".length);
     } else {
       positionals.push(tok);
     }
@@ -392,6 +419,7 @@ function helpFor(cmd, sub) {
   }
   if (cmd === "exec") return EXEC_HELP;
   if (cmd === "run") return RUN_HELP;
+  if (cmd === "entries") return ENTRIES_HELP;
   return ROOT_HELP;
 }
 
@@ -637,6 +665,34 @@ async function doFilesLs(base, json, opts) {
   process.exit(0);
 }
 
+async function doEntries(base, json, opts) {
+  if (!opts.ws) failUsage(`entries needs --ws WS.`, ENTRIES_HELP);
+  if (!opts.sid) failUsage(`entries needs --sid SID.`, ENTRIES_HELP);
+  const after = opts.after ?? "0";
+  if (!/^\d+$/.test(after)) failUsage(`entries needs --after N (a non-negative integer).`, ENTRIES_HELP);
+  const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/sessions/${encodeURIComponent(opts.sid)}/entries?after=${encodeURIComponent(after)}`;
+  let res;
+  try {
+    res = await fetch(url);
+  } catch (e) {
+    human(`error: cannot reach server at ${base}`);
+    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
+    if (json) printJson({ error: "cannot reach server", base });
+    process.exit(1);
+  }
+  if (!res.ok) await failFromResponse(res, json);
+  const data = await res.json();
+  const entries = Array.isArray(data.entries) ? data.entries : [];
+  if (json) {
+    printJson(data);
+    human(`entries ${entries.length} (after ${after})`);
+  } else {
+    for (const e of entries) process.stdout.write(`${e.cursor} ${e.type} ${e.body}\n`);
+    human(`entries ${entries.length} (after ${after})`);
+  }
+  process.exit(0);
+}
+
 async function doExec(base, json, opts) {
   if (!opts.ws) failUsage(`exec needs --ws WS.`, EXEC_HELP);
   if (opts.command === undefined) failUsage(`exec needs --command CMD.`, EXEC_HELP);
@@ -711,6 +767,9 @@ async function main() {
   } else if (cmd === "exec") {
     if (sub !== undefined || extra.length > 0) failUsage(`exec takes no subcommand.`, EXEC_HELP);
     await doExec(opts.base, opts.json, opts);
+  } else if (cmd === "entries") {
+    if (sub !== undefined || extra.length > 0) failUsage(`entries takes no subcommand.`, ENTRIES_HELP);
+    await doEntries(opts.base, opts.json, opts);
   } else if (cmd === "session") {
     if (sub !== "create" || extra.length > 0) failUsage(`unknown session subcommand '${sub ?? ""}'.`, SESSION_HELP);
     await doSessionCreate(opts.base, opts.json, opts);

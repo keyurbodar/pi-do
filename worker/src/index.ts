@@ -97,6 +97,26 @@ export default {
       } as RequestInit);
     }
 
+    // GET /workspaces/:id/sessions/:sid/entries → raw ordered replay slice.
+    if (
+      request.method === "GET" &&
+      parts.length === 5 &&
+      parts[0] === "workspaces" &&
+      parts[2] === "sessions" &&
+      parts[4] === "entries"
+    ) {
+      const workspaceId = parts[1];
+      const sessionId = parts[3];
+      const inner = new URL("http://do/entries");
+      inner.searchParams.set("ws", workspaceId);
+      inner.searchParams.set("sid", sessionId);
+      const after = url.searchParams.get("after");
+      if (after !== null) inner.searchParams.set("after", after);
+      return await env.WORKSPACE_DO.get(
+        env.WORKSPACE_DO.idFromName(workspaceId),
+      ).fetch(inner.toString(), { method: "GET" } as RequestInit);
+    }
+
     // PUT|GET /workspaces/:id/files
     if (
       (request.method === "PUT" || request.method === "GET") &&
