@@ -19,6 +19,10 @@ commands:
   git                           narrow git reads (POST /workspaces/:id/sessions/:sid/git)
   run                           one headless harness turn (POST /workspaces/:id/sessions/:sid/run)
   claim                         rotate owner fence via revision CAS (POST /workspaces/:id/sessions/:sid/claim)
+  model                         switch the session model (POST /workspaces/:id/sessions/:sid/model)
+  thinking                      switch the thinking level (POST /workspaces/:id/sessions/:sid/thinking)
+  models                        list catalog models (GET /models)
+  settings                      workspace default model triple (PUT|GET /workspaces/:id/settings)
   entries                       raw replay slice (GET /workspaces/:id/sessions/:sid/entries)
   meta                          resume cursor (GET /workspaces/:id/sessions/:sid/meta)
 
@@ -133,12 +137,14 @@ example:
 
 const RUN_HELP = `pi-do run — one headless harness turn in a session
 
-usage:
-  pi-do run --ws WS --sid SID --prompt T [--fence F --expected N] [--base URL] [--json]
+  pi-do run --ws WS --sid SID --prompt T [--model provider/id] [--thinking L] [--fence F --expected N] [--base URL] [--json]
 
 behavior:
   POSTs {prompt} to /workspaces/:id/sessions/:sid/run. The stub model reads
   seed.txt and echoes a bash marker, then answers {result, toolCalls}.
+  The turn resolves the session model triple; --model/--thinking carry
+  one-shot overrides that the turn uses without persisting (same fail-closed
+  validation as the model/thinking switches).
   With --fence/--expected the run enforces the owner fence like claim
   before opening the run (403 Fenced on wrong fence, 409 Conflict on stale
   revision); success rotates the fence, bumps revision, and returns both
@@ -153,6 +159,87 @@ exit codes:
 
 example:
   pi-do run --ws <id> --sid <sid> --prompt "read seed.txt"
+`;
+const MODEL_HELP = `pi-do model — switch the session model mid-session
+
+usage:
+  pi-do model --ws WS --sid SID --model provider/id [--fence F --expected N] [--base URL] [--json]
+
+behavior:
+  POSTs {provider, id} to /workspaces/:id/sessions/:sid/model. Unknown ids
+  fail closed naming the catalog (nothing mutates). Success updates the
+  session row and appends a model_change pi entry in one transaction, so the
+  next run resolves the new model. With --fence/--expected the switch
+  enforces the owner fence like claim; omit both for the legacy path.
+
+exit codes:
+  0  switched ({model, revision})
+  1  server-side failure, e.g. unknown model (error + hint printed)
+  2  usage error
+
+example:
+  pi-do model --ws <id> --sid <sid> --model anthropic/claude-opus-4-6
+`;
+
+const THINKING_HELP = `pi-do thinking — switch the session thinking level
+
+usage:
+  pi-do thinking --ws WS --sid SID --level L [--fence F --expected N] [--base URL] [--json]
+
+behavior:
+  POSTs {level} to /workspaces/:id/sessions/:sid/thinking. Unknown levels
+  fail closed naming the supported ones (nothing mutates). A known level the
+  session model does not support clamps to the nearest supported one.
+  Success updates the session row and appends a thinking_level_change pi
+  entry in one transaction. With --fence/--expected the switch enforces the
+  owner fence like claim; omit both for the legacy path.
+
+exit codes:
+  0  switched ({thinking, revision})
+  1  server-side failure, e.g. unknown level (error + hint printed)
+  2  usage error
+
+example:
+  pi-do thinking --ws <id> --sid <sid> --level high
+`;
+
+const MODELS_HELP = `pi-do models — list catalog models with context windows
+
+usage:
+  pi-do models [--provider P] [--base URL] [--json]
+
+behavior:
+  GETs /models (optionally ?provider=P). Unknown providers fail closed.
+  Without --json stdout is one "provider/id (ctx N)" line per model.
+
+exit codes:
+  0  listed
+  1  server-side failure (error + hint printed)
+  2  usage error
+
+example:
+  pi-do models --provider anthropic
+`;
+
+const SETTINGS_HELP = `pi-do settings — workspace default model triple for session mint
+
+usage:
+  pi-do settings --ws WS [--model provider/id] [--level L] [--base URL] [--json]
+  pi-do settings --ws WS [--base URL] [--json]
+
+behavior:
+  With --model/--level, merge-patches PUT /workspaces/:id/settings; omitted
+  keys keep their values. Unknown model ids fail closed (nothing mutates).
+  New sessions mint with the stored triple. Without flags, GETs the current
+  defaults.
+
+exit codes:
+  0  stored or shown
+  1  server-side failure (error + hint printed)
+  2  usage error
+
+example:
+  pi-do settings --ws <id> --model anthropic/claude-opus-4-6 --level high
 `;
 
 const GIT_HELP = `pi-do git — narrow git reads over a session
@@ -339,6 +426,9 @@ function parseArgs(argv) {
     out: undefined,
     command: undefined,
     cwd: undefined,
+    model: undefined,
+    level: undefined,
+    provider: undefined,
   };
   const positionals = [];
   let baseSet = false;
@@ -424,11 +514,22 @@ function parseArgs(argv) {
       opts.limit = takeValue("--limit");
     } else if (tok.startsWith("--limit=")) {
       opts.limit = tok.slice("--limit=".length);
+    } else if (tok === "--model") {
+      opts.model = takeValue("--model");
+    } else if (tok.startsWith("--model=")) {
+      opts.model = tok.slice("--model=".length);
+    } else if (tok === "--level" || tok === "--thinking") {
+      opts.level = takeValue(tok);
+    } else if (tok.startsWith("--level=") || tok.startsWith("--thinking=")) {
+      opts.level = tok.slice(tok.indexOf("=") + 1);
+    } else if (tok === "--provider") {
+      opts.provider = takeValue("--provider");
+    } else if (tok.startsWith("--provider=")) {
+      opts.provider = tok.slice("--provider=".length);
     } else {
       positionals.push(tok);
     }
   }
-  // Guard against empty-string values passed as `--flag ""`.
   if (baseSet && opts.base === "") failUsage(`flag --base needs a value.`);
   return { opts, positionals };
 }
@@ -439,6 +540,12 @@ function stripBase(base) {
 
 function human(text) {
   process.stderr.write(`${text}\n`);
+}
+
+function splitProviderId(raw, message, help) {
+  const slash = raw.indexOf("/");
+  if (slash <= 0 || slash === raw.length - 1) failUsage(message, help);
+  return { provider: raw.slice(0, slash), id: raw.slice(slash + 1) };
 }
 
 function printJson(obj) {
@@ -477,6 +584,10 @@ function helpFor(cmd, sub) {
   if (cmd === "exec") return EXEC_HELP;
   if (cmd === "run") return RUN_HELP;
   if (cmd === "claim") return CLAIM_HELP;
+  if (cmd === "model") return MODEL_HELP;
+  if (cmd === "thinking") return THINKING_HELP;
+  if (cmd === "models") return MODELS_HELP;
+  if (cmd === "settings") return SETTINGS_HELP;
   if (cmd === "entries") return ENTRIES_HELP;
   if (cmd === "meta") return META_HELP;
   return ROOT_HELP;
@@ -584,6 +695,8 @@ async function doRun(base, json, opts) {
     payload.fence = opts.fence;
     payload.expected = expected;
   }
+  if (opts.model !== undefined) payload.model = splitProviderId(opts.model, `run needs --model provider/id (e.g. --model anthropic/claude-opus-4-6).`, RUN_HELP);
+  if (opts.level !== undefined) payload.thinking = opts.level;
   let res;
   try {
     res = await fetch(url, {
@@ -638,6 +751,172 @@ async function doClaim(base, json, opts) {
     human(`claim ok: revision ${data.revision}`);
   } else {
     process.stdout.write(`fence ${data.fence} revision ${data.revision}\n`);
+  }
+  process.exit(0);
+}
+async function doModel(base, json, opts) {
+  if (!opts.ws) failUsage(`model needs --ws WS.`, MODEL_HELP);
+  if (!opts.sid) failUsage(`model needs --sid SID.`, MODEL_HELP);
+  if (opts.model === undefined) failUsage(`model needs --model provider/id.`, MODEL_HELP);
+  if ((opts.fence !== undefined) !== (opts.expected !== undefined)) {
+    failUsage(`model needs both --fence F and --expected N together, or neither.`, MODEL_HELP);
+  }
+  let expected;
+  if (opts.expected !== undefined) {
+    expected = Number(opts.expected);
+    if (!Number.isInteger(expected) || expected < 0) failUsage(`model needs --expected N (a non-negative integer).`, MODEL_HELP);
+  }
+  const { provider, id } = splitProviderId(opts.model, `model needs --model provider/id (e.g. --model anthropic/claude-opus-4-6).`, MODEL_HELP);
+  const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/sessions/${encodeURIComponent(opts.sid)}/model`;
+  const payload = { provider, id };
+  if (opts.fence !== undefined) {
+    payload.fence = opts.fence;
+    payload.expected = expected;
+  }
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    human(`error: cannot reach server at ${base}`);
+    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
+    if (json) printJson({ error: "cannot reach server", base });
+    process.exit(1);
+  }
+  if (!res.ok) await failFromResponse(res, json);
+  const data = await res.json();
+  if (json) {
+    printJson(data);
+    human(`model ok: ${data.model.provider}/${data.model.id} (revision ${data.revision})`);
+  } else {
+    process.stdout.write(`model ${data.model.provider}/${data.model.id} revision ${data.revision}\n`);
+  }
+  process.exit(0);
+}
+
+async function doThinking(base, json, opts) {
+  if (!opts.ws) failUsage(`thinking needs --ws WS.`, THINKING_HELP);
+  if (!opts.sid) failUsage(`thinking needs --sid SID.`, THINKING_HELP);
+  if (opts.level === undefined) failUsage(`thinking needs --level L.`, THINKING_HELP);
+  if ((opts.fence !== undefined) !== (opts.expected !== undefined)) {
+    failUsage(`thinking needs both --fence F and --expected N together, or neither.`, THINKING_HELP);
+  }
+  let expected;
+  if (opts.expected !== undefined) {
+    expected = Number(opts.expected);
+    if (!Number.isInteger(expected) || expected < 0) failUsage(`thinking needs --expected N (a non-negative integer).`, THINKING_HELP);
+  }
+  const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/sessions/${encodeURIComponent(opts.sid)}/thinking`;
+  const payload = { level: opts.level };
+  if (opts.fence !== undefined) {
+    payload.fence = opts.fence;
+    payload.expected = expected;
+  }
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    human(`error: cannot reach server at ${base}`);
+    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
+    if (json) printJson({ error: "cannot reach server", base });
+    process.exit(1);
+  }
+  if (!res.ok) await failFromResponse(res, json);
+  const data = await res.json();
+  if (json) {
+    printJson(data);
+    human(`thinking ok: ${data.thinking} (revision ${data.revision})`);
+  } else {
+    process.stdout.write(`thinking ${data.thinking} revision ${data.revision}\n`);
+  }
+  process.exit(0);
+}
+
+async function doModels(base, json, opts) {
+  let url = `${stripBase(base)}/models`;
+  if (opts.provider !== undefined) url += `?provider=${encodeURIComponent(opts.provider)}`;
+  let res;
+  try {
+    res = await fetch(url);
+  } catch (e) {
+    human(`error: cannot reach server at ${base}`);
+    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
+    if (json) printJson({ error: "cannot reach server", base });
+    process.exit(1);
+  }
+  if (!res.ok) await failFromResponse(res, json);
+  const data = await res.json();
+  const models = Array.isArray(data.models) ? data.models : [];
+  if (json) {
+    printJson(data);
+    human(`${models.length} models`);
+  } else if (models.length === 0) {
+    process.stdout.write(`(empty)\n`);
+  } else {
+    for (const m of models) process.stdout.write(`${m.provider}/${m.id} (ctx ${m.contextWindow})\n`);
+  }
+  process.exit(0);
+}
+
+async function doSettings(base, json, opts) {
+  if (!opts.ws) failUsage(`settings needs --ws WS.`, SETTINGS_HELP);
+  const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/settings`;
+  if (opts.model === undefined && opts.level === undefined) {
+    let res;
+    try {
+      res = await fetch(url);
+    } catch (e) {
+      human(`error: cannot reach server at ${base}`);
+      human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
+      if (json) printJson({ error: "cannot reach server", base });
+      process.exit(1);
+    }
+    if (!res.ok) await failFromResponse(res, json);
+    const data = await res.json();
+    if (json) {
+      printJson(data);
+      human(`settings shown`);
+    } else {
+      const s = data.settings ?? {};
+      process.stdout.write(`model ${s.modelProvider ?? "null"}/${s.modelId ?? "null"} thinking ${s.thinkingLevel ?? "null"}\n`);
+    }
+    process.exit(0);
+  }
+  const patch = {};
+  if (opts.model !== undefined) {
+    const { provider, id } = splitProviderId(opts.model, `settings needs --model provider/id (e.g. --model anthropic/claude-opus-4-6).`, SETTINGS_HELP);
+    patch.modelProvider = provider;
+    patch.modelId = id;
+  }
+  if (opts.level !== undefined) patch.thinkingLevel = opts.level;
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+  } catch (e) {
+    human(`error: cannot reach server at ${base}`);
+    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
+    if (json) printJson({ error: "cannot reach server", base });
+    process.exit(1);
+  }
+  if (!res.ok) await failFromResponse(res, json);
+  const data = await res.json();
+  if (json) {
+    printJson(data);
+    human(`settings stored`);
+  } else {
+    const s = data.settings ?? {};
+    process.stdout.write(`model ${s.modelProvider ?? "null"}/${s.modelId ?? "null"} thinking ${s.thinkingLevel ?? "null"}\n`);
   }
   process.exit(0);
 }
@@ -913,6 +1192,17 @@ async function main() {
   } else if (cmd === "run") {
     if (sub !== undefined || extra.length > 0) failUsage(`run takes no subcommand.`, RUN_HELP);
     await doRun(opts.base, opts.json, opts);
+  } else if (cmd === "model") {
+    if (sub !== undefined || extra.length > 0) failUsage(`model takes no subcommand.`, MODEL_HELP);
+    await doModel(opts.base, opts.json, opts);
+  } else if (cmd === "thinking") {
+    if (sub !== undefined || extra.length > 0) failUsage(`thinking takes no subcommand.`, THINKING_HELP);
+    await doThinking(opts.base, opts.json, opts);
+  } else if (cmd === "models") {
+    if (sub !== undefined || extra.length > 0) failUsage(`models takes no subcommand.`, MODELS_HELP);
+    await doModels(opts.base, opts.json, opts);
+  } else if (cmd === "settings") {
+    await doSettings(opts.base, opts.json, opts);
   } else {
     failUsage(`unknown command '${cmd}'.`, ROOT_HELP);
   }

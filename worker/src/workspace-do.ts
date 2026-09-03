@@ -1,8 +1,7 @@
 import { createFileStore, type FileStore } from "./files";
-import { ensureEntriesSchema, entryHead, listEntries, openRun, recordTurn } from "./entries";
+import { appendEntry, ensureEntriesSchema, entryHead, listEntries, openRun, recordTurn, runInSyncTx } from "./entries";
 import { createAgentSession } from "../../packages/pi-cf/src/session";
-import { buildRuntime, type RuntimeEnv } from "./model-runtime";
-import type { DurableObjectState } from "@cloudflare/workers-types";
+import { buildRuntime, clampThinkingLevel, keyedProviders, resolveCatalogModel, resolveKeyedModel, supportedThinkingLevels, THINKING_LEVELS, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
 import { createWorkspaceFs, hasGitDir } from "./git-fs";
 import { gateArgv, notARepoBody, NotARepoError, runGitRead } from "./git-reads";
 interface ShellWorkerBinding {
@@ -53,8 +52,13 @@ export class WorkspaceDO implements DurableObject {
     if (!names.has("ownerFence")) sql.exec("ALTER TABLE sessions ADD COLUMN ownerFence TEXT");
     if (!names.has("revision"))
       sql.exec("ALTER TABLE sessions ADD COLUMN revision INTEGER NOT NULL DEFAULT 0");
+    if (!names.has("modelProvider")) sql.exec("ALTER TABLE sessions ADD COLUMN modelProvider TEXT");
+    if (!names.has("modelId")) sql.exec("ALTER TABLE sessions ADD COLUMN modelId TEXT");
+    if (!names.has("thinkingLevel")) sql.exec("ALTER TABLE sessions ADD COLUMN thinkingLevel TEXT");
+    sql.exec(
+      "CREATE TABLE IF NOT EXISTS workspace_settings(ws TEXT PRIMARY KEY, modelProvider TEXT, modelId TEXT, thinkingLevel TEXT)",
+    );
   }
-
   private readFence(sid: string): { fence: string | null; revision: number } | null {
     const rows = [
       ...this.state.storage.sql.exec("SELECT ownerFence, revision FROM sessions WHERE sid = ?", sid),
@@ -113,6 +117,31 @@ export class WorkspaceDO implements DurableObject {
       ),
     ];
     return rows.length > 0;
+  }
+  private readTriple(sid: string): { provider: string | null; id: string | null; thinking: string | null } | null {
+    const rows = [
+      ...this.state.storage.sql.exec("SELECT modelProvider, modelId, thinkingLevel FROM sessions WHERE sid = ?", sid),
+    ] as Array<{ modelProvider?: unknown; modelId?: unknown; thinkingLevel?: unknown }>;
+    if (rows.length === 0) return null;
+    const raw = rows[0];
+    return {
+      provider: typeof raw.modelProvider === "string" ? raw.modelProvider : null,
+      id: typeof raw.modelId === "string" ? raw.modelId : null,
+      thinking: typeof raw.thinkingLevel === "string" ? raw.thinkingLevel : null,
+    };
+  }
+
+  private readSettings(ws: string): { provider: string | null; id: string | null; thinking: string | null } {
+    const rows = [
+      ...this.state.storage.sql.exec("SELECT modelProvider, modelId, thinkingLevel FROM workspace_settings WHERE ws = ?", ws),
+    ] as Array<{ modelProvider?: unknown; modelId?: unknown; thinkingLevel?: unknown }>;
+    if (rows.length === 0) return { provider: null, id: null, thinking: null };
+    const raw = rows[0];
+    return {
+      provider: typeof raw.modelProvider === "string" ? raw.modelProvider : null,
+      id: typeof raw.modelId === "string" ? raw.modelId : null,
+      thinking: typeof raw.thinkingLevel === "string" ? raw.thinkingLevel : null,
+    };
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -258,14 +287,18 @@ export class WorkspaceDO implements DurableObject {
       }
       const sessionId = crypto.randomUUID();
       const fence = crypto.randomUUID();
+      const defaults = this.readSettings(ws);
       this.state.storage.sql.exec(
-        "INSERT INTO sessions(sid, ws, created_at, ownerFence, revision) VALUES (?, ?, ?, ?, 0)",
+        "INSERT INTO sessions(sid, ws, created_at, ownerFence, revision, modelProvider, modelId, thinkingLevel) VALUES (?, ?, ?, ?, 0, ?, ?, ?)",
         sessionId,
         ws,
         new Date().toISOString(),
         fence,
+        defaults.provider,
+        defaults.id,
+        defaults.thinking,
       );
-      return json({ sessionId, fence, revision: 0 });
+      return json({ sessionId, fence, revision: 0, model: { provider: defaults.provider, id: defaults.id }, thinking: defaults.thinking });
     }
 
     if (request.method === "POST" && url.pathname === "/git") {
@@ -390,6 +423,349 @@ export class WorkspaceDO implements DurableObject {
       return json({ sessionId: sid, fence: checked.fence, revision: checked.revision });
     }
 
+    if (request.method === "POST" && url.pathname === "/model") {
+      const ws = url.searchParams.get("ws") ?? "";
+      const sid = url.searchParams.get("sid") ?? "";
+      if (!ws) {
+        return json(
+          {
+            error: "missing workspace",
+            hint: "call POST /workspaces/:id/sessions/:sid/model on the Worker instead",
+          },
+          400,
+        );
+      }
+      if (!this.workspaceExists(ws)) {
+        return json(
+          {
+            error: "unknown workspace",
+            hint: "create one with POST /workspaces first, then mint a session",
+          },
+          404,
+        );
+      }
+      if (!sid || !this.sessionExists(ws, sid)) {
+        return json(
+          {
+            error: "unknown session",
+            hint: "mint one with POST /workspaces/:id/sessions first, then retry with that session id",
+          },
+          404,
+        );
+      }
+      let provider: unknown;
+      let id: unknown;
+      let fence: unknown;
+      let expected: unknown;
+      let hasFence = false;
+      let hasExpected = false;
+      try {
+        const body: unknown = await request.json();
+        if (body !== null && typeof body === "object") {
+          if ("provider" in body) provider = body.provider;
+          if ("id" in body) id = body.id;
+          if ("fence" in body) {
+            fence = body.fence;
+            hasFence = true;
+          }
+          if ("expected" in body) {
+            expected = body.expected;
+            hasExpected = true;
+          }
+        }
+      } catch {
+        provider = undefined;
+        id = undefined;
+      }
+      if (typeof provider !== "string" || provider.length === 0 || typeof id !== "string" || id.length === 0) {
+        return json(
+          {
+            error: "missing model",
+            hint: 'retry as POST /workspaces/:id/sessions/:sid/model with JSON {"provider": "anthropic", "id": "claude-opus-4-6"}',
+          },
+          400,
+        );
+      }
+      try {
+        resolveCatalogModel(provider, id);
+      } catch (e) {
+        if (e !== null && typeof e === "object" && "error" in e && typeof e.error === "string") {
+          const hint = "hint" in e && typeof e.hint === "string" ? e.hint : "retry with a catalog model";
+          return json({ error: e.error, hint }, 404);
+        }
+        return json({ error: "unknown model", hint: "retry with a catalog model" }, 404);
+      }
+      let rotated: { fence: string; revision: number } | null = null;
+      if (hasFence || hasExpected) {
+        if (typeof fence !== "string" || fence.length === 0 || !Number.isInteger(expected)) {
+          return json(
+            {
+              error: "missing fence",
+              hint: "retry the model switch with both {fence, expected}, or omit both for the legacy path",
+            },
+            400,
+          );
+        }
+        const checked = this.enforceFence(sid, fence, expected);
+        if ("status" in checked) return json(checked.body, checked.status);
+        this.rotateFence(sid, checked);
+        rotated = checked;
+      }
+      const sql = this.state.storage.sql;
+      const from = this.readTriple(sid);
+      runInSyncTx(sql, () => {
+        sql.exec("UPDATE sessions SET modelProvider = ?, modelId = ? WHERE sid = ?", provider, id, sid);
+        appendEntry(sql, sid, "model_change", {
+          from: { provider: from?.provider ?? null, id: from?.id ?? null },
+          to: { provider, id },
+        });
+      });
+      const cur = this.readFence(sid);
+      if (rotated !== null) {
+        return json({ sessionId: sid, model: { provider, id }, fence: rotated.fence, revision: rotated.revision });
+      }
+      return json({ sessionId: sid, model: { provider, id }, revision: cur?.revision ?? 0 });
+    }
+
+    if (request.method === "POST" && url.pathname === "/thinking") {
+      const ws = url.searchParams.get("ws") ?? "";
+      const sid = url.searchParams.get("sid") ?? "";
+      if (!ws) {
+        return json(
+          {
+            error: "missing workspace",
+            hint: "call POST /workspaces/:id/sessions/:sid/thinking on the Worker instead",
+          },
+          400,
+        );
+      }
+      if (!this.workspaceExists(ws)) {
+        return json(
+          {
+            error: "unknown workspace",
+            hint: "create one with POST /workspaces first, then mint a session",
+          },
+          404,
+        );
+      }
+      if (!sid || !this.sessionExists(ws, sid)) {
+        return json(
+          {
+            error: "unknown session",
+            hint: "mint one with POST /workspaces/:id/sessions first, then retry with that session id",
+          },
+          404,
+        );
+      }
+      let level: unknown;
+      let fence: unknown;
+      let expected: unknown;
+      let hasFence = false;
+      let hasExpected = false;
+      try {
+        const body: unknown = await request.json();
+        if (body !== null && typeof body === "object") {
+          if ("level" in body) level = body.level;
+          if ("fence" in body) {
+            fence = body.fence;
+            hasFence = true;
+          }
+          if ("expected" in body) {
+            expected = body.expected;
+            hasExpected = true;
+          }
+        }
+      } catch {
+        level = undefined;
+      }
+      if (typeof level !== "string" || level.length === 0) {
+        return json(
+          {
+            error: "missing level",
+            hint: 'retry as POST /workspaces/:id/sessions/:sid/thinking with JSON {"level": "high"}',
+          },
+          400,
+        );
+      }
+      const triple = this.readTriple(sid);
+      let like: RuntimeModel | Record<string, never> = {};
+      if (triple?.provider !== null && triple?.provider !== undefined && triple?.id !== null && triple?.id !== undefined) {
+        try {
+          like = resolveCatalogModel(triple.provider as string, triple.id as string);
+        } catch (e) {
+          if (e !== null && typeof e === "object" && "error" in e && typeof e.error === "string") {
+            const hint = "hint" in e && typeof e.hint === "string" ? e.hint : "retry with a catalog model";
+            return json({ error: e.error, hint }, 404);
+          }
+          return json({ error: "unknown model", hint: "retry with a catalog model" }, 404);
+        }
+      } else {
+        try {
+          const runtime = buildRuntime(this.env as unknown as RuntimeEnv);
+          if (!runtime.stub) like = runtime.model;
+        } catch {
+          like = {};
+        }
+      }
+      if (!(THINKING_LEVELS as readonly string[]).includes(level)) {
+        return json(
+          {
+            error: `unknown thinking level: ${level}`,
+            hint: `supported levels: ${supportedThinkingLevels(like).join(", ")}`,
+          },
+          400,
+        );
+      }
+      let rotated: { fence: string; revision: number } | null = null;
+      if (hasFence || hasExpected) {
+        if (typeof fence !== "string" || fence.length === 0 || !Number.isInteger(expected)) {
+          return json(
+            {
+              error: "missing fence",
+              hint: "retry the thinking switch with both {fence, expected}, or omit both for the legacy path",
+            },
+            400,
+          );
+        }
+        const checked = this.enforceFence(sid, fence, expected);
+        if ("status" in checked) return json(checked.body, checked.status);
+        this.rotateFence(sid, checked);
+        rotated = checked;
+      }
+      const applied = clampThinkingLevel(like, level);
+      const sql = this.state.storage.sql;
+      runInSyncTx(sql, () => {
+        sql.exec("UPDATE sessions SET thinkingLevel = ? WHERE sid = ?", applied, sid);
+        appendEntry(sql, sid, "thinking_level_change", {
+          from: triple?.thinking ?? null,
+          requested: level,
+          level: applied,
+        });
+      });
+      const cur = this.readFence(sid);
+      if (rotated !== null) {
+        return json({ sessionId: sid, thinking: applied, requested: level, fence: rotated.fence, revision: rotated.revision });
+      }
+      return json({ sessionId: sid, thinking: applied, requested: level, revision: cur?.revision ?? 0 });
+    }
+
+    if (url.pathname === "/settings") {
+      const ws = url.searchParams.get("ws") ?? "";
+      if (!ws) {
+        return json(
+          {
+            error: "missing workspace",
+            hint: "call PUT /workspaces/:id/settings on the Worker instead",
+          },
+          400,
+        );
+      }
+      if (!this.workspaceExists(ws)) {
+        return json(
+          {
+            error: "unknown workspace",
+            hint: "create one with POST /workspaces first, then set its defaults",
+          },
+          404,
+        );
+      }
+      if (request.method === "GET") {
+        const current = this.readSettings(ws);
+        return json({ ws, settings: { modelProvider: current.provider, modelId: current.id, thinkingLevel: current.thinking } });
+      }
+      if (request.method === "POST" || request.method === "PUT") {
+        let patchProvider: unknown;
+        let patchId: unknown;
+        let patchThinking: unknown;
+        let hasProvider = false;
+        let hasId = false;
+        let hasThinking = false;
+        try {
+          const body: unknown = await request.json();
+          if (body !== null && typeof body === "object") {
+            if ("modelProvider" in body) {
+              patchProvider = body.modelProvider;
+              hasProvider = true;
+            }
+            if ("modelId" in body) {
+              patchId = body.modelId;
+              hasId = true;
+            }
+            if ("thinkingLevel" in body) {
+              patchThinking = body.thinkingLevel;
+              hasThinking = true;
+            }
+          }
+        } catch {
+          return json(
+            {
+              error: "bad settings",
+              hint: 'retry as PUT /workspaces/:id/settings with JSON {"modelProvider": "anthropic", "modelId": "claude-opus-4-6", "thinkingLevel": "high"}; omit keys to leave them, null clears',
+            },
+            400,
+          );
+        }
+        for (const [name, value] of [["modelProvider", patchProvider], ["modelId", patchId], ["thinkingLevel", patchThinking]] as Array<[string, unknown]>) {
+          if (value !== undefined && value !== null && (typeof value !== "string" || value.length === 0)) {
+            return json(
+              {
+                error: `bad settings: ${name}`,
+                hint: `set ${name} to a non-empty string, null to clear, or omit it to leave it`,
+              },
+              400,
+            );
+          }
+        }
+        const current = this.readSettings(ws);
+        const next = {
+          provider: hasProvider ? (patchProvider as string | null) : current.provider,
+          id: hasId ? (patchId as string | null) : current.id,
+          thinking: hasThinking ? (patchThinking as string | null) : current.thinking,
+        };
+        if ((next.provider === null) !== (next.id === null)) {
+          return json(
+            {
+              error: "half model default",
+              hint: "set both modelProvider and modelId, or clear both with null",
+            },
+            400,
+          );
+        }
+        if (next.provider !== null && next.id !== null) {
+          try {
+            resolveCatalogModel(next.provider, next.id);
+          } catch (e) {
+            if (e !== null && typeof e === "object" && "error" in e && typeof e.error === "string") {
+              const hint = "hint" in e && typeof e.hint === "string" ? e.hint : "retry with a catalog model";
+              return json({ error: e.error, hint }, 404);
+            }
+            return json({ error: "unknown model", hint: "retry with a catalog model" }, 404);
+          }
+        }
+        if (next.thinking !== null && !(THINKING_LEVELS as readonly string[]).includes(next.thinking)) {
+          return json(
+            {
+              error: `unknown thinking level: ${next.thinking}`,
+              hint: `supported levels: ${(THINKING_LEVELS as readonly string[]).join(", ")}`,
+            },
+            400,
+          );
+        }
+        this.state.storage.sql.exec(
+          "INSERT OR REPLACE INTO workspace_settings(ws, modelProvider, modelId, thinkingLevel) VALUES (?, ?, ?, ?)",
+          ws,
+          next.provider,
+          next.id,
+          next.thinking,
+        );
+        return json({ ws, settings: { modelProvider: next.provider, modelId: next.id, thinkingLevel: next.thinking } });
+      }
+      return json(
+        { error: "method not allowed", hint: "use GET or PUT /workspaces/:id/settings" },
+        405,
+      );
+    }
+
     if (request.method === "POST" && url.pathname === "/run") {
       const ws = url.searchParams.get("ws") ?? "";
       const sid = url.searchParams.get("sid") ?? "";
@@ -425,6 +801,8 @@ export class WorkspaceDO implements DurableObject {
       let expected: unknown;
       let hasFence = false;
       let hasExpected = false;
+      let oneShotModel: unknown;
+      let oneShotThinking: unknown;
       try {
         const body: unknown = await request.json();
         if (body !== null && typeof body === "object") {
@@ -437,6 +815,8 @@ export class WorkspaceDO implements DurableObject {
             expected = body.expected;
             hasExpected = true;
           }
+          if ("model" in body) oneShotModel = body.model;
+          if ("thinking" in body) oneShotThinking = body.thinking;
         }
       } catch {
         prompt = undefined;
@@ -450,6 +830,76 @@ export class WorkspaceDO implements DurableObject {
           400,
         );
       }
+      // One-shot overrides: validated like the switch routes, persist nothing.
+      let overrideProvider: string | null = null;
+      let overrideId: string | null = null;
+      if (oneShotModel !== undefined) {
+        if (typeof oneShotModel === "string") {
+          const slash = oneShotModel.indexOf("/");
+          if (slash > 0) {
+            overrideProvider = oneShotModel.slice(0, slash);
+            overrideId = oneShotModel.slice(slash + 1);
+          }
+        } else if (oneShotModel !== null && typeof oneShotModel === "object" && "provider" in oneShotModel && "id" in oneShotModel) {
+          if (typeof oneShotModel.provider === "string" && typeof oneShotModel.id === "string") {
+            overrideProvider = oneShotModel.provider;
+            overrideId = oneShotModel.id;
+          }
+        }
+        if (overrideProvider === null || overrideProvider.length === 0 || overrideId === null || overrideId.length === 0) {
+          return json(
+            {
+              error: "bad model override",
+              hint: 'retry with {"model": {"provider": "anthropic", "id": "claude-opus-4-6"}} or {"model": "anthropic/claude-opus-4-6"}',
+            },
+            400,
+          );
+        }
+      }
+      if (oneShotThinking !== undefined && (typeof oneShotThinking !== "string" || oneShotThinking.length === 0)) {
+        return json(
+          {
+            error: "bad thinking override",
+            hint: 'retry with {"thinking": "high"} using a supported level',
+          },
+          400,
+        );
+      }
+      const stored = this.readTriple(sid);
+      const effProvider = overrideProvider ?? stored?.provider ?? null;
+      const effId = overrideId ?? stored?.id ?? null;
+      let catalog: RuntimeModel | null = null;
+      if (effProvider !== null && effId !== null) {
+        try {
+          catalog = resolveCatalogModel(effProvider, effId);
+        } catch (e) {
+          if (e !== null && typeof e === "object" && "error" in e && typeof e.error === "string") {
+            const hint = "hint" in e && typeof e.hint === "string" ? e.hint : "retry with a catalog model";
+            return json({ error: e.error, hint }, 404);
+          }
+          return json({ error: "unknown model", hint: "retry with a catalog model" }, 404);
+        }
+      }
+      const wantThinking = (oneShotThinking as string | undefined) ?? stored?.thinking ?? null;
+      let like: RuntimeModel | Record<string, never> = catalog ?? {};
+      if (catalog === null && wantThinking !== null) {
+        try {
+          const fallback = buildRuntime(this.env as unknown as RuntimeEnv);
+          if (!fallback.stub) like = fallback.model;
+        } catch {
+          like = {};
+        }
+      }
+      if (oneShotThinking !== undefined && !(THINKING_LEVELS as readonly string[]).includes(oneShotThinking as string)) {
+        return json(
+          {
+            error: `unknown thinking level: ${oneShotThinking as string}`,
+            hint: `supported levels: ${supportedThinkingLevels(like).join(", ")}`,
+          },
+          400,
+        );
+      }
+      const effThinking = wantThinking === null ? null : clampThinkingLevel(like, wantThinking);
       let rotated: { fence: string; revision: number } | null = null;
       if (hasFence || hasExpected) {
         if (typeof fence !== "string" || fence.length === 0 || !Number.isInteger(expected)) {
@@ -470,20 +920,48 @@ export class WorkspaceDO implements DurableObject {
       const runId = crypto.randomUUID();
       openRun(sql, sid, runId);
       try {
-        const runtime = buildRuntime(this.env as unknown as RuntimeEnv);
+        let turnModel: { id: string; name?: string; api?: string; provider?: string; baseUrl?: string };
+        let respProvider: string;
+        if (catalog !== null) {
+          // Session triple (or one-shot) wins over env-only resolution. Keyed
+          // providers run the real model; keyless keeps the stub path, which
+          // ignores the model and records its id on the turn.
+          const keyed = keyedProviders(this.env as unknown as RuntimeEnv);
+          if (keyed.length === 0) {
+            turnModel = { id: catalog.id };
+            respProvider = catalog.provider;
+          } else {
+            try {
+              const keyedModel = resolveKeyedModel(this.env as unknown as RuntimeEnv, catalog.provider, catalog.id);
+              turnModel = keyedModel;
+              respProvider = keyedModel.provider;
+            } catch (e) {
+              if (e !== null && typeof e === "object" && "error" in e && typeof e.error === "string") {
+                const hint = "hint" in e && typeof e.hint === "string" ? e.hint : "retry with a catalog model";
+                return json({ error: e.error, hint }, 404);
+              }
+              return json({ error: "unknown model", hint: "retry with a catalog model" }, 404);
+            }
+          }
+        } else {
+          const runtime = buildRuntime(this.env as unknown as RuntimeEnv);
+          turnModel = runtime.model;
+          respProvider = runtime.model.provider;
+        }
         const session = createAgentSession({
           files: this.files,
           ws,
           shell: this.env.SHELL_WORKER,
-          model: runtime.model,
+          model: turnModel,
         });
         const turn = await session.run(prompt);
         recordTurn(sql, sid, runId, prompt, turn.toolCalls, turn.result);
+        const runtimeOut = { via: turn.via, model: turn.model, provider: respProvider, thinking: effThinking };
         if (rotated !== null) {
           return json({
             result: turn.result,
             toolCalls: turn.toolCalls,
-            runtime: { via: turn.via, model: turn.model },
+            runtime: runtimeOut,
             fence: rotated.fence,
             revision: rotated.revision,
           });
@@ -491,7 +969,7 @@ export class WorkspaceDO implements DurableObject {
         return json({
           result: turn.result,
           toolCalls: turn.toolCalls,
-          runtime: { via: turn.via, model: turn.model },
+          runtime: runtimeOut,
         });
       } catch (e) {
         if (
@@ -613,7 +1091,8 @@ export class WorkspaceDO implements DurableObject {
           openRun = row.runId;
         }
       }
-      return json({ sid, ws, created, head, count, openRun });
+      const triple = this.readTriple(sid);
+      return json({ sid, ws, created, head, count, openRun, model: { provider: triple?.provider ?? null, id: triple?.id ?? null }, thinking: triple?.thinking ?? null });
     }
 
     return json(
