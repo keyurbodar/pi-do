@@ -47,20 +47,17 @@ const runs = [JSON.parse(fs.readFileSync('${OUT}/run1.json', 'utf8')), JSON.pars
 const replay = JSON.parse(fs.readFileSync('${OUT}/entries.json', 'utf8'));
 const entries = replay.entries;
 if (!Array.isArray(entries) || entries.length === 0) throw new Error('entries must be a non-empty array');
-// Cursor order with no gaps.
 const cursors = entries.map((e) => e.cursor);
 for (let i = 1; i < cursors.length; i++) {
   if (cursors[i] !== cursors[i - 1] + 1) throw new Error('cursor gap at index ' + i + ': ' + JSON.stringify(cursors));
 }
 console.log('cursor order ok: ' + cursors.length + ' entries, no gaps');
-// Every toolCall id from both runs present as entries (multiset match).
 const want = runs.flatMap((r) => (r.toolCalls || []).map((c) => c.id)).sort();
 const got = entries.filter((e) => e.type === 'toolCall').map((e) => JSON.parse(e.body).id).sort();
 if (JSON.stringify(want) !== JSON.stringify(got)) {
   throw new Error('toolCall id mismatch: runs ' + JSON.stringify(want) + ' entries ' + JSON.stringify(got));
 }
 console.log('toolCall ids ok: ' + JSON.stringify(want));
-// Zero interrupted entries on the clean path.
 const interrupted = entries.filter((e) => e.type === 'interrupted');
 if (interrupted.length !== 0) throw new Error('expected zero interrupted entries, got ' + interrupted.length);
 console.log('zero interrupted ok');

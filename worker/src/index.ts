@@ -98,7 +98,6 @@ export default {
     }
 
     // GET /workspaces/:id/sessions/:sid/entries → raw ordered replay slice.
-    // Pagination, metadata, and resume semantics stay in PR09.
     if (
       request.method === "GET" &&
       parts.length === 5 &&

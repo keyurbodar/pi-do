@@ -72,7 +72,6 @@ function createFakeSql() {
 const sql = createFakeSql();
 ensureEntriesSchema(sql);
 
-// Clean path: open, record a full turn, close, open next — no interrupted entries.
 openRun(sql, "s1", "r1");
 eq("r1-open", sql.statusOf("r1"), "open");
 recordTurn(
@@ -102,7 +101,6 @@ eq(
   ["r1", "r1", "r1", "r1"],
 );
 
-// Crash path: r2 never closes; opening r3 flips r2 to interrupted with one entry.
 openRun(sql, "s1", "r3");
 eq("r2-interrupted", sql.statusOf("r2"), "interrupted");
 eq("r3-open", sql.statusOf("r3"), "open");
@@ -110,7 +108,6 @@ const interrupted = listEntries(sql, "s1").filter((e) => e.type === "interrupted
 eq("interrupted-count", interrupted.length, 1);
 eq("interrupted-body", JSON.parse(interrupted[0].body), { runId: "r2", interruptedBy: "r3" });
 
-// Cursor order: consecutive from 1 with no gaps; after-filter replays the tail.
 const cursors = listEntries(sql, "s1").map((e) => e.cursor);
 eq(
   "cursors-ordered",
@@ -124,7 +121,6 @@ eq(
   cursors.filter((c) => c > 2),
 );
 
-// appendEntry returns the rowid cursor and stores strings verbatim.
 const c = appendEntry(sql, "s2", "prompt", "raw-string");
 eq("raw-cursor", c, 6);
 eq("raw-body", listEntries(sql, "s2"), [{ cursor: 6, type: "prompt", body: "raw-string" }]);

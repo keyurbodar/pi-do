@@ -23,8 +23,6 @@ export function ensureEntriesSchema(sql: EntriesSql): void {
   );
 }
 
-// Cursor comes from the rowid: insert, read last_insert_rowid, mirror it
-// into the cursor column, return it.
 export function appendEntry(
   sql: EntriesSql,
   sid: string,
