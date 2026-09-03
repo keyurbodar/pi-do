@@ -104,15 +104,9 @@ interface BuiltinEntry {
   catalog: Record<string, Model<Api>>;
 }
 
-// Precedence on multiple keys (table order): anthropic, openai (legacy
-// default order), then remaining built-ins alphabetical by provider id
-// (ant-ling, azure-openai-responses, baseten, cerebras, deepseek, fireworks,
-// google, groq, huggingface, kimi-coding, minimax, minimax-cn, mistral,
-// moonshotai, moonshotai-cn, nvidia, opencode, opencode-go, openrouter,
-// qwen-token-plan, qwen-token-plan-cn, qwen-token-plan-individual, together,
-// vercel-ai-gateway, xai, xiaomi, xiaomi-token-plan-ams,
-// xiaomi-token-plan-cn, xiaomi-token-plan-sgp, zai, zai-coding-cn), then
-// custom models.json providers alphabetical by id.
+// Precedence on multiple keys is table order: anthropic, openai (legacy
+// default order), then remaining built-ins alphabetical by provider id,
+// then custom models.json providers alphabetical by id.
 const BUILTINS: BuiltinEntry[] = [
   { envVar: "ANTHROPIC_API_KEY", catalog: ANTHROPIC_MODELS },
   { envVar: "OPENAI_API_KEY", catalog: OPENAI_MODELS },
@@ -293,17 +287,10 @@ function requiredCost(
   return merged as RuntimeModel["cost"];
 }
 
-/** Custom secret env name for a models.json provider id. */
 export function customKeyEnvVar(providerId: string): string {
   return `${providerId.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`;
 }
 
-/**
- * Validate one load of models.json. Custom providers merge over built-ins
- * by id; overrides patch catalog fields. Inline apiKey and oauth fail
- * closed. Accepts the parsed doc (bundled import by default in
- * buildRuntime); never touches fs.
- */
 export function loadCustomProviders(doc: unknown): Map<string, CustomProvider> {
   const out = new Map<string, CustomProvider>();
   if (doc === undefined || doc === null) return out;
@@ -389,7 +376,6 @@ function providerIdOf(catalog: Record<string, Model<Api>>): string {
   return first.provider;
 }
 
-/** Merge one custom provider over a built-in catalog snapshot. */
 function mergedCatalog(
   providerId: string,
   base: Map<string, RuntimeModel>,

@@ -1,7 +1,5 @@
 // verify-models.mjs — same buildRuntime lookup production runs take.
 // Fake key material only, never process.env; the catalog needs no credentials.
-// Model ids, urls, and prices come from the pi-ai catalog imports below and
-// the fake-proxy fixture; the only literal is the unknown-id sentinel.
 import {
   buildRuntime,
   customKeyEnvVar,
@@ -144,7 +142,6 @@ function throwsHinted(step, fn, mustName) {
   fail(step, "throw", "no throw");
 }
 
-// One known id per included provider resolves with sane window, cost, base.
 const seenIds = new Set();
 for (const { envVar, catalog } of TABLE) {
   const id = providerId(catalog);
@@ -184,7 +181,6 @@ for (const { envVar, catalog } of TABLE) {
   eq(`${id}-unknown-scoped-error`, scopedUnknown.error, `unknown model: ${id}/${UNKNOWN_SENTINEL}`);
 }
 
-// Bare id resolves within a single keyed provider.
 const anthropicFirst = sortedIds(ANTHROPIC_MODELS)[0];
 const bare = buildRuntime({
   ANTHROPIC_API_KEY: "fake",
@@ -194,7 +190,6 @@ eq("bare-stub", bare.stub, false);
 eq("bare-provider", bare.model.provider, "anthropic");
 sane("bare", bare.model, ANTHROPIC_MODELS[anthropicFirst]);
 
-// Precedence on multiple keys: anthropic, then openai, then the rest.
 const both = buildRuntime({ ANTHROPIC_API_KEY: "fake", OPENAI_API_KEY: "fake" });
 eq("both-provider", both.model.provider, "anthropic");
 const openaiGroq = buildRuntime({ OPENAI_API_KEY: "fake", GROQ_API_KEY: "fake" });
@@ -202,7 +197,6 @@ eq("openai-groq-provider", openaiGroq.model.provider, "openai");
 const allKeys = Object.fromEntries(TABLE.map(({ envVar }) => [envVar, "fake"]));
 eq("all-provider", buildRuntime(allKeys).model.provider, "anthropic");
 
-// Bare id matching more than one keyed provider fails closed as ambiguous.
 const openaiEnv = { ANTHROPIC_API_KEY: "fake", OPENCODE_API_KEY: "fake" };
 const shared = sortedIds(ANTHROPIC_MODELS).find((id) => id in OPENCODE_MODELS);
 if (shared === undefined) fail("ambiguous-fixture", "shared id", "none");
@@ -215,7 +209,6 @@ eq("ambiguous-error", ambiguous.error, `ambiguous model id: ${shared}`);
 if (!ambiguous.hint.includes("opencode"))
   fail("ambiguous-hint", "hint naming opencode", ambiguous.hint);
 
-// Fake OpenAI-compatible endpoint resolves end to end through models.json.
 const fakeFixture = {
   providers: {
     "fake-proxy": {
@@ -249,14 +242,11 @@ sane(
 );
 const fakeBare = buildRuntime({ ...fakeEnv, MODEL_ID: "fake-1" }, fakeFixture);
 eq("fake-bare-provider", fakeBare.model.provider, "fake-proxy");
-// Built-ins still win the default; the custom provider needs MODEL_ID.
 const fakeDefault = buildRuntime(
   { ANTHROPIC_API_KEY: "fake", ...fakeEnv },
   fakeFixture,
 );
 eq("fake-default-provider", fakeDefault.model.provider, "anthropic");
-// Key presence picks the provider: custom MODEL_ID without its key fails
-// closed against the keyed (built-in only) id list.
 const openaiFirstKeyless = sortedIds(OPENAI_MODELS)[0];
 throwsHinted(
   "fake-keyless",
@@ -268,7 +258,6 @@ throwsHinted(
   openaiFirstKeyless,
 );
 
-// Custom providers merge over built-ins by id; overrides patch fields.
 const openaiId = providerId(OPENAI_MODELS);
 const openaiFirst = sortedIds(OPENAI_MODELS)[0];
 const mergeFixture = {
@@ -291,7 +280,6 @@ const overridden = buildRuntime(
 eq("merge-override-max", overridden.model.maxTokens, 1234);
 eq("merge-override-window", overridden.model.contextWindow, OPENAI_MODELS[openaiFirst].contextWindow);
 
-// Inline apiKey in the file is rejected with the env-only rule.
 const inlineFixture = {
   providers: { "fake-proxy": { apiKey: "secret", models: [] } },
 };
@@ -303,7 +291,6 @@ const inlineError = throwsHinted(
 if (!inlineError.error.includes("apiKey"))
   fail("inline-key-error", "error naming apiKey", inlineError.error);
 
-// Keyless env still yields the stub, with or without a fixture.
 const s = buildRuntime({});
 eq("stub", s.stub, true);
 eq("stub-id", s.model.id, STUB_MODEL_ID);
