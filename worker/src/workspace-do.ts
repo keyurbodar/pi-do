@@ -1,7 +1,7 @@
 import { createFileStore, type FileStore } from "./files";
 import { appendEntry, ensureEntriesSchema, entryHead, listEntries, openRun, recordTurn, runInSyncTx } from "./entries";
 import { enforceFence } from "./fence";
-import { handleStream } from "./stream";
+import { acceptStream, readAttachment, socketClosed, socketMessage, wrapSocket, type StreamHost } from "./stream";
 import { createAgentSession } from "../../packages/pi-cf/src/session";
 import { normalizeWorkspacePath } from "../../packages/pi-cf/src/tools";
 import { buildRuntime, clampThinkingLevel, keyedProviders, resolveCatalogModel, resolveKeyedModel, supportedThinkingLevels, THINKING_LEVELS, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
@@ -30,6 +30,10 @@ export class WorkspaceDO implements DurableObject {
   private state: DurableObjectState;
   private env: Env;
   private files: FileStore;
+  // Ephemeral liveness witnesses for stream turns, one per incarnation. An
+  // eviction resets this map; correctness state stays in SQLite, and the next
+  // openRun flips any orphaned run to interrupted.
+  private live = new Map<string, AbortController>();
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
@@ -1030,22 +1034,11 @@ export class WorkspaceDO implements DurableObject {
       }
     }
 
-    // GET /stream?ws=&sid= — WS upgrade for live turns (see stream.ts).
+    // GET /stream?ws=&sid= — hibernation WS upgrade for live turns (see stream.ts).
     if (url.pathname === "/stream") {
       const ws = url.searchParams.get("ws") ?? "";
       const sid = url.searchParams.get("sid") ?? "";
-      return handleStream(request, {
-        sql: this.state.storage.sql,
-        ws,
-        sid,
-        files: this.files,
-        shell: this.env.SHELL_WORKER,
-        runtimeEnv: this.env as unknown as RuntimeEnv,
-        workspaceKnown: ws !== "" && this.workspaceExists(ws),
-        sessionKnown: ws !== "" && sid !== "" && this.sessionExists(ws, sid),
-        readFence: () => this.readFence(sid),
-        casRotateFence: (oldFence, oldRevision, next) => this.casRotateFence(sid, oldFence, oldRevision, next),
-      });
+      return acceptStream(request, this.streamHost(ws, sid), this.state);
     }
 
     // GET /entries?ws=&sid=&after=N&limit=L — ordered replay slice plus resume cursor.
@@ -1159,5 +1152,42 @@ export class WorkspaceDO implements DurableObject {
       { error: "not found", hint: "use POST /workspaces, /workspaces/:id/sessions, or /workspaces/:id/files" },
       404,
     );
+  }
+
+  private streamHost(ws: string, sid: string): StreamHost {
+    return {
+      sql: this.state.storage.sql,
+      ws,
+      sid,
+      files: this.files,
+      shell: this.env.SHELL_WORKER,
+      runtimeEnv: this.env as unknown as RuntimeEnv,
+      workspaceKnown: ws !== "" && this.workspaceExists(ws),
+      sessionKnown: ws !== "" && sid !== "" && this.sessionExists(ws, sid),
+      readFence: () => this.readFence(sid),
+      casRotateFence: (oldFence, oldRevision, next) => this.casRotateFence(sid, oldFence, oldRevision, next),
+      live: this.live,
+    };
+  }
+
+  async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    const att = readAttachment(ws);
+    if (att === null) {
+      const sock = wrapSocket(ws);
+      sock.send({ error: "bad handshake", hint: "reconnect the stream; the socket carried no session" });
+      sock.close(4403, "socket carried no session");
+      return;
+    }
+    await socketMessage(this.streamHost(att.ws, att.sid), wrapSocket(ws), message);
+  }
+
+  async webSocketClose(ws: WebSocket): Promise<void> {
+    const att = readAttachment(ws);
+    if (att !== null) socketClosed(this.streamHost(att.ws, att.sid));
+  }
+
+  async webSocketError(ws: WebSocket): Promise<void> {
+    const att = readAttachment(ws);
+    if (att !== null) socketClosed(this.streamHost(att.ws, att.sid));
   }
 }
