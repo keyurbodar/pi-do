@@ -1,0 +1,12 @@
+{
+  "name": "pi-do-cli",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "bin": {
+    "pi-do": "bin/pi-do.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

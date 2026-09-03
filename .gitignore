@@ -1,0 +1,7 @@
+node_modules/
+.wrangler/
+worker/.wrangler/
+artifacts/
+.DS_Store
+refs/
+.worktrees/

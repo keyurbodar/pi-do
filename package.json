@@ -1,0 +1,16 @@
+{
+  "name": "pi-do",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "worker",
+    "cli"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=worker",
+    "verify:files": "sh verify/files-roundtrip.sh"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

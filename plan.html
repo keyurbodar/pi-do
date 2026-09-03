@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pi-do — plan</title>
+<style>
+  * { box-sizing: border-box; border-radius: 0 !important; }
+  body { background: #0a0a0a; color: #c8c8c8; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 14px; line-height: 1.55; margin: 0; padding: 0; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 32px 20px 80px; }
+  header { border: 1px solid #2a2a2a; padding: 20px; margin-bottom: 20px; }
+  h1 { margin: 0 0 4px; font-size: 28px; color: #fff; letter-spacing: -1px; }
+  .sub { color: #888; }
+  .tag { display: inline-block; border: 1px solid #3a3a3a; padding: 1px 8px; margin-right: 6px; font-size: 12px; color: #9a9a9a; }
+  .tag.ok { color: #7dffb0; border-color: #1f4d33; }
+  section { border: 1px solid #2a2a2a; margin-bottom: 16px; }
+  section > h2 { margin: 0; padding: 10px 16px; font-size: 13px; text-transform: uppercase; letter-spacing: 2px; color: #fff; background: #111; border-bottom: 1px solid #2a2a2a; }
+  section > .body { padding: 16px; }
+  h3 { color: #fff; font-size: 14px; margin: 20px 0 8px; }
+  h3:first-child { margin-top: 0; }
+  pre { background: #000; border: 1px solid #2a2a2a; padding: 14px; overflow-x: auto; font-size: 12.5px; line-height: 1.5; color: #bdbdbd; }
+  code { background: #161616; padding: 1px 5px; color: #e8e8e8; font-size: 13px; }
+  pre code { background: none; padding: 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 10px 0; }
+  th, td { border: 1px solid #2a2a2a; padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: #111; color: #fff; font-weight: 600; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 700px) { .grid2 { grid-template-columns: 1fr; } }
+  .box { border: 1px solid #2a2a2a; padding: 12px; }
+  .box b { color: #fff; }
+  .warn { border-left: 3px solid #e8c339; padding: 8px 12px; background: #141204; margin: 10px 0; }
+  .ok-box { border-left: 3px solid #3ddc84; padding: 8px 12px; background: #0a1510; margin: 10px 0; }
+  .bad { border-left: 3px solid #ff5555; padding: 8px 12px; background: #170b0b; margin: 10px 0; }
+  a { color: #7dd3fc; }
+  ul { padding-left: 20px; margin: 8px 0; }
+  li { margin-bottom: 4px; }
+  .phase { border: 1px solid #2a2a2a; margin: 10px 0; }
+  .phase > .ph { background: #111; padding: 8px 12px; color: #fff; border-bottom: 1px solid #2a2a2a; }
+  .phase > .pb { padding: 12px; }
+  footer { color: #666; font-size: 12px; margin-top: 24px; }
+  .k { color: #7dffb0; }
+  .dim { color: #777; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>pi-do</h1>
+  <div class="sub">serverless coding agent · Cloudflare Workers native · no local dependency · 24/7</div>
+  <p>
+    <span class="tag ok">PLAN ONLY — no code yet</span>
+    <span class="tag">1 user / self-deploy</span>
+    <span class="tag">sources: pi + computer + nanocodex</span>
+  </p>
+  <div class="sub">refs/ cloned at <code>refs/pi</code> · <code>refs/computer</code> · <code>refs/nanocodex</code>. This doc is the build contract. Nothing here runs node/python locally at runtime.</div>
+</header>
+
+<section>
+  <h2>0 — goal / non-goals</h2>
+  <div class="body">
+    <div class="grid2">
+      <div class="box"><b>goal</b><br>One Worker URL = a full coding agent. Agent loop (pi harness) + virtual fs/shell/git (computer Workspace) + durable sessions, all inside DOs. Embeddable as an npm SDK, extensible like pi, wire-protocol compatible with a thin CLI/web client.</div>
+      <div class="box"><b>non-goals (v1)</b><br>· no containers, no local builds<br>· no python/node execution<br>· no multi-tenant auth/billing<br>· no TUI custom components<br>· no reimplementation of an LLM provider</div>
+    </div>
+    <div class="warn"><b>Known limits, no further discussion:</b> Workers CPU ~10ms per invocation (DO wall-clock is longer but still bounded — chunk tool output, stream partials, never block the loop on one long exec); no real processes — shell = <code>just-bash</code> isolate or container backend only when explicitly attached.</div>
+  </div>
+</section>
+
+<section>
+  <h2>1 — topology: worker is router, DO is machine</h2>
+  <div class="body">
+<pre>                         ┌────────────────────────────────────────────┐
+                         │  WORKER (stateless front door)             │
+ client ──https/ws──────▶│  auth → route → get DO stub by id          │──▶ AI gateway
+                         │  POST /workspaces, /sessions, /files, /exec│    (keys on server)
+                         │  WS  /sessions/:sid/stream  (hono upgrade) │
+                         └──────────────┬─────────────────────────────┘
+                                        │  idFromName(workspaceId) /
+                                        │  idFromName(workspaceId:sessionId)
+                    ┌───────────────────▼────────────────────────────┐
+                    │  DURABLE OBJECT (the machine, one per scope)   │
+                    │  Workspace + ComputerExecutionEnv + harness    │
+                    │  + session storage (DO SQLite, same txn)       │
+                    │  single-threaded → serialization is free       │
+                    └────────────────────────────────────────────────┘</pre>
+    <h3>Decision: one DO per workspace, sessions namespaced inside</h3>
+    <p>Nanocodex runs <b>DO-per-session</b> (<code>js/managed/src/index.ts: DurableAgentSession</code>, tables <code>nanocodex_cloudflare_durability|agent|events</code>). That is correct at their scale. For one-user self-deploy, <b>one DO per workspace</b> is simpler and still safe:</p>
+    <ul>
+      <li><b>Isolation unit = workspaceId.</b> <code>env.AGENT.idFromName(workspaceId)</code>. All sessions in that workspace share one VFS (like one checkout, many branches) — matches the "one user, one repo" case.</li>
+      <li><b>Concurrency inside the DO is serialized by construction.</b> DOs process one message at a time; a per-session promise-queue (nanocodex <code>HostedNanocodex #queue</code> pattern, <code>examples/cloudflare-fetch-mcp/src/index.ts:64</code>) prevents interleave between two prompts on the same session. Cross-session tool writes go through pi's <code>withFileMutationQueue</code> so edits don't interleave mid-file.</li>
+      <li><b>Scale-out later is a key change, not a rewrite:</b> switch stub key to <code>workspaceId:sessionId</code> and add push/pull sync (computer already has this for the container backend). V1 skips cross-DO sync entirely.</li>
+    </ul>
+    <div class="ok-box"><b>Rule:</b> local <code>dofs</code> SQLite inside the DO is the truth. Dynamic Workers (just-bash / worker-javascript) call <b>back into host SQLite via WorkspaceServiceProxy</b> — never a second store. Container backend (if ever attached) is the only remote-VFS case and needs explicit push/pull + watermark reconcile. Copied from computer's backend contract (<code>packages/computer/src/backend.ts</code>).</div>
+  </div>
+</section>
+
+<section>
+  <h2>2 — what we steal from each repo</h2>
+  <div class="body">
+<table>
+<tr><th>repo</th><th>take verbatim</th><th>do not take</th></tr>
+<tr><td><b>pi</b><br><span class="dim">refs/pi/packages/agent</span></td><td>harness loop + <code>AgentHarnessTool.execute(id,params,signal,onUpdate,ctx)</code> (<code>harness/types.ts:80-94</code>); session tree types (<code>harness/session/types.ts</code>, <code>session.ts</code>); <code>JsonlSessionStorage</code> pattern (appendMutation + atomic publish) but backed by DO SQLite, not files; <code>ExtensionAPI</code> contract + <code>loadExtensionFromFactory</code> shape (<code>coding-agent/src/core/extensions/</code>); <code>createAgentSession</code> SDK shape (<code>core/sdk.ts</code>)</td><td><code>NodeExecutionEnv</code> (<code>harness/env/nodejs.ts</code> — node:child_process/fs), jiti file loader (<code>extensions/loader.ts</code>), <code>node:sqlite</code> backend, TUI components</td></tr>
+<tr><td><b>computer</b><br><span class="dim">refs/computer/packages/computer + dofs</span></td><td><code>Workspace</code> DO class (<code>workspace.ts</code>) + <code>withWorkspace</code> mixin; <code>WorkspaceFilesystem</code> VFS (<code>dofs/src/fs/filesystem.ts</code>); backend contract <code>{rpc, sync: remote|none}</code>; worker-shell backend via <code>LOADER.get().getEntrypoint('ShellWorker')</code> with <code>sync:'none'</code>; tool set shape from <code>tools/ai.ts</code> + <code>tools/exec.ts</code></td><td>Vercel AI SDK tool format as-is (must adapt — see §5); container/computerd path for v1</td></tr>
+<tr><td><b>nanocodex</b><br><span class="dim">refs/nanocodex/crates</span></td><td>durability protocol: <code>StateStore::acquire/replace</code> + owner-fence + revision CAS (<code>nanocodex-durability/src/store.rs</code>); per-session UUIDv7 <code>state_id</code>, children get own IDs (<code>docs/DURABILITY.md:85-151</code>); rollout JSONL as resume log (<code>nanocodex-agent/src/rollout/</code>); workspace-rooted tools (<code>nanocodex-tools/src/workspace_runtime.rs</code>); shell caps (MAX_LIVE_SESSIONS=64, 1MiB cap)</td><td>Rust itself; git-as-tool (nanocodex has <b>no</b> first-class git tool — git is exec strings only); Postgres/Memory backends</td></tr>
+</table>
+  </div>
+</section>
+
+<section>
+  <h2>3 — core: persistence, fs, concurrency</h2>
+  <div class="body">
+    <h3>3.1 session persistence (the money question)</h3>
+    <ul>
+      <li><b>Store = DO SQLite, two tables:</b> <code>pi_entries</code> (the session tree: messages, tool calls/results, custom entries, lane/branch links) + <code>pi_owners</code> (fence + revision per session). Same-txn writes: every harness <code>onUpdate</code> event appends an entry <b>before</b> it is emitted on the socket. Socket is a view; storage is the truth.</li>
+      <li><b>Resume = replay.</b> <code>GET .../sessions/:sid/entries?after=n</code> paginates the tree; WS reconnect replays from cursor. Pi's tree already supports lanes/branching — rewind/branch work over the wire for free.</li>
+      <li><b>Crash mid-run:</b> tree is intact; open operations found via <code>findOpenOperations</code> (pi <code>harness/session/types.ts</code>) are marked interrupted on next open. Model calls are idempotent replays, tool calls are not auto-retried.</li>
+      <li><b>Fencing (from nanocodex <code>store.rs</code>):</b> each connected client holds <code>{ownerId, fence}</code>; <code>replace</code> requires expected revision + live fence. Stale socket (e.g. phone + laptop) gets <code>Fenced</code>, never silently overwrites. Steer/abort go through the same fence.</li>
+    </ul>
+    <h3>3.2 filesystem</h3>
+    <ul>
+      <li><b>VFS = computer <code>dofs</code></b> (<code>Database over DurableObjectStorageLike.sql</code>, <code>dofs/src/storage.ts</code>, schema in <code>dofs/src/schema</code>). Mounts registry + mount-guard for read-only enforcement.</li>
+      <li><b>Git = <code>workspace.git</code></b> (computer <code>docs/13_git_interface.md</code>), exposed as <code>POST .../sessions/:sid/git {argv}</code>. No shell-quoting footguns; agent gets a narrow git tool, not raw <code>git</code> strings.</li>
+      <li><b>Seed/upload:</b> <code>PUT /workspaces/:id/files?path=...</code> writes directly to VFS (clone-a-repo = push a tarball or sequential writes; no <code>git clone</code> inside the isolate in v1).</li>
+    </ul>
+    <h3>3.3 multi-session conflict</h3>
+    <table>
+      <tr><th>level</th><th>mechanism</th><th>source</th></tr>
+      <tr><td>message routing</td><td>DO single-thread + per-session async queue; one <code>prompt()</code> at a time per session, concurrent sessions interleave only at await points</td><td>nanocodex <code>#queue</code> + DO semantics</td></tr>
+      <tr><td>file writes</td><td><code>withFileMutationQueue</code> serializes overlapping edits; last-writer-wins per path, recorded as entries so replay shows it</td><td>pi <code>coding-agent/src/core/tools/index.ts</code></td></tr>
+      <tr><td>session state</td><td>owner-fence + revision CAS; concurrent <code>steer</code> from two sockets → one wins, other gets <code>Conflict</code></td><td>nanocodex <code>StoreError::{Fenced,Conflict}</code></td></tr>
+      <tr><td>shell</td><td>just-bash sessions capped (64 live, output caps); cwd pinned to workspace root per call</td><td>nanocodex <code>shell/</code>, computer worker-shell</td></tr>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2>4 — tools: use pi's, not computer's</h2>
+  <div class="body">
+    <p>Computer's <code>createAITools()</code> (<code>packages/computer/src/tools/ai.ts</code>) targets the Vercel AI SDK. Pi expects <code>AgentHarnessTool</code> (TypeBox params + <code>execute(id, params, signal, onUpdate, ctx)</code>). <b>Decision: pi's tools only, against a <code>ComputerExecutionEnv</code>.</b></p>
+<pre>// the only new code in the tool path (one file)
+class ComputerExecutionEnv implements ExecutionEnv {
+  // FileSystem: readFile/stat/readdir/writeFile/mkdir/rm/symlink/chmod
+  //   → workspace.fs.*  (dofs/src/fs/filesystem.ts)
+  // Shell: exec(cmd, cwd, env, signal, onUpdate)
+  //   → worker-shell backend (just-bash, sync:none) OR container backend later
+  // Git: status/diff/log/commit-ish → workspace.git (NOT shell strings)
+}</pre>
+    <ul>
+      <li>Pi builtins wired: <code>read, write, edit, bash</code> (+ <code>grep/find</code> as shell commands in just-bash — no new tools needed in v1).</li>
+      <li>Computer's per-backend <code>ExecBackendDescription</code> text is reused: injected into the bash tool description so the model knows it is in an isolate shell.</li>
+      <li>Adapter risk is real but bounded: zod→TypeBox schema conversion and async-generator→<code>onUpdate</code> streaming happen in <b>one</b> adapter module, tested against the conformance harness (pi <code>harness/session/testing/conformance.ts</code>).</li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <h2>5 — wire protocol (control plane + stream)</h2>
+  <div class="body">
+<pre>POST /workspaces                          → { workspaceId }
+POST /workspaces/:id/sessions             → { sessionId }
+GET  /workspaces/:id/sessions/:sid        → metadata + recent entries (resume)
+GET  /workspaces/:id/sessions/:sid/entries?after=n → paginate tree
+POST /workspaces/:id/sessions/:sid/git    → { argv: [...] } via workspace.git
+GET  /workspaces/:id/files?path=...       → file viewer / diffs
+PUT  /workspaces/:id/files?path=...       → seed / upload
+POST /workspaces/:id/exec                 → one-off shell outside agent loop
+
+WS /workspaces/:id/sessions/:sid/stream
+  client → server:  { type: "prompt", text } | { type: "abort" } | { type: "steer", text }
+  server → client:  message_start/update/end · tool_start/update/end ·
+                    agent_start/end · entry · get_commands · extension_ui_request</pre>
+    <p><b>Mapping is 1:1.</b> Every server frame is a pi harness event already appended to storage. <code>tool_update</code> carries streaming bash output (throttled, like pi <code>bash.ts</code>). <code>entry</code> is the persistence write itself — clients that store entries can resume offline.</p>
+  </div>
+</section>
+
+<section>
+  <h2>6 — extensibility + embeddability (pi's best parts, kept)</h2>
+  <div class="body">
+    <h3>Three embed layers (nanocodex lesson: be a library, not a service)</h3>
+    <table>
+      <tr><th>layer</th><th>shape</th><th>notes</th></tr>
+      <tr><td><b>L1 — SDK</b></td><td><code>import { createPiCf } from "pi-cf"</code><br><code>export class MyAgent extends createPiCf({ model }) {}</code></td><td>Composes Workspace DO + ComputerExecutionEnv + harness. Host brings own account + keys. Decided in phase 1; ~free since code is structured that way anyway.</td></tr>
+      <tr><td><b>L2 — extensions</b></td><td>same <code>ExtensionFactory = (pi) =&gt; void</code> contract as pi</td><td><b>Inline</b> (<code>createPiCf({extensions:[myExt]})</code>, = pi <code>loadExtensionFromFactory</code>) ships day one. <b>VFS</b> (<code>.pi/extensions/*.ts</code> in workspace, loaded via Dynamic Worker eval, sandboxed, git-versioned, per-workspace) ships after v1 core (~1.5–2d). npm-manifest form rides the same loader. Supported first: <code>registerTool, registerCommand</code>, event hooks, <code>sendMessage/appendEntry</code>. Deferred: <code>ctx.ui</code> components, raw <code>pi.exec</code> (→ virtual shell instead).</td></tr>
+      <tr><td><b>L3 — over the wire</b></td><td><code>get_commands</code> + <code>extension_ui_request/response</code> frames</td><td>Same as pi RPC mode: web/CLI clients render extension UI without server changes.</td></tr>
+    </table>
+    <div class="ok-box">Why this works on Workers: pi's extension <b>runtime</b> is pure data + async functions (handler registry); only the <b>loader</b> is Node-bound (jiti + node:fs). We keep the runtime contract, replace the loader (inline now, Dynamic Worker later).</div>
+  </div>
+</section>
+
+<section>
+  <h2>7 — build phases</h2>
+  <div class="body">
+    <div class="phase"><div class="ph">P0 — skeleton (0.5d) — Worker router + empty Workspace DO + SQLite tables</div><div class="pb">wrangler config, <code>withWorkspace</code> DO, <code>pi_entries/pi_owners</code> schema, <code>POST /workspaces</code> round-trip. No agent yet.</div></div>
+    <div class="phase"><div class="ph">P1 — agent core (2–3d) — ComputerExecutionEnv + pi harness in-DO</div><div class="pb">Env adapter (fs→workspace.fs, exec→worker-shell just-bash, git→workspace.git); wire pi <code>read/write/edit/bash</code>; run headless prompt→tool→entry loop in DO; persist every <code>onUpdate</code> before emitting. Prove with <code>POST /exec</code> + one prompt over curl.</div></div>
+    <div class="phase"><div class="ph">P2 — wire protocol (1–2d) — HTTP files/git/entries + WS stream</div><div class="pb">All endpoints in §5; fence + revision CAS; abort/steer; replay <code>?after=n</code>; CLI client (<code>prompt/abort/steer</code> + frame printer) for verification.</div></div>
+    <div class="phase"><div class="ph">P3 — extensions inline + L1 SDK (1d)</div><div class="pb"><code>createPiCf({model, tools, extensions})</code> DO factory; inline <code>ExtensionFactory</code> path; one sample extension (custom tool + command + hook) proving the contract.</div></div>
+    <div class="phase"><div class="ph">P4 — VFS extensions via Dynamic Worker (1.5–2d, after v1 usable)</div><div class="pb"><code>.pi/extensions/*.ts</code> loaded with worker-javascript machinery (structured module graph, durable relative imports), sandboxed, RPC back to harness. npm-manifest form included.</div></div>
+    <div class="phase"><div class="ph">P5 — hardening (ongoing) — caps, timeouts, web UI</div><div class="pb">Shell/output caps, per-session queues, minimal web client on the §5 protocol (entries replay + stream frames). No containers in v1.</div></div>
+  </div>
+</section>
+
+<section>
+  <h2>8 — repo layout (proposed)</h2>
+  <div class="body">
+<pre>pi-do/
+  plan.html                  ← this file
+  refs/                      ← read-only: pi, computer, nanocodex
+  packages/pi-cf/            ← L1 SDK: createPiCf(), ComputerExecutionEnv, DO base
+  worker/                    ← front-door Worker: auth, routing, WS upgrade
+  cli/                       ← thin verification client (prompt/abort/steer, frame log)
+  examples/minimal-agent/    ← 30-line embed proving L1</pre>
+  </div>
+</section>
+
+<section>
+  <h2>9 — risks</h2>
+  <div class="body">
+    <ul>
+      <li><b>pi import weight on Workers.</b> <code>pi-agent-core</code> may drag node polyfills. Mitigation: import only <code>packages/agent/src</code> (harness+tools+session), never <code>coding-agent</code> app shell; bundle-check in P0.</li>
+      <li><b>Long exec vs CPU limits.</b> just-bash chunk + throttle <code>tool_update</code>; kill via AbortSignal → ExecHandle kill; never await unbounded output.</li>
+      <li><b>DO SQLite growth.</b> Entries table paginated + archived (nanocodex <code>archived_sessions</code> pattern); compaction = pi lane <code>compact</code> producing a summary entry.</li>
+      <li><b>What we explicitly do NOT solve in v1:</b> real builds/tests in isolate, multi-user auth, container sync.</li>
+    </ul>
+  </div>
+</section>
+<section>
+  <h2>10 — PR breakdown (end to end, small + focused)</h2>
+  <div class="body">
+    <p>Rules: every PR is functional and leaves things working — setup-only and test-only PRs do not exist; small focused verification rides inside each PR. Max ~20 min assistant execution; anything bigger is split (see 21a/21b/21c). Branches are <code>pr/NN-slug</code>; worktrees are isolated <code>.worktrees/pr-NN</code> so parallel waves never collide. Wave = parallelizable set once dependencies are merged. Source: <code>pr.tsv</code>.</p>
+    <div style="overflow-x:auto">
+    <table style="font-size:12px">
+      <tr><th>PR</th><th>title</th><th>branch · worktree</th><th>cx</th><th>min</th><th>depends</th><th>wave</th><th>scope</th><th>done</th><th>note</th></tr>
+      <tr><td>01</td><td>workspace-do-scope</td><td><code>pr/01-workspace-do-scope</code><br><span class="dim">.worktrees/pr-01</span></td><td>2</td><td>15</td><td>—</td><td>W1</td><td>DO per workspaceId + pi_entries/pi_owners schema + POST /workspaces round-trip</td><td>100%</td><td>✅ shipped + verified (round-trip PASS)</td></tr>
+      <tr><td>02</td><td>vfs-files-api</td><td><code>pr/02-vfs-files-api</code><br><span class="dim">.worktrees/pr-02</span></td><td>2</td><td>15</td><td>01</td><td>W2</td><td>fs read/stat/readdir via GET /files, write/mkdir via PUT /files</td><td>100%</td><td>✅ shipped + verified (direct SQLite; dofs swap later)</td></tr>
+      <tr><td>03</td><td>env-fs-adapter</td><td><code>pr/03-env-fs-adapter</code><br><span class="dim">.worktrees/pr-03</span></td><td>2</td><td>12</td><td>02</td><td>W3</td><td>ComputerExecutionEnv FileSystem → workspace.fs only</td><td>0%</td><td>—</td></tr>
+      <tr><td>04</td><td>shell-justbash-exec</td><td><code>pr/04-shell-justbash-exec</code><br><span class="dim">.worktrees/pr-04</span></td><td>3</td><td>18</td><td>01</td><td>W2</td><td>worker-shell just-bash sync:none + POST /exec one-off shell</td><td>0%</td><td>—</td></tr>
+      <tr><td>05</td><td>git-narrow-api</td><td><code>pr/05-git-narrow-api</code><br><span class="dim">.worktrees/pr-05</span></td><td>2</td><td>12</td><td>02</td><td>W3</td><td>workspace.git status/log/diff via POST sessions/:sid/git argv allowlist</td><td>0%</td><td>—</td></tr>
+      <tr><td>06</td><td>harness-headless-loop</td><td><code>pr/06-harness-headless-loop</code><br><span class="dim">.worktrees/pr-06</span></td><td>3</td><td>20</td><td>03,04</td><td>W4</td><td>pi harness headless prompt → read+bash tool call in DO, no socket yet</td><td>0%</td><td>—</td></tr>
+      <tr><td>07</td><td>session-persist-append</td><td><code>pr/07-session-persist-append</code><br><span class="dim">.worktrees/pr-07</span></td><td>3</td><td>18</td><td>06</td><td>W5</td><td>every onUpdate appended to pi_entries before emit + interrupted open ops</td><td>0%</td><td>—</td></tr>
+      <tr><td>08</td><td>fence-revision-cas</td><td><code>pr/08-fence-revision-cas</code><br><span class="dim">.worktrees/pr-08</span></td><td>3</td><td>15</td><td>07</td><td>W6</td><td>owner-fence + revision CAS; stale socket gets Fenced/Conflict</td><td>0%</td><td>—</td></tr>
+      <tr><td>09</td><td>entries-replay-api</td><td><code>pr/09-entries-replay-api</code><br><span class="dim">.worktrees/pr-09</span></td><td>2</td><td>12</td><td>07</td><td>W6</td><td>GET session metadata + GET entries?after=n pagination for resume</td><td>0%</td><td>—</td></tr>
+      <tr><td>10</td><td>ws-stream-protocol</td><td><code>pr/10-ws-stream-protocol</code><br><span class="dim">.worktrees/pr-10</span></td><td>3</td><td>20</td><td>08,09</td><td>W7</td><td>WS prompt/abort/steer in, message/tool/agent/entry frames out</td><td>0%</td><td>—</td></tr>
+      <tr><td>11</td><td>per-session-queue</td><td><code>pr/11-per-session-queue</code><br><span class="dim">.worktrees/pr-11</span></td><td>2</td><td>12</td><td>10</td><td>W8</td><td>per-session promise queue + withFileMutationQueue for edits</td><td>0%</td><td>—</td></tr>
+      <tr><td>12</td><td>bash-stream-abort</td><td><code>pr/12-bash-stream-abort</code><br><span class="dim">.worktrees/pr-12</span></td><td>3</td><td>15</td><td>10</td><td>W8</td><td>throttled tool_update streaming + AbortSignal → ExecHandle kill</td><td>0%</td><td>—</td></tr>
+      <tr><td>13</td><td>exec-descriptions</td><td><code>pr/13-exec-descriptions</code><br><span class="dim">.worktrees/pr-13</span></td><td>1</td><td>10</td><td>06</td><td>W5</td><td>per-backend exec descriptions injected into bash tool text</td><td>0%</td><td>—</td></tr>
+      <tr><td>14</td><td>model-runtime-wiring</td><td><code>pr/14-model-runtime-wiring</code><br><span class="dim">.worktrees/pr-14</span></td><td>3</td><td>18</td><td>06</td><td>W5</td><td>ModelRuntime + default tools via env, createAgentSession shape</td><td>0%</td><td>—</td></tr>
+      <tr><td>15</td><td>edit-write-tools</td><td><code>pr/15-edit-write-tools</code><br><span class="dim">.worktrees/pr-15</span></td><td>2</td><td>12</td><td>14</td><td>W7</td><td>write/edit via env through mutation queue, recorded as entries</td><td>0%</td><td>—</td></tr>
+      <tr><td>16</td><td>lane-compact-archive</td><td><code>pr/16-lane-compact-archive</code><br><span class="dim">.worktrees/pr-16</span></td><td>2</td><td>12</td><td>07</td><td>W7</td><td>lane compact summary entry + archived pagination, bounded table</td><td>0%</td><td>—</td></tr>
+      <tr><td>17</td><td>cli-client</td><td><code>pr/17-cli-client</code><br><span class="dim">.worktrees/pr-17</span></td><td>2</td><td>15</td><td>10</td><td>W8</td><td>thin CLI: prompt/abort/steer sender + frame printer over WS</td><td>40%</td><td>◐ doctor/workspace/files only; stream cmds pending PR10</td></tr>
+      <tr><td>18</td><td>sdk-createPiCf</td><td><code>pr/18-sdk-createPiCf</code><br><span class="dim">.worktrees/pr-18</span></td><td>3</td><td>18</td><td>14,11</td><td>W9</td><td>createPiCf DO factory + minimal-agent example</td><td>0%</td><td>—</td></tr>
+      <tr><td>19</td><td>inline-extensions</td><td><code>pr/19-inline-extensions</code><br><span class="dim">.worktrees/pr-19</span></td><td>3</td><td>18</td><td>18</td><td>W10</td><td>ExtensionFactory inline path + sample tool/command/hook ext</td><td>0%</td><td>—</td></tr>
+      <tr><td>20</td><td>ext-wire-frames</td><td><code>pr/20-ext-wire-frames</code><br><span class="dim">.worktrees/pr-20</span></td><td>2</td><td>12</td><td>19,10</td><td>W11</td><td>get_commands + extension_ui_request/response over wire</td><td>0%</td><td>—</td></tr>
+      <tr><td>21a</td><td>vfs-ext-sandbox</td><td><code>pr/21a-vfs-ext-sandbox</code><br><span class="dim">.worktrees/pr-21a</span></td><td>3</td><td>18</td><td>19</td><td>W11</td><td>.pi/extensions/*.ts sandbox eval via worker-javascript graph</td><td>0%</td><td>—</td></tr>
+      <tr><td>21b</td><td>vfs-ext-rpc-bridge</td><td><code>pr/21b-vfs-ext-rpc-bridge</code><br><span class="dim">.worktrees/pr-21b</span></td><td>3</td><td>15</td><td>21a</td><td>W12</td><td>sandboxed ext RPC bridge back to harness registry</td><td>0%</td><td>—</td></tr>
+      <tr><td>21c</td><td>vfs-ext-manifest</td><td><code>pr/21c-vfs-ext-manifest</code><br><span class="dim">.worktrees/pr-21c</span></td><td>2</td><td>10</td><td>21b</td><td>W12</td><td>npm subdir package.json pi.extensions manifest on same loader</td><td>0%</td><td>—</td></tr>
+      <tr><td>22</td><td>shell-caps-quotas</td><td><code>pr/22-shell-caps-quotas</code><br><span class="dim">.worktrees/pr-22</span></td><td>2</td><td>10</td><td>12</td><td>W9</td><td>64 live sessions, 1MiB output cap, cwd pinned per call</td><td>0%</td><td>—</td></tr>
+      <tr><td>23</td><td>web-viewer-minimal</td><td><code>pr/23-web-viewer-minimal</code><br><span class="dim">.worktrees/pr-23</span></td><td>2</td><td>15</td><td>10</td><td>W12</td><td>minimal web viewer: entries replay + live stream frames</td><td>0%</td><td>—</td></tr>
+    </table>
+    </div>
+    <h3>Dependency chains (critical path)</h3>
+<pre>01 → 02 → 03 ─┐
+01 → 04 ───────┴→ 06 → 07 → 08 ─┐
+                  06 → 14 → 15  ├→ 10 → 11 → 18 → 19 → 21a → 21b → 21c
+                  07 → 09 ──────┘   10 → 12 → 22
+                                    10 → 17 / 23 (parallel leaves)</pre>
+    <h3>Parallel waves</h3>
+    <ul>
+      <li><b>W1:</b> 01 alone (root).</li>
+      <li><b>W2:</b> 02 + 04 in parallel (both need only 01).</li>
+      <li><b>W3:</b> 03 + 05 in parallel (both need only 02).</li>
+      <li><b>W4:</b> 06 alone (joins 03+04).</li>
+      <li><b>W5:</b> 07 + 13 + 14 in parallel (all need only 06/07-line).</li>
+      <li><b>W6:</b> 08 + 09 in parallel (both need only 07).</li>
+      <li><b>W7:</b> 10 (joins 08+09); 15 + 16 in parallel alongside.</li>
+      <li><b>W8:</b> 11 + 12 + 17 in parallel (all need only 10).</li>
+      <li><b>W9–W12:</b> 18 → 19 → {20, 21a} → 21b → {21c, 22, 23}.</li>
+    </ul>
+    <div class="ok-box"><b>Merge order:</b> land waves in numeric order; within a wave land in PR-number order. No PR exceeds complexity 3 or 20 min — 21 was split into 21a/b/c to hold that bound.</div>
+  </div>
+</section>
+
+<footer>pi-do plan · generated 2026-09-03 · next step on approval: P0 skeleton. No code written.</footer>
+
+</div>
+</body>
+</html>
