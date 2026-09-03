@@ -1,7 +1,7 @@
 // entries.ts — sole writer of pi_entries plus the runs open/close ledger.
 // Pure functions over a minimal SQL interface; no DO imports, so the same
 // logic runs against the DO SqlStorage and the in-memory fake in verify-runs.
-import type { SessionUsage } from "../../packages/pi-cf/src/session";
+import type { SessionUsage } from "./session";
 
 export interface EntriesSql {
   exec(query: string, ...bindings: unknown[]): Iterable<unknown>;

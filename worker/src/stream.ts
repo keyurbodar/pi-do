@@ -270,6 +270,8 @@ async function startTurn(
       ws: host.ws,
       shell: host.shell,
       model: runtime.model,
+      // First-party host: no inline extensions (PR19 keeps behavior unchanged).
+      extensions: [],
       apiKey: runtime.stub ? undefined : resolveProviderKey(host.runtimeEnv, runtime.model.provider),
     });
     const turn = await session.run(prompt, {
