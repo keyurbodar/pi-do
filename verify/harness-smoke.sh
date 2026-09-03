@@ -43,6 +43,14 @@ const names = b.toolCalls.map((c) => c.tool).sort().join(',');
 if (names !== 'bash,read') throw new Error('expected read+bash toolCalls, got ' + names);
 console.log('run body ok: read output + bash marker, 2 tool calls');
 " "${OUT}/run.json" || exit 1
+echo "### 4b turn flowed through createAgentSession (factory marker, keyless stub)"
+node -e "
+const fs = require('node:fs');
+const b = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+if (!b.runtime || b.runtime.via !== 'createAgentSession') throw new Error('turn did not flow through the factory: missing runtime.via marker');
+if (b.runtime.model !== 'stub') throw new Error('expected keyless stub model, got ' + JSON.stringify(b.runtime.model));
+console.log('factory path ok: via=createAgentSession model=stub');
+" "${OUT}/run.json" || exit 1
 
 echo "### 5 run wrote no files (second view: only the seed)"
 LS_JSON="$(${CLI} files ls --ws "${WS}" --path "" --base "${BASE}" --json)" || exit 1

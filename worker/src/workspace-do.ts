@@ -1,6 +1,6 @@
 import { createFileStore, type FileStore } from "./files";
-import { ComputerExecutionEnv } from "../../packages/pi-cf/src/env";
-import { runHeadlessTurn } from "./harness";
+import { createAgentSession } from "../../packages/pi-cf/src/session";
+import { buildRuntime, type RuntimeEnv } from "./model-runtime";
 import type { DurableObjectState } from "@cloudflare/workers-types";
 import { createWorkspaceFs, hasGitDir } from "./git-fs";
 import { gateArgv, notARepoBody, NotARepoError, runGitRead } from "./git-reads";
@@ -328,9 +328,20 @@ export class WorkspaceDO implements DurableObject {
         );
       }
       try {
-        const env = new ComputerExecutionEnv(this.files, ws, this.env.SHELL_WORKER);
-        const turn = await runHeadlessTurn(prompt, env);
-        return json({ result: turn.result, toolCalls: turn.toolCalls });
+        const runtime = buildRuntime(this.env as unknown as RuntimeEnv);
+        const session = createAgentSession({
+          files: this.files,
+          ws,
+          shell: this.env.SHELL_WORKER,
+          model: runtime.model,
+        });
+        const turn = await session.run(prompt);
+        // PR07 attaches persist here
+        return json({
+          result: turn.result,
+          toolCalls: turn.toolCalls,
+          runtime: { via: turn.via, model: turn.model },
+        });
       } catch (e) {
         if (
           e !== null &&
