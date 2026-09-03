@@ -4,7 +4,8 @@
   "type": "module",
   "workspaces": [
     "worker",
-    "cli"
+    "cli",
+    "packages/pi-cf"
   ],
   "scripts": {
     "dev": "npm run dev --workspace=worker",

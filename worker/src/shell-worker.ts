@@ -1,8 +1,9 @@
 // ShellWorker — one-off shell outside the agent loop, via just-bash.
 //
-// Shape copies refs/computer's worker-shell/entrypoint.ts (Dynamic Worker
-// dispatch pattern): a WorkerEntrypoint with an exec method, reached through
-// getEntrypoint("ShellWorker"). Each exec builds its own Bash on a fresh
+// Shape copies refs/computer's worker-shell/entrypoint.ts: a WorkerEntrypoint
+// with an exec method, reached through the SHELL_WORKER service binding pinned
+// to this entrypoint (direct .exec(); workerd rejects getEntrypoint on it).
+// Each exec builds its own Bash on a fresh
 // in-memory FS and disposes it when the run settles; no state survives
 // across calls. Kill arrives in PR12, so runtime is capped with a fixed
 // timeout and timeouts report as timedOut for the route to map to

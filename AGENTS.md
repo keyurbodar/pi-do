@@ -79,6 +79,9 @@ each file doing one thing. Current `cli/bin/pi-do.mjs` splits into `lib/` next.
 - Proof = action plus resulting state through a second view. Skipped paths are
   reported, never implied. Never drive a foreign workspace; isolate by fresh
   workspaceId + `verify-*` paths. Skill + map: `.cursor/skills/verify-pi-do/`.
+- Scoped checks only: typecheck the touched package, run the one verify script
+  for the behavior. Never whole-repo suites per change. A check taking minutes
+  means the scope is wrong, not the machine.
 
 ## PR discipline (every stage)
 
@@ -87,6 +90,11 @@ each file doing one thing. Current `cli/bin/pi-do.mjs` splits into `lib/` next.
 - Work past ~20 min splits first (`21a/21b/21c` style). Never silently shrink
   scope; no setup-only or test-only PRs; verification rides inside each PR.
 - Merge in wave order; within a wave, PR-number order.
+
+## How to work
+
+- Run every task under poteto-mode. Name each principle behind a decision and
+  the choice it changed. No citation without a decision behind it.
 
 ## References (read these, not the world)
 
