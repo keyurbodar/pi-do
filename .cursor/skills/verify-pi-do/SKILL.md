@@ -5,11 +5,10 @@ description: Drives pi-do (Cloudflare Workers coding agent) over its HTTP contro
 
 # verify-pi-do
 
-Staged skill: the app does not exist yet (repo holds `plan.html`, `pr.tsv`, `refs/` only).
-Pre-PR01 only Doctor and Evidence paths are executable; Drive recipes activate as
-their PRs land (each feature file names its activation PR). Never claim a drive
-result for a recipe whose activation PR has not landed — run Doctor and report
-the checkout as pre-run instead.
+Live skill: the app runs from `main` at the v1 cut (PR11 + PR15 + PR26 + PR17
+merged). Every Drive recipe below is active except Extensions (staged for
+PR19/PR20). Never claim a drive result for a staged recipe — run Doctor and
+report the missing prerequisite instead.
 
 ## Launch
 
@@ -39,7 +38,7 @@ Run first whenever anything looks off, and before every drive:
 
 ## Drive
 
-Primary harness: the `cli/` client (lands PR17) plus `curl` for the control
+Primary harness: the `cli/` client (complete since PR17) plus `curl` for the control
 plane. No browser harness until the web viewer (PR23); then prefer stable
 handles (route paths, frame `type` values, entry cursors) over coordinates.
 

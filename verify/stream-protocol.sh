@@ -2,7 +2,7 @@
 # stream-protocol.sh — proves live turns over WebSocket: mint a session,
 # stream one turn and byte-compare every entry frame against a storage
 # re-read, prove abort-then-next-prompt continues with the prior run marked
-# interrupted, prove busy while a turn runs, and prove stale-fence and
+# interrupted, prove concurrent prompts serialize with no busy reject, and
 # unknown-session connects get a close frame with the hint (never a drop).
 # Usage: sh verify/stream-protocol.sh [BASE]
 # Exit 0 on pass, 1 otherwise. Writes artifacts/RUN_ID/stream-protocol/.
@@ -49,6 +49,9 @@ const frames = [];
 let close = null;
 let steerSent = false;
 let settled = false;
+let liveFence;
+let liveExpected;
+let liveDones = 0;
 function finish(code, note) {
   if (settled) return;
   settled = true;
@@ -67,8 +70,10 @@ sock.onopen = () => {
     }
     sock.send(JSON.stringify(frame));
   } else if (MODE === "live") {
-    sock.send(JSON.stringify({ prompt: "read seed.txt", fence: FENCE, expected: EXPECTED }));
-    sock.send(JSON.stringify({ prompt: "second while busy", fence: FENCE, expected: EXPECTED }));
+    liveFence = FENCE;
+    liveExpected = EXPECTED;
+    sock.send(JSON.stringify({ prompt: "read seed.txt", fence: liveFence, expected: liveExpected }));
+    sock.send(JSON.stringify({ prompt: "second prompt queues", fence: liveFence, expected: liveExpected }));
     setTimeout(() => {
       try {
         sock.send(JSON.stringify({ abort: true }));
@@ -86,10 +91,14 @@ sock.onmessage = (event) => {
       steerSent = true;
       sock.send(JSON.stringify({ steer: true, text: "steer-note-live" }));
     }
-    if (frame.aborted === true) {
-      sock.send(JSON.stringify({ prompt: "read seed.txt again", fence: FENCE, expected: EXPECTED }));
+    if (frame.done === true) {
+      liveDones++;
+      if (liveDones === 1) {
+        liveFence = frame.fence;
+        liveExpected = frame.revision;
+        sock.send(JSON.stringify({ prompt: "read seed.txt again", fence: liveFence, expected: liveExpected }));
+      } else closeAndFinish();
     }
-    if (frame.done === true) closeAndFinish();
   } else if (frame.done === true) {
     closeAndFinish();
   }
@@ -165,7 +174,7 @@ fetch('${BASE}/workspaces/${WS}/sessions/${SID}/stream').then(async (res) => {
 }).catch((e) => { console.error(e.message); process.exit(1); });
 " || exit 1
 
-echo "### 8 busy + steer + abort, then the next prompt continues cleanly"
+echo "### 8 serialize + steer + abort, then the next prompt continues cleanly"
 STREAM2="${WS_BASE}/workspaces/${WS}/sessions/${SID}/stream?fence=${F1}&expected=${R1}"
 WS_URL="${STREAM2}" MODE=live FENCE="${F1}" EXPECTED="${R1}" OUTFILE="${OUT}/frames2.json" node "${OUT}/ws-client.mjs" || exit 1
 cat "${OUT}/frames2.json"
@@ -177,9 +186,8 @@ const fs = require('node:fs');
 const b = JSON.parse(fs.readFileSync('${OUT}/frames2.json', 'utf8'));
 const frames = b.frames;
 const idx = (p) => frames.findIndex(p);
-const busy = frames.find((f) => f.busy === true);
-if (!busy || typeof busy.hint !== 'string') throw new Error('missing {busy} with a hint');
-console.log('busy ok: ' + busy.hint);
+if (frames.some((f) => f.busy === true)) throw new Error('queued prompts must serialize; got {busy}');
+console.log('serialize ok: no {busy}, second prompt waited its turn');
 const abortedAt = idx((f) => f.aborted === true);
 if (abortedAt === -1) throw new Error('missing {aborted}');
 const aborted = frames[abortedAt];
@@ -189,14 +197,16 @@ if (steerAt === -1) throw new Error('missing steer entry frame');
 if (steerAt > abortedAt) throw new Error('steer landed after the abort; it must append mid-turn');
 if (!frames[steerAt].entry.body.includes('steer-note-live')) throw new Error('steer body mismatch');
 console.log('steer ok: entry frame arrived mid-turn, turn kept running');
-const doneAt = idx((f) => f.done === true);
-if (doneAt === -1 || doneAt < abortedAt) throw new Error('missing {done} after the abort');
-const done = frames[doneAt];
-if (done.fence === process.env.F1) throw new Error('next-prompt done must rotate the fence');
-if (done.revision !== 2) throw new Error('done revision must be 2, got ' + JSON.stringify(done.revision));
-if (!String(done.result || '').includes(process.env.SEED_BODY)) throw new Error('next prompt result missing seeded read');
-if (!String(done.result || '').includes(process.env.MARKER)) throw new Error('next prompt result missing bash marker');
-console.log('next prompt ok: continued cleanly, fence rotated, revision 1->2');
+const dones = frames.filter((f) => f.done === true);
+if (dones.length !== 2) throw new Error('expected two {done} frames (queued turn, then next prompt), got ' + dones.length);
+if (dones[0].revision !== 2) throw new Error('first done revision must be 2, got ' + JSON.stringify(dones[0].revision));
+if (dones[1].revision !== 3) throw new Error('second done revision must be 3, got ' + JSON.stringify(dones[1].revision));
+if (dones[1].fence === dones[0].fence) throw new Error('next-prompt done must rotate the fence');
+for (const done of dones) {
+  if (!String(done.result || '').includes(process.env.SEED_BODY)) throw new Error('done result missing seeded read');
+  if (!String(done.result || '').includes(process.env.MARKER)) throw new Error('done result missing bash marker');
+}
+console.log('next prompt ok: continued cleanly, fence rotated, revisions 1->2->3');
 " || exit 1
 
 echo "### 9 second view: prior run marked interrupted, cursors gapless, no open run"

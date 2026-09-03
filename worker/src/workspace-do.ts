@@ -34,6 +34,20 @@ export class WorkspaceDO implements DurableObject {
   // eviction resets this map; correctness state stays in SQLite, and the next
   // openRun flips any orphaned run to interrupted.
   private live = new Map<string, AbortController>();
+  private sessionQueues = new Map<string, Promise<void>>();
+  private enqueueSessionTurn<T>(sid: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.sessionQueues.get(sid) ?? Promise.resolve();
+    let release!: () => void;
+    const cur = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = prev.then(() => cur);
+    this.sessionQueues.set(sid, tail);
+    return prev.catch(() => {}).then(fn).finally(() => {
+      release();
+      if (this.sessionQueues.get(sid) === tail) this.sessionQueues.delete(sid);
+    });
+  }
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
@@ -946,6 +960,7 @@ export class WorkspaceDO implements DurableObject {
         );
       }
       const effThinking = wantThinking === null ? null : clampThinkingLevel(like, wantThinking);
+      return this.enqueueSessionTurn(sid, async () => {
       let rotated: { fence: string; revision: number } | null = null;
       if (hasFence || hasExpected) {
         if (typeof fence !== "string" || fence.length === 0 || !Number.isInteger(expected)) {
@@ -1032,6 +1047,7 @@ export class WorkspaceDO implements DurableObject {
           500,
         );
       }
+      });
     }
 
     // GET /stream?ws=&sid= — hibernation WS upgrade for live turns (see stream.ts).
@@ -1167,6 +1183,7 @@ export class WorkspaceDO implements DurableObject {
       readFence: () => this.readFence(sid),
       casRotateFence: (oldFence, oldRevision, next) => this.casRotateFence(sid, oldFence, oldRevision, next),
       live: this.live,
+      enqueue: (fn) => this.enqueueSessionTurn(sid, fn),
     };
   }
 

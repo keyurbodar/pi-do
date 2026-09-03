@@ -9,9 +9,9 @@
 // webSocketError. Nothing turn-related lives here across messages — fence,
 // revision, entries, and open runs are re-read from SQLite on every wake, so an
 // eviction eats no correctness state. The host hands one ephemeral sid ->
-// AbortController map per DO incarnation as the liveness witness for aborts
-// and the busy claim only; dropping it on eviction is safe because the next
-// openRun flips the orphaned run to interrupted.
+// AbortController map per DO incarnation as the abort witness, plus the
+// session turn queue shared with POST /run; dropping both on eviction is safe
+// because the next openRun flips the orphaned run to interrupted.
 import { appendEntry, closeRun, getEntry, openRun, type EntriesSql } from "./entries";
 import { enforceFence } from "./fence";
 import type { FileStore } from "./files";
@@ -36,6 +36,7 @@ export interface StreamHost {
   readFence(): { fence: string | null; revision: number } | null;
   casRotateFence(oldFence: string, oldRevision: number, next: { fence: string; revision: number }): boolean;
   live: Map<string, AbortController>;
+  enqueue: <T>(fn: () => Promise<T>) => Promise<T>;
 }
 
 export interface StreamAttachment {
@@ -62,14 +63,14 @@ export function wrapSocket(ws: WebSocket): StreamSocket {
       try {
         ws.send(JSON.stringify(frame));
       } catch {
-        // Socket already gone; the error frame above carries the hint.
+        // Gone mid-send; the error frame already went out.
       }
     },
     close(code: number, reason: string): void {
       try {
         ws.close(code, shortReason(reason));
       } catch {
-        // Socket already gone; the error frame above carries the hint.
+        // Gone mid-close; the error frame already went out.
       }
     },
   };
@@ -207,6 +208,7 @@ export async function socketMessage(
     const cursor = appendEntry(host.sql, host.sid, "steer", { runId, text });
     const row = getEntry(host.sql, host.sid, cursor);
     if (row !== null) sock.send({ entry: row });
+    return;
   }
   if (promptValue !== undefined) {
     if (promptValue.length === 0) {
@@ -228,16 +230,11 @@ async function startTurn(
   expected: unknown,
   hasFence: boolean,
 ): Promise<void> {
-  // Synchronous claim before the first await: one live turn per sid per
-  // incarnation. A DB-open run with no live controller here is an eviction (or
-  // crash) orphan; openRun below flips it to interrupted, so resume heals.
-  if (host.live.has(host.sid)) {
-    sock.send({
-      busy: true,
-      hint: "a turn is already running on this socket; wait for {done} or {aborted} before sending the next prompt",
-    });
-    return;
-  }
+  // One prompt per session at a time across POST /run and WS: the queue
+  // holds this turn until earlier turns on the sid settle. The live map is
+  // only the abort witness; an eviction resets it and the next openRun
+  // flips the orphaned run to interrupted, so resume heals.
+  await host.enqueue(async () => {
   let held: { fence: string; revision: number } | null = null;
   if (hasFence) {
     if (typeof fence !== "string" || fence.length === 0 || !Number.isInteger(expected) || typeof expected !== "number") {
@@ -313,4 +310,5 @@ async function startTurn(
   } finally {
     if (host.live.get(host.sid) === turnController) host.live.delete(host.sid);
   }
+  });
 }
