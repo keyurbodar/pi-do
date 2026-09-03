@@ -10,7 +10,7 @@ pr	title	branch	worktree	complexity	time_min	depends_on	parallel_group	scope	com
 09	entries-replay-api	pr/09-entries-replay-api	.worktrees/pr-09	2	12	07	W6	GET session metadata + GET entries after cursor pagination for resume replay	100%	✅ merged (paged entries+meta, paged byte-equals full)
 10	ws-stream-protocol	pr/10-ws-stream-protocol	.worktrees/pr-10	3	20	08,09	W7	WS stream prompt abort steer in + message tool agent entry frames out persisted first	100%	✅ merged (stream/abort/steer, CAS-at-done, 9 batteries green)
 11	per-session-queue	pr/11-per-session-queue	.worktrees/pr-11	2	12	10	W8	per-session promise queue one prompt at a time + withFileMutationQueue for overlapping edits	0%	—
-12	bash-stream-abort	pr/12-bash-stream-abort	.worktrees/pr-12	3	15	10	W8	throttled tool_update bash streaming + AbortSignal to ExecHandle kill path	0%	—
+12	bash-stream-abort	pr/12-bash-stream-abort	.worktrees/pr-12	3	15	10	W8	exec sessions with envelope handles kill dispose plus throttled tool_update bash streaming	0%	—
 13	exec-descriptions	pr/13-exec-descriptions	.worktrees/pr-13	1	10	06	W5	per-backend exec descriptions into bash tool text	100%	✅ merged (just-bash limits in description, assert in smoke)
 14	model-runtime-wiring	pr/14-model-runtime-wiring	.worktrees/pr-14	3	18	06	W5	ModelRuntime + default read bash edit write wiring via env createAgentSession shape	100%	✅ merged (runtime+factory, tools live in pi-cf, 6 batteries green)
 15	edit-write-tools	pr/15-edit-write-tools	.worktrees/pr-15	2	12	14	W7	write edit tools via env through mutation queue last-writer-wins recorded as entries	0%	—
@@ -27,3 +27,4 @@ pr	title	branch	worktree	complexity	time_min	depends_on	parallel_group	scope	com
 24	model-catalog	pr/24-model-catalog	.worktrees/pr-24	2	15	14	W5	buildRuntime resolves through pi-ai provider slices with contextWindow cost MODEL_ID override	100%	✅ merged (anthropic+openai slices, wrangler 4 for import-attrs parse, 6 batteries green)
 25	model-providers	pr/25-model-providers	.worktrees/pr-25	3	18	24	W5	all API-key provider slices plus models.json custom OpenAI-compatible providers env-only keys	100%	✅ merged (33 providers, models.json customs, 8 batteries green)
 26	model-switching	pr/26-model-switching	.worktrees/pr-26	2	15	25	W6	session model plus thinking columns model thinking routes pi entry types run reads session	0%	—
+27	vfs-dofs-swap	pr/27-vfs-dofs-swap	.worktrees/pr-27	3	15	02	W9	swap files table for computer dofs binding behind FileStore seam same behavior	0%	—
