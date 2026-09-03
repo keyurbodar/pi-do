@@ -74,6 +74,29 @@ export default {
       );
     }
 
+    // POST /workspaces/:id/sessions/:sid/claim → rotate owner fence via revision CAS
+    if (
+      request.method === "POST" &&
+      parts.length === 5 &&
+      parts[0] === "workspaces" &&
+      parts[2] === "sessions" &&
+      parts[4] === "claim"
+    ) {
+      const workspaceId = parts[1];
+      const sessionId = parts[3];
+      const inner = new URL("http://do/claim");
+      inner.searchParams.set("ws", workspaceId);
+      inner.searchParams.set("sid", sessionId);
+      return await env.WORKSPACE_DO.get(
+        env.WORKSPACE_DO.idFromName(workspaceId),
+      ).fetch(inner.toString(), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: request.body,
+        duplex: "half",
+      } as RequestInit);
+    }
+
     // POST /workspaces/:id/sessions/:sid/run → one headless harness turn
     if (
       request.method === "POST" &&
