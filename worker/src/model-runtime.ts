@@ -1,13 +1,10 @@
-// model-runtime.ts — ModelRuntime construction over pi-ai's Model shape.
-//
 // Pattern source (read-only): refs/pi/packages/ai src/types.ts Model
 // (id/name/api/provider/baseUrl plus a stream function) and
 // refs/pi/packages/coding-agent ModelRuntime.create (async model/auth
 // facade). Here the runtime is sync and key-driven: provider keys are read
 // from env, otherwise the deterministic stub stands in. Never log keys:
-// this module makes no console or output calls; key material only decides
-// the branch and never leaves memory.
-import { STUB_MODEL_ID } from "./stub-model";
+// key material only decides the branch and never leaves memory.
+export const STUB_MODEL_ID = "stub";
 
 export interface RuntimeModel {
   id: string;
