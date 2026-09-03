@@ -30,6 +30,7 @@ function createFakeSql() {
     exec(query, ...bindings) {
       const q = String(query);
       if (q.startsWith("CREATE TABLE")) return [];
+      if (q.startsWith("CREATE INDEX")) return [];
       if (q.startsWith("INSERT INTO pi_entries")) {
         seq += 1;
         entries.push({ id: seq, sid: bindings[0], type: bindings[1], body: bindings[2] });

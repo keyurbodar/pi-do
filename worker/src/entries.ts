@@ -21,6 +21,7 @@ export function ensureEntriesSchema(sql: EntriesSql): void {
   sql.exec(
     "CREATE TABLE IF NOT EXISTS runs (sid TEXT, runId TEXT PRIMARY KEY, status TEXT)",
   );
+  sql.exec("CREATE INDEX IF NOT EXISTS pi_entries_sid_id ON pi_entries(sid, id)");
 }
 
 export function appendEntry(
@@ -114,25 +115,29 @@ export function runInSyncTx(sql: EntriesSql, fn: () => void): void {
 
 // Open a run row; any still-open rows for the sid flip to interrupted and
 // each gains an interrupted entry pointing at the superseding run.
+function openRunInner(sql: EntriesSql, sid: string, runId: string): void {
+  for (const row of sql.exec("SELECT runId FROM runs WHERE sid = ? AND status = ?", sid, "open")) {
+    if (row === null || typeof row !== "object" || !("runId" in row)) continue;
+    if (typeof row.runId !== "string" || row.runId === runId) continue;
+    sql.exec(
+      "UPDATE runs SET status = ? WHERE sid = ? AND runId = ?",
+      "interrupted",
+      sid,
+      row.runId,
+    );
+    appendEntry(sql, sid, "interrupted", { runId: row.runId, interruptedBy: runId });
+  }
+  sql.exec(
+    "INSERT OR REPLACE INTO runs(sid, runId, status) VALUES (?, ?, ?)",
+    sid,
+    runId,
+    "open",
+  );
+}
+
 export function openRun(sql: EntriesSql, sid: string, runId: string): void {
   runInSyncTx(sql, () => {
-    for (const row of sql.exec("SELECT runId FROM runs WHERE sid = ? AND status = ?", sid, "open")) {
-      if (row === null || typeof row !== "object" || !("runId" in row)) continue;
-      if (typeof row.runId !== "string" || row.runId === runId) continue;
-      sql.exec(
-        "UPDATE runs SET status = ? WHERE sid = ? AND runId = ?",
-        "interrupted",
-        sid,
-        row.runId,
-      );
-      appendEntry(sql, sid, "interrupted", { runId: row.runId, interruptedBy: runId });
-    }
-    sql.exec(
-      "INSERT OR REPLACE INTO runs(sid, runId, status) VALUES (?, ?, ?)",
-      sid,
-      runId,
-      "open",
-    );
+    openRunInner(sql, sid, runId);
   });
 }
 
@@ -146,10 +151,26 @@ export interface TurnCall {
   args: Record<string, unknown>;
   output: string;
 }
+// Whole turn in order where the driver offers transactionSync; the caller
+// either runs openRun before the turn and recordTurn after, or one
+// recordTurnWithOpen after, so every entry lands before the response emits.
+function recordTurnInner(
+  sql: EntriesSql,
+  sid: string,
+  runId: string,
+  prompt: string,
+  toolCalls: TurnCall[],
+  result: string,
+): void {
+  appendEntry(sql, sid, "prompt", { runId, prompt });
+  for (const call of toolCalls) {
+    appendEntry(sql, sid, "toolCall", { runId, id: call.id, tool: call.tool, args: call.args });
+    appendEntry(sql, sid, "toolResult", { runId, id: call.id, tool: call.tool, output: call.output });
+  }
+  appendEntry(sql, sid, "result", { runId, result });
+  closeRun(sql, sid, runId);
+}
 
-// Whole turn in order inside one sync transaction where the driver offers
-// transactionSync; the caller runs openRun before the turn and recordTurn
-// after, so every entry lands before the response is emitted.
 export function recordTurn(
   sql: EntriesSql,
   sid: string,
@@ -159,12 +180,22 @@ export function recordTurn(
   result: string,
 ): void {
   runInSyncTx(sql, () => {
-    appendEntry(sql, sid, "prompt", { runId, prompt });
-    for (const call of toolCalls) {
-      appendEntry(sql, sid, "toolCall", { runId, id: call.id, tool: call.tool, args: call.args });
-      appendEntry(sql, sid, "toolResult", { runId, id: call.id, tool: call.tool, output: call.output });
-    }
-    appendEntry(sql, sid, "result", { runId, result });
-    closeRun(sql, sid, runId);
+    recordTurnInner(sql, sid, runId, prompt, toolCalls, result);
+  });
+}
+
+// One turn, one commit: the open row plus the turn entries plus the close
+// land together. Same rows as openRun followed by recordTurn.
+export function recordTurnWithOpen(
+  sql: EntriesSql,
+  sid: string,
+  runId: string,
+  prompt: string,
+  toolCalls: TurnCall[],
+  result: string,
+): void {
+  runInSyncTx(sql, () => {
+    openRunInner(sql, sid, runId);
+    recordTurnInner(sql, sid, runId, prompt, toolCalls, result);
   });
 }
