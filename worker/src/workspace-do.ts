@@ -30,11 +30,25 @@ export class WorkspaceDO implements DurableObject {
   private state: DurableObjectState;
   private env: Env;
   private files: FileStore;
+  private sessionQueues = new Map<string, Promise<void>>();
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
     this.env = env;
     this.files = createFileStore(state.storage.sql);
+  }
+  private enqueueSessionTurn<T>(sid: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.sessionQueues.get(sid) ?? Promise.resolve();
+    let release!: () => void;
+    const cur = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = prev.then(() => cur);
+    this.sessionQueues.set(sid, tail);
+    return prev.catch(() => {}).then(fn).finally(() => {
+      release();
+      if (this.sessionQueues.get(sid) === tail) this.sessionQueues.delete(sid);
+    });
   }
 
   private ensureSchema(): void {
@@ -942,6 +956,7 @@ export class WorkspaceDO implements DurableObject {
         );
       }
       const effThinking = wantThinking === null ? null : clampThinkingLevel(like, wantThinking);
+      return this.enqueueSessionTurn(sid, async () => {
       let rotated: { fence: string; revision: number } | null = null;
       if (hasFence || hasExpected) {
         if (typeof fence !== "string" || fence.length === 0 || !Number.isInteger(expected)) {
@@ -1028,6 +1043,7 @@ export class WorkspaceDO implements DurableObject {
           500,
         );
       }
+      });
     }
 
     // GET /stream?ws=&sid= — WS upgrade for live turns (see stream.ts).
@@ -1045,6 +1061,7 @@ export class WorkspaceDO implements DurableObject {
         sessionKnown: ws !== "" && sid !== "" && this.sessionExists(ws, sid),
         readFence: () => this.readFence(sid),
         casRotateFence: (oldFence, oldRevision, next) => this.casRotateFence(sid, oldFence, oldRevision, next),
+        enqueue: (fn) => this.enqueueSessionTurn(sid, fn),
       });
     }
 
