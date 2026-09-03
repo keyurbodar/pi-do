@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// pi-do CLI driver: doctor / workspace create / files put|get|ls.
+// pi-do CLI driver: doctor / workspace create / session create / files put|get|ls / git.
 // Zero dependencies, plain JS on global fetch (node >= 18).
 import { readFile, writeFile } from "node:fs/promises";
 
@@ -13,7 +13,9 @@ usage:
 commands:
   doctor                        check the worker is listening (GET BASE/)
   workspace create              create a workspace (POST /workspaces)
+  session create                mint a session (POST /workspaces/:id/sessions)
   files put|get|ls              read/write/list workspace files
+  git                           narrow git reads (POST /workspaces/:id/sessions/:sid/git)
 
 global flags:
   --base URL    worker base URL (default ${DEFAULT_BASE})
@@ -73,6 +75,58 @@ exit codes:
 
 example:
   pi-do workspace create --base http://127.0.0.1:8787
+`;
+
+const SESSION_HELP = `pi-do session — manage sessions
+
+usage:
+  pi-do session create --ws WS [--base URL] [--json]
+
+subcommands:
+  create    mint a session (POST /workspaces/:id/sessions)
+
+example:
+  pi-do session create --ws <workspace-id>
+`;
+
+const SESSION_CREATE_HELP = `pi-do session create — mint a session in a workspace
+
+usage:
+  pi-do session create --ws WS [--base URL] [--json]
+
+behavior:
+  POSTs /workspaces/:id/sessions. Prints the new session id.
+  Without --json stdout is "session <id>"; with --json stdout is the
+  raw server JSON and the human line goes to stderr.
+
+exit codes:
+  0  created
+  1  server-side failure (error + hint printed from the body)
+  2  usage error
+
+example:
+  pi-do session create --ws 550e8400-e29b-41d4-a716-446655440000
+`;
+
+const GIT_HELP = `pi-do git — narrow git reads over a session
+
+usage:
+  pi-do git --ws WS --sid SID [--base URL] [--json] <argv...>
+  pi-do git --ws WS --sid SID [--base URL] [--json] -- <argv...>
+
+behavior:
+  POSTs { argv } to /workspaces/:id/sessions/:sid/git. Reads only:
+  status, log, diff, show. Anything else is rejected before anything
+  executes (403 forbidden, or 501 when the verb is a deferred write).
+
+exit codes:
+  0  ok (stdout is the command output)
+  1  server-side failure (error + hint printed from the body)
+  2  usage error
+
+examples:
+  pi-do git --ws <ws> --sid <sid> status
+  pi-do git --ws <ws> --sid <sid> log
 `;
 
 const FILES_HELP = `pi-do files — read/write/list workspace files
@@ -165,6 +219,7 @@ function parseArgs(argv) {
     json: false,
     help: false,
     ws: undefined,
+    sid: undefined,
     path: undefined,
     body: undefined,
     bodyFile: undefined,
@@ -204,6 +259,12 @@ function parseArgs(argv) {
     } else if (tok.startsWith("--workspace=")) {
       opts.workspace = undefined;
       opts.ws = tok.slice("--workspace=".length);
+    } else if (tok === "--sid" || tok === "--session") {
+      opts.sid = takeValue(tok);
+    } else if (tok.startsWith("--sid=")) {
+      opts.sid = tok.slice("--sid=".length);
+    } else if (tok.startsWith("--session=")) {
+      opts.sid = tok.slice("--session=".length);
     } else if (tok === "--path") {
       opts.path = takeValue("--path");
     } else if (tok.startsWith("--path=")) {
@@ -264,6 +325,8 @@ async function failFromResponse(res, json) {
 function helpFor(cmd, sub) {
   if (cmd === "doctor") return DOCTOR_HELP;
   if (cmd === "workspace") return sub === "create" ? WORKSPACE_CREATE_HELP : WORKSPACE_HELP;
+  if (cmd === "session") return sub === "create" ? SESSION_CREATE_HELP : SESSION_HELP;
+  if (cmd === "git") return GIT_HELP;
   if (cmd === "files") {
     if (sub === "put") return FILES_PUT_HELP;
     if (sub === "get") return FILES_GET_HELP;
@@ -331,6 +394,60 @@ async function doWorkspaceCreate(base, json) {
     human(`workspace ${data.workspaceId}`);
   } else {
     process.stdout.write(`workspace ${data.workspaceId}\n`);
+  }
+  process.exit(0);
+}
+
+async function doSessionCreate(base, json, opts) {
+  if (!opts.ws) failUsage(`session create needs --ws WS.`, SESSION_CREATE_HELP);
+  const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/sessions`;
+  let res;
+  try {
+    res = await fetch(url, { method: "POST" });
+  } catch (e) {
+    human(`error: cannot reach server at ${base}`);
+    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
+    if (json) printJson({ error: "cannot reach server", base });
+    process.exit(1);
+  }
+  if (!res.ok) await failFromResponse(res, json);
+  const data = await res.json();
+  if (json) {
+    printJson(data);
+    human(`session ${data.sessionId}`);
+  } else {
+    process.stdout.write(`session ${data.sessionId}\n`);
+  }
+  process.exit(0);
+}
+
+async function doGit(base, json, opts, gitArgv) {
+  if (!opts.ws) failUsage(`git needs --ws WS.`, GIT_HELP);
+  if (!opts.sid) failUsage(`git needs --sid SID.`, GIT_HELP);
+  if (gitArgv.length === 0) failUsage(`git needs an argv (e.g. pi-do git --ws WS --sid SID status).`, GIT_HELP);
+  const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/sessions/${encodeURIComponent(opts.sid)}/git`;
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ argv: gitArgv }),
+    });
+  } catch (e) {
+    human(`error: cannot reach server at ${base}`);
+    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
+    if (json) printJson({ error: "cannot reach server", base });
+    process.exit(1);
+  }
+  if (!res.ok) await failFromResponse(res, json);
+  const data = await res.json();
+  if (json) {
+    printJson(data);
+    if (typeof data.stdout === "string" && data.stdout.length > 0) human(String(data.stdout));
+  } else if (typeof data.stdout === "string" && data.stdout.length > 0) {
+    process.stdout.write(data.stdout.endsWith("\n") ? data.stdout : `${data.stdout}\n`);
+  } else {
+    process.stdout.write(`${JSON.stringify(data)}\n`);
   }
   process.exit(0);
 }
@@ -455,6 +572,12 @@ async function main() {
     if (sub === undefined) failUsage(`workspace needs a subcommand (create).`, WORKSPACE_HELP);
     if (sub !== "create" || extra.length > 0) failUsage(`unknown workspace subcommand '${sub ?? ""}'.`, WORKSPACE_HELP);
     await doWorkspaceCreate(opts.base, opts.json);
+  } else if (cmd === "session") {
+    if (sub !== "create" || extra.length > 0) failUsage(`unknown session subcommand '${sub ?? ""}'.`, SESSION_HELP);
+    await doSessionCreate(opts.base, opts.json, opts);
+  } else if (cmd === "git") {
+    const gitArgv = sub === undefined ? [] : [sub, ...extra];
+    await doGit(opts.base, opts.json, opts, gitArgv);
   } else if (cmd === "files") {
     if (sub === undefined) failUsage(`files needs a subcommand (put|get|ls).`, FILES_HELP);
     if (sub === "put" && extra.length === 0) await doFilesPut(opts.base, opts.json, opts);

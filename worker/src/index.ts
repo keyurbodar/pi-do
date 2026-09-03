@@ -26,6 +26,42 @@ export default {
       });
     }
 
+    // POST /workspaces/:id/sessions → mint a session (one row; lifecycle in PR07)
+    if (
+      request.method === "POST" &&
+      parts.length === 3 &&
+      parts[0] === "workspaces" &&
+      parts[2] === "sessions"
+    ) {
+      const workspaceId = parts[1];
+      const inner = new URL("http://do/sessions");
+      inner.searchParams.set("ws", workspaceId);
+      return await env.WORKSPACE_DO.get(
+        env.WORKSPACE_DO.idFromName(workspaceId),
+      ).fetch(inner.toString(), { method: "POST" });
+    }
+
+    // POST /workspaces/:id/sessions/:sid/git → narrow argv git (allowlist first)
+    if (
+      request.method === "POST" &&
+      parts.length === 5 &&
+      parts[0] === "workspaces" &&
+      parts[2] === "sessions" &&
+      parts[4] === "git"
+    ) {
+      const workspaceId = parts[1];
+      const sessionId = parts[3];
+      const inner = new URL("http://do/git");
+      inner.searchParams.set("ws", workspaceId);
+      inner.searchParams.set("sid", sessionId);
+      return await env.WORKSPACE_DO.get(
+        env.WORKSPACE_DO.idFromName(workspaceId),
+      ).fetch(
+        inner.toString(),
+        { method: "POST", headers: { "content-type": "application/json" }, body: request.body, duplex: "half" } as RequestInit,
+      );
+    }
+
     // PUT|GET /workspaces/:id/files
     if (
       (request.method === "PUT" || request.method === "GET") &&
@@ -48,7 +84,7 @@ export default {
     return new Response(
       JSON.stringify({
         error: "not found",
-        hint: "use POST /workspaces to create a workspace, then PUT|GET /workspaces/:id/files?path=P",
+        hint: "use POST /workspaces, then POST /workspaces/:id/sessions, then PUT|GET /workspaces/:id/files?path=P or POST /workspaces/:id/sessions/:sid/git",
       }),
       { status: 404, headers: { "content-type": "application/json" } },
     );
