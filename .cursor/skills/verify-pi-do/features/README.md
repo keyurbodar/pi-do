@@ -50,4 +50,4 @@ behavior, then exactly four H2 sections in this order.
 - [Sessions and entries](./sessions-entries.md) — session lifecycle, entries replay, resume. Activates PR07/PR09.
 - [Exec and git](./exec-git.md) — one-off shell, narrow git ops, allowlist rejection. Activates PR04/PR05.
 - [Agent stream](./agent-stream.md) — prompt/steer/abort over WS, fence conflicts. Activates PR10.
-- [Extensions](./extensions.md) — sample tool/command/hook over the wire. Activates PR19/PR20.
+- [Models and thinking](./models.md) — catalog, session switches, one-shot overrides, workspace defaults. Activates PR24/PR25/PR26.
