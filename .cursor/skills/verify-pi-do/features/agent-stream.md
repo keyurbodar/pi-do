@@ -19,8 +19,9 @@ frame is already persisted.
 - Client sends `{prompt, fence, expected}`, `{abort: true}`, or `{steer: true, text}`.
 - Server emits `{entry: {cursor, type, body}}` where type is one of `prompt`,
   `toolCall`, `toolResult`, `result`, `steer`, `interrupted`, `error`,
-  plus `{done, fence, revision, result}`, `{aborted, runId}`, `{error, hint}`,
-  and `{ping}` heartbeats.
+  plus `{done, fence, revision, result}`, `{aborted, runId}`, and
+  `{error, hint}`. No pings since PR29: with hibernation the server holds no
+  timers, so clients must not wait for heartbeats.
 
 ## Driving it with pi-do CLI
 
