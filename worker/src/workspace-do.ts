@@ -1309,6 +1309,7 @@ export class WorkspaceDO implements DurableObject {
       casRotateFence: (oldFence, oldRevision, next) => this.casRotateFence(sid, oldFence, oldRevision, next),
       live: this.live,
       enqueue: (fn) => this.enqueueSessionTurn(sid, fn),
+      extensions: [],
     };
   }
 
