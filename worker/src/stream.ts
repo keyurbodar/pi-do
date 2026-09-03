@@ -38,15 +38,6 @@ function shortReason(hint: string): string {
   return hint.length > 120 ? hint.slice(0, 120) : hint;
 }
 
-function errorBody(status: 403 | 409, body: { error: string; hint: string; revision: number }): {
-  error: string;
-  hint: string;
-  revision: number;
-} {
-  void status;
-  return body;
-}
-
 export function handleStream(request: Request, deps: StreamDeps): Response {
   if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
     return Response.json(
@@ -133,7 +124,7 @@ export function handleStream(request: Request, deps: StreamDeps): Response {
       }
       const checked = enforceFence(deps.readFence(), fence, expected);
       if ("status" in checked) {
-        send(errorBody(checked.status, checked.body));
+        send(checked.body);
         closeSocket(checked.status === 403 ? CLOSE_FENCED : CLOSE_CONFLICT, checked.body.hint);
         return new Response(null, { status: 101, webSocket: client });
       }
@@ -155,18 +146,17 @@ export function handleStream(request: Request, deps: StreamDeps): Response {
     }
     busy = true;
     const cur = deps.readFence();
-    let next: { fence: string; revision: number };
+    let creds: { fence: string; revision: number } | null = null;
     if (hasFence) {
       const checked = enforceFence(cur, fence, expected);
       if ("status" in checked) {
         busy = false;
-        send(errorBody(checked.status, checked.body));
+        send(checked.body);
         closeSocket(checked.status === 403 ? CLOSE_FENCED : CLOSE_CONFLICT, checked.body.hint);
         return;
       }
-      next = checked;
-    } else {
-      next = { fence: crypto.randomUUID(), revision: (cur?.revision ?? 0) + 1 };
+      deps.rotateFence(checked);
+      creds = checked;
     }
     const turnId = crypto.randomUUID();
     runId = turnId;
@@ -174,6 +164,7 @@ export function handleStream(request: Request, deps: StreamDeps): Response {
     controller = turnController;
     try {
       openRun(deps.sql, deps.sid, turnId);
+      if (creds !== null) send({ started: true, runId: turnId, fence: creds.fence, revision: creds.revision });
       emitAppend("prompt", { runId: turnId, prompt });
       const runtime = buildRuntime(deps.runtimeEnv);
       const session = createAgentSession({
@@ -194,8 +185,8 @@ export function handleStream(request: Request, deps: StreamDeps): Response {
       });
       emitAppend("result", { runId: turnId, result: turn.result });
       closeRun(deps.sql, deps.sid, turnId);
-      deps.rotateFence(next);
-      send({ done: true, fence: next.fence, revision: next.revision, result: turn.result });
+      if (creds !== null) send({ done: true, fence: creds.fence, revision: creds.revision, result: turn.result });
+      else send({ done: true, result: turn.result });
     } catch (e) {
       if (turnController.signal.aborted) {
         deps.sql.exec(
@@ -251,8 +242,11 @@ export function handleStream(request: Request, deps: StreamDeps): Response {
         send({ error: "missing steer text", hint: "retry as {steer, text} with a non-empty string" });
         return;
       }
+      if (runId === null) {
+        send({ error: "no turn in flight", hint: "send {prompt} first; steer only appends mid-turn" });
+        return;
+      }
       emitAppend("steer", { runId, text });
-      return;
     }
     if (promptValue !== undefined) {
       if (promptValue.length === 0) {
