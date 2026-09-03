@@ -26,3 +26,4 @@ pr	title	branch	worktree	complexity	time_min	depends_on	parallel_group	scope	com
 23	web-viewer-minimal	pr/23-web-viewer-minimal	.worktrees/pr-23	2	15	10	W12	minimal web viewer entries replay plus live stream frames on section 5 protocol	0%	—
 24	model-catalog	pr/24-model-catalog	.worktrees/pr-24	2	15	14	W5	buildRuntime resolves through pi-ai provider slices with contextWindow cost MODEL_ID override	100%	✅ merged (anthropic+openai slices, wrangler 4 for import-attrs parse, 6 batteries green)
 25	model-providers	pr/25-model-providers	.worktrees/pr-25	3	18	24	W5	all API-key provider slices plus models.json custom OpenAI-compatible providers env-only keys	100%	✅ merged (33 providers, models.json customs, 8 batteries green)
+26	model-switching	pr/26-model-switching	.worktrees/pr-26	2	15	25	W6	session model plus thinking columns model thinking routes pi entry types run reads session	0%	—
