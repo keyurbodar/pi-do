@@ -1,4 +1,4 @@
-import { createFileStore, type FileStore } from "./files";
+import { createDofsVfs, type FileStore } from "./vfs-dofs";
 import { appendEntry, ensureEntriesSchema, entryHead, listEntries, openRun, recordTurnWithOpen, runInSyncTx } from "./entries";
 import { enforceFence } from "./fence";
 import { acceptStream, readAttachment, socketClosed, socketMessage, wrapSocket, type StreamHost } from "./stream";
@@ -55,7 +55,7 @@ export class WorkspaceDO implements DurableObject {
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
     this.env = env;
-    this.files = createFileStore(state.storage.sql);
+    this.files = createDofsVfs(state.storage.sql);
   }
 
   private ensureSchema(): void {
@@ -291,8 +291,8 @@ export class WorkspaceDO implements DurableObject {
             400,
           );
         }
-        for (const entry of under) this.files.remove(ws, entry.path);
-        return json({ removed: under.map((entry) => entry.path) });
+        const removed = this.files.removeTree(ws, `${path}/`);
+        return json({ removed });
       }
 
       if (request.method === "GET") {
