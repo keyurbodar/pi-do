@@ -1,7 +1,7 @@
 import { createFileStore, type FileStore } from "./files";
 import { ensureEntriesSchema, listEntries, openRun, recordTurn } from "./entries";
-import { ComputerExecutionEnv } from "../../packages/pi-cf/src/env";
-import { runHeadlessTurn } from "./harness";
+import { createAgentSession } from "../../packages/pi-cf/src/session";
+import { buildRuntime, type RuntimeEnv } from "./model-runtime";
 import type { DurableObjectState } from "@cloudflare/workers-types";
 import { createWorkspaceFs, hasGitDir } from "./git-fs";
 import { gateArgv, notARepoBody, NotARepoError, runGitRead } from "./git-reads";
@@ -330,10 +330,20 @@ export class WorkspaceDO implements DurableObject {
       const runId = crypto.randomUUID();
       openRun(sql, sid, runId);
       try {
-        const env = new ComputerExecutionEnv(this.files, ws, this.env.SHELL_WORKER);
-        const turn = await runHeadlessTurn(prompt, env);
+        const runtime = buildRuntime(this.env as unknown as RuntimeEnv);
+        const session = createAgentSession({
+          files: this.files,
+          ws,
+          shell: this.env.SHELL_WORKER,
+          model: runtime.model,
+        });
+        const turn = await session.run(prompt);
         recordTurn(sql, sid, runId, prompt, turn.toolCalls, turn.result);
-        return json({ result: turn.result, toolCalls: turn.toolCalls });
+        return json({
+          result: turn.result,
+          toolCalls: turn.toolCalls,
+          runtime: { via: turn.via, model: turn.model },
+        });
       } catch (e) {
         if (
           e !== null &&
