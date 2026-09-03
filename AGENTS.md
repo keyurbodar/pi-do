@@ -82,6 +82,9 @@ each file doing one thing. Current `cli/bin/pi-do.mjs` splits into `lib/` next.
 - Scoped checks only: typecheck the touched package, run the one verify script
   for the behavior. Never whole-repo suites per change. A check taking minutes
   means the scope is wrong, not the machine.
+- Worktrees ship without node_modules: a typecheck that cannot resolve imports
+  proves nothing. Symlink main's worker/node_modules in (remove after) or run
+  npm install first; tsc must print nothing, not merely exit.
 
 ## PR discipline (every stage)
 
