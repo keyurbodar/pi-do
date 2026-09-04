@@ -1035,8 +1035,6 @@ export class WorkspaceDO implements DurableObject {
           ws,
           shell: this.env.SHELL_WORKER,
           model: turnModel,
-          // First-party host: no inline extensions (PR19 keeps behavior unchanged).
-          extensions: [],
           apiKey: resolveProviderKey(this.env as unknown as RuntimeEnv, respProvider),
           history: { leaf: sessionLeaf(sql, sid), readEntry: (cursor) => getEntry(sql, sid, cursor) },
           sessionId: sid,
@@ -1324,7 +1322,6 @@ export class WorkspaceDO implements DurableObject {
       casRotateFence: (oldFence, oldRevision, next) => this.casRotateFence(sid, oldFence, oldRevision, next),
       live: this.live,
       enqueue: (fn) => this.enqueueSessionTurn(sid, fn),
-      extensions: [],
     };
   }
 

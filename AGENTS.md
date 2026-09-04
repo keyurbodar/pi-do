@@ -19,11 +19,11 @@ node/python execution in v1.
    `ComputerExecutionEnv` mapping fs/shell/git onto the Workspace. No porting
    computer's Vercel-format tools.
 4. **A library, not a service.** `createPiCf()` embeds the agent in the host's
-   own Worker; extensions reuse pi's `ExtensionFactory` (inline now, VFS later).
+   own Worker; the host brings routing plus its DO binding and the factory owns the rest.
 
 ## A note from Keyur
 
-Small focused PRs over big ones. Working first, extension later. Done means
+Small focused PRs over big ones. Working first. Done means
 proven over the real path, not typechecked. Split anything past ~20 minutes.
 Lean and boring; fight scope creep, refuse impressive machinery. Fast but never
 shortcuts — never trade scalability or production quality for simplicity.
@@ -46,7 +46,7 @@ worker/src/            routes/       # workspaces files sessions entries exec gi
                        index.ts workspace-do.ts   # thin router + DO shell
 packages/pi-cf/src/    index.ts      # createPiCf
                        env.ts        # ComputerExecutionEnv (split by area if big)
-                       tools.ts extensions.ts
+                       tools.ts
 cli/                   bin/pi-do.mjs # arg parsing only
                        lib/          # doctor workspace files session stream output
 verify/                *.sh          # one check per behavior
@@ -73,7 +73,7 @@ each file doing one thing. Current `cli/bin/pi-do.mjs` splits into `lib/` next.
 
 - `pi-do doctor` first when anything looks off. Read-only, creates nothing.
 - Drive with the CLI: `workspace create`, `files put/get/ls`, `entries`,
-  `exec`, `git`, `stream`, `commands`. `--json` for machines, exits 0/1/2.
+  `exec`, `git`, `stream`. `--json` for machines, exits 0/1/2.
 - One `verify/*.sh` per check; each writes `artifacts/{RUN_ID}/{check}/`
   (transcript + frames + second-view re-read).
 - Proof = action plus resulting state through a second view. Skipped paths are

@@ -1,13 +1,10 @@
 #!/bin/sh
 # keyed-spark-eviction.sh — proves keyed WS turns survive a full workerd eviction mid-turn.
 # One session on opencode-go/muse-spark-1.3-contributor under a server this script owns
-# (it kill -9s workerd twice, so it must control the pid). Case A starts a long keyed
+# (it kill -9s workerd mid-turn, so it must control the pid). Case A starts a long keyed
 # WS stream turn, kills -9 wrangler dev mid-turn, reboots on the same port, reconnects
 # and retries the prompt: the retry completes on the same chain (same sessionId, cursors
 # gapless from 1, two prompts, one result, the killed run healed to interrupted) with
-# usage+cost quoted. Case B (mid-tool-call eviction) is dropped: it needs a VFS
-# extension tool and VFS extension files cannot compile on workerd (new
-# AsyncFunction is dead there; known T8 gap, extensions parked).
 # Any 429/rate/quota/provider-refusal on the keyed path
 # writes OUT/BLOCKED naming the stuck turn, keeps the green transcript, stops further
 # keyed turns, and exits 0.
@@ -25,13 +22,10 @@ CLI="node cli/bin/pi-do.mjs"
 OUT="$(pwd)/artifacts/${RUN_ID}/keyed-spark-eviction"
 mkdir -p "${OUT}"
 KEYED_MODEL="opencode-go/muse-spark-1.3-contributor"
-EXT_PATH=".pi/extensions/evict-probe.js"
-LOG_PATH="evict-log.txt"
 DEV_VARS="worker/.dev.vars"
 PORT=""
 WS_BASE=""
 LONG_A="Write a vivid story of at least 700 words about a lighthouse keeper who discovers a door in the cliff that was never there before. Take your time and be richly detailed: the storm, the light, the door, what lies beyond, and the keeper's choice. Long and vivid."
-PROMPT_B="Call the evict_probe tool exactly once with empty arguments, then reply with the tool output followed by the word done."
 wait_up() {
 I=0
 while ! curl -sf --max-time 2 "${BASE}/" >/dev/null 2>&1; do
@@ -166,7 +160,7 @@ echo "${WS_JSON}"
 WS="$(node -p "JSON.parse(process.argv[1]).workspaceId" "${WS_JSON}")"
 echo "WS=${WS}"
 printf '%s' "${WS_JSON}" > "${OUT}/workspace.json"
-echo "### 2 mint one session for both cases"
+echo "### 2 mint one session"
 SESS_JSON="$(${CLI} session create --ws "${WS}" --base "${BASE}" --json)" || exit 1
 echo "${SESS_JSON}"
 printf '%s' "${SESS_JSON}" > "${OUT}/session.json"
@@ -244,8 +238,6 @@ try { b = JSON.parse(readFileSync(file, "utf8")); } catch { process.exit(1); }
 const frames = b.frames || [];
 if (mode === "started") {
   process.exit(frames.some((f) => f.entry && f.entry.type === "prompt") ? 0 : 1);
-} else if (mode === "toolcall") {
-  process.exit(frames.some((f) => { try { return f.entry && f.entry.type === "toolCall" && JSON.parse(f.entry.body).tool === "evict_probe"; } catch { return false; } }) ? 0 : 1);
 } else if (mode === "done") {
   process.exit(frames.some((f) => f.done === true) ? 0 : 1);
 } else if (mode === "blocked") {
@@ -341,7 +333,7 @@ OUT="${OUT}" node "${OUT}/assert-chain-a.mjs" || exit 1
 F1="$(node -p "JSON.parse(require('node:fs').readFileSync('${OUT}/turn-a.json','utf8')).fence")"
 R1="$(node -p "JSON.parse(require('node:fs').readFileSync('${OUT}/turn-a.json','utf8')).revision")"
 echo "F1=${F1} R1=${R1}"
-echo "### 10 case B dropped: mid-tool-call eviction needs a VFS extension tool, and VFS extension files cannot compile on workerd (new AsyncFunction is dead there; known T8 gap, extensions parked). Case A above is the eviction proof."
+echo "### 10 case A above is the eviction proof: mid-turn kill plus same-chain retry with usage quoted."
 echo "### 11 totals for case A"
 node -e "
 const fs = require('node:fs');

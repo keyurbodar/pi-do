@@ -4,15 +4,14 @@
 # then keyed: discover the free opencode-go slug live (prefer mimo-v2.5), switch a
 # session to it and prove (1) a factory keyed turn records runtime via/model/provider
 # with positive usage, (2) a thinking switch to a level discovered from the switch
-# echo is stored and reflected on the turn, (3) a VFS extension tool under
-# .pi/extensions lands in toolCalls on a keyed turn, (4) a keyed WS stream turn
+# echo is stored and reflected on the turn, (3) a keyed WS stream turn
 # byte-matches storage on every entry frame with done usage quoted and runtime.model
-# on the slug, (5) abort-then-next-prompt over WS marks interrupted and continues,
-# (6) a WS turn plus a concurrent POST serialize on one chain with the second turn
-# seeing first history, (7) a long-history session holds the MEM-06 reserve
-# inTokens+maxTokens<=contextWindow with room quoted, (8) CACHE-01 stays SKIP with
-# the source-grepped reason, (9) per-path usage/cost lines roll into a total that
-# cross-checks the meta rollup, (10) a prefix-16 redaction grep proves the secret
+# on the slug, (4) abort-then-next-prompt over WS marks interrupted and continues,
+# (5) a WS turn plus a concurrent POST serialize on one chain with the second turn
+# seeing first history, (6) a long-history session holds the MEM-06 reserve
+# inTokens+maxTokens<=contextWindow with room quoted, (7) CACHE-01 stays SKIP with
+# the source-grepped reason, (8) per-path usage/cost lines roll into a total that
+# cross-checks the meta rollup, (9) a prefix-16 redaction grep proves the secret
 # never entered the artifacts. Any 429/rate/quota stop writes a stop note, keeps
 # green transcripts, skips the rest, still exits 0.
 # Usage: sh verify/keyed-live.sh [BASE]. With no BASE the script boots its own
@@ -31,8 +30,6 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SEED_BODY="seeded-body-${RUN_ID}"
 SEED_PATH="seed.txt"
 KEYED_PROVIDER="opencode-go"
-EXT_NAME="verify_note_live"
-EXT_PATH=".pi/extensions/verify-note-live.ts"
 DEV_VARS="worker/.dev.vars"
 CREATED=0
 OWN=0
@@ -40,8 +37,8 @@ STOP=0
 FAILED_CODE=0
 WS_BASE=""
 PORT=""
-S0="pending"; S1="pending"; S2="pending"; S3="pending"; S4="pending"
-S5="pending"; S6="pending"; S7="pending"; S8="pending"; S9="pending"
+S0="pending"; S1="pending"; S2="pending"; S3="pending"
+S4="pending"; S5="pending"; S6="pending"; S7="pending"; S8="pending"
 trap 'if [ -f "${OUT}/wrangler.pid" ]; then kill "$(cat "${OUT}/wrangler.pid")" 2>/dev/null || true; fi; if [ "${CREATED}" = "1" ]; then rm -f worker/.dev.vars; fi' EXIT INT TERM
 {
 echo "### 0 key presence by length only"
@@ -157,7 +154,7 @@ fi
 echo "### 2 keyed server plumbing"
 if [ -z "${OPENCODE_API_KEY:-}" ]; then
 note_stop "missing-secret plumbing: OPENCODE_API_KEY absent from caller env; keyed steps unreachable."
-S1="blocked"; S2="blocked"; S3="blocked"; S4="blocked"; S5="blocked"; S6="blocked"; S7="blocked"; S8="blocked"
+S1="blocked"; S2="blocked"; S3="blocked"; S4="blocked"; S5="blocked"; S6="blocked"; S7="blocked"
 else
 if [ "${OWN}" = "1" ]; then
 if [ -e "${DEV_VARS}" ]; then echo "refusing to clobber existing ${DEV_VARS}; pass BASE or remove it"; exit 1; fi
@@ -180,13 +177,13 @@ ${CLI} run --ws "${WSG}" --sid "${SIDG}" --prompt "Read ${SEED_PATH} and reply w
 cat "${OUT}/gate-run.json"
 if check_stop "${OUT}/gate-run.json" "${CODE}"; then
 note_stop "keyed gate hit 429/rate/quota; secret plumbing ok, provider throttled."
-S1="blocked"; S2="blocked"; S3="blocked"; S4="blocked"; S5="blocked"; S6="blocked"; S7="blocked"; S8="blocked"
+S1="blocked"; S2="blocked"; S3="blocked"; S4="blocked"; S5="blocked"; S6="blocked"; S7="blocked"
 else
 if [ "${CODE}" != "0" ]; then echo "keyed gate failed on code"; cat "${OUT}/gate-run.stderr"; exit 1; fi
 GATE_MODEL="$(node -p "JSON.parse(require('node:fs').readFileSync('${OUT}/gate-run.json','utf8')).runtime.model")" || exit 1
 if [ "${GATE_MODEL}" = "stub" ]; then
 note_stop "missing-secret plumbing: triple-less run stayed on the stub, the Worker never saw the key."
-S1="blocked"; S2="blocked"; S3="blocked"; S4="blocked"; S5="blocked"; S6="blocked"; S7="blocked"; S8="blocked"
+S1="blocked"; S2="blocked"; S3="blocked"; S4="blocked"; S5="blocked"; S6="blocked"; S7="blocked"
 else
 node -e "
 const b = require('${OUT}/gate-run.json');
@@ -234,7 +231,7 @@ ${CLI} model --ws "${WSA}" --sid "${SIDA}" --model "${KEYED_PROVIDER}/${SLUG}" -
 cat "${OUT}/p1-switch.json"
 if check_stop "${OUT}/p1-switch.json" "${CODE}"; then
 note_stop "proof 1 switch hit 429/rate/quota."
-S1="blocked"; S2="blocked"; S3="blocked"; S4="blocked"; S5="blocked"; S6="blocked"; S7="blocked"; S8="blocked"
+S1="blocked"; S2="blocked"; S3="blocked"; S4="blocked"; S5="blocked"; S6="blocked"; S7="blocked"
 else
 [ "${CODE}" = "0" ] || { echo "proof 1 switch failed on code"; cat "${OUT}/p1-switch.stderr"; exit 1; }
 CODE=0
@@ -242,7 +239,7 @@ ${CLI} run --ws "${WSA}" --sid "${SIDA}" --prompt "Read ${SEED_PATH} and reply w
 cat "${OUT}/p1-run.json"
 if check_stop "${OUT}/p1-run.json" "${CODE}"; then
 note_stop "proof 1 turn hit 429/rate/quota."
-S1="blocked"; S2="blocked"; S3="blocked"; S4="blocked"; S5="blocked"; S6="blocked"; S7="blocked"; S8="blocked"
+S1="blocked"; S2="blocked"; S3="blocked"; S4="blocked"; S5="blocked"; S6="blocked"; S7="blocked"
 else
 [ "${CODE}" = "0" ] || { echo "proof 1 turn failed on code"; cat "${OUT}/p1-run.stderr"; exit 1; }
 KEYED_PROVIDER="${KEYED_PROVIDER}" SLUG="${SLUG}" SEED_BODY="${SEED_BODY}" node -e "
@@ -269,7 +266,7 @@ ${CLI} thinking --ws "${WSA}" --sid "${SIDA}" --level high --base "${BASE}" --js
 cat "${OUT}/p2-thinking.json"
 if check_stop "${OUT}/p2-thinking.json" "${CODE}"; then
 note_stop "proof 2 switch hit 429/rate/quota."
-S2="blocked"; S3="blocked"; S4="blocked"; S5="blocked"; S6="blocked"; S7="blocked"; S8="blocked"
+S2="blocked"; S3="blocked"; S4="blocked"; S5="blocked"; S6="blocked"; S7="blocked"
 else
 [ "${CODE}" = "0" ] || { echo "proof 2 switch failed on code"; cat "${OUT}/p2-thinking.stderr"; exit 1; }
 LEVEL="$(node -p "JSON.parse(require('node:fs').readFileSync('${OUT}/p2-thinking.json','utf8')).thinking")"
@@ -285,7 +282,7 @@ ${CLI} run --ws "${WSA}" --sid "${SIDA}" --prompt "Read ${SEED_PATH} again and r
 cat "${OUT}/p2-run.json"
 if check_stop "${OUT}/p2-run.json" "${CODE}"; then
 note_stop "proof 2 turn hit 429/rate/quota."
-S2="blocked"; S3="blocked"; S4="blocked"; S5="blocked"; S6="blocked"; S7="blocked"; S8="blocked"
+S2="blocked"; S3="blocked"; S4="blocked"; S5="blocked"; S6="blocked"; S7="blocked"
 else
 [ "${CODE}" = "0" ] || { echo "proof 2 turn failed on code"; cat "${OUT}/p2-run.stderr"; exit 1; }
 LEVEL="${LEVEL}" SLUG="${SLUG}" node -e "
@@ -304,59 +301,25 @@ echo "SKIP proof 2 (stopped)"
 fi
 
 if [ "${STOP}" = "0" ]; then
-echo "### 7 proof 3: VFS extension tool lands in toolCalls on a keyed turn"
-cat > "${OUT}/ext-source.ts" <<'EOF'
-api.registerTool({
-  name: "verify_note_live",
-  description: "Keyed-live battery marker: returns a fixed string proving the VFS tool path runs on a keyed turn.",
-  execute: () => "verify-note-live-ok",
-});
-EOF
-${CLI} files put --ws "${WSA}" --path "${EXT_PATH}" --body-file "${OUT}/ext-source.ts" --base "${BASE}" --json > "${OUT}/p3-put.json" 2> "${OUT}/p3-put.stderr" || { echo "extension put failed"; cat "${OUT}/p3-put.stderr"; exit 1; }
-cat "${OUT}/p3-put.json"
-CODE=0
-${CLI} run --ws "${WSA}" --sid "${SIDA}" --prompt "Call the verify_note_live tool with empty arguments, then read ${SEED_PATH}. Reply with the tool output followed by the file contents." --base "${BASE}" --json > "${OUT}/p3-run.json" 2> "${OUT}/p3-run.stderr" || CODE=$?
-cat "${OUT}/p3-run.json"
-if check_stop "${OUT}/p3-run.json" "${CODE}"; then
-note_stop "proof 3 turn hit 429/rate/quota."
-S3="blocked"; S4="blocked"; S5="blocked"; S6="blocked"; S7="blocked"; S8="blocked"
-else
-[ "${CODE}" = "0" ] || { echo "proof 3 turn failed on code"; cat "${OUT}/p3-run.stderr"; exit 1; }
-node -e "
-const b = require('${OUT}/p3-run.json');
-const tools = (b.toolCalls || []).map((c) => c.tool);
-if (!tools.includes('${EXT_NAME}')) throw new Error('toolCalls miss ${EXT_NAME}: ' + JSON.stringify(tools));
-if (!String(b.result).includes('verify-note-live-ok')) throw new Error('result misses the tool output');
-console.log('extension ok: toolCalls carries ${EXT_NAME} (' + tools.length + ' calls)');
-" || exit 1
-quote_path "${OUT}/p3-run.json" "p3"
-ledger_add "${SIDA}" "${OUT}/p3-run.json"
-S3="green"
-fi
-else
-echo "SKIP proof 3 (stopped)"
-fi
-
-if [ "${STOP}" = "0" ]; then
-echo "### 8 proof 4: keyed stream turn byte-matches storage with done usage quoted"
+echo "### 7 proof 3: keyed stream turn byte-matches storage with done usage quoted"
 WSB_JSON="$(${CLI} workspace create --base "${BASE}" --json)" || exit 1
 WSB="$(node -p "JSON.parse(process.argv[1]).workspaceId" "${WSB_JSON}")"
-printf '%s' "${WSB_JSON}" > "${OUT}/p4-workspace.json"
+printf '%s' "${WSB_JSON}" > "${OUT}/p3-workspace.json"
 printf '%s' "${SEED_BODY}" | ${CLI} files put --ws "${WSB}" --path "${SEED_PATH}" --base "${BASE}" --json || exit 1
 SESSB_JSON="$(${CLI} session create --ws "${WSB}" --base "${BASE}" --json)" || exit 1
-printf '%s' "${SESSB_JSON}" > "${OUT}/p4-session.json"
+printf '%s' "${SESSB_JSON}" > "${OUT}/p3-session.json"
 SIDB="$(node -p "JSON.parse(process.argv[1]).sessionId" "${SESSB_JSON}")"
 FB0="$(node -p "JSON.parse(process.argv[1]).fence" "${SESSB_JSON}")"
 RB0="$(node -p "JSON.parse(process.argv[1]).revision" "${SESSB_JSON}")"
 echo "SIDB=${SIDB}"
 CODE=0
-${CLI} model --ws "${WSB}" --sid "${SIDB}" --model "${KEYED_PROVIDER}/${SLUG}" --base "${BASE}" --json > "${OUT}/p4-switch.json" 2> "${OUT}/p4-switch.stderr" || CODE=$?
-cat "${OUT}/p4-switch.json"
-if check_stop "${OUT}/p4-switch.json" "${CODE}"; then
-note_stop "proof 4 switch hit 429/rate/quota."
-S4="blocked"; S5="blocked"; S6="blocked"; S7="blocked"; S8="blocked"
+${CLI} model --ws "${WSB}" --sid "${SIDB}" --model "${KEYED_PROVIDER}/${SLUG}" --base "${BASE}" --json > "${OUT}/p3-switch.json" 2> "${OUT}/p3-switch.stderr" || CODE=$?
+cat "${OUT}/p3-switch.json"
+if check_stop "${OUT}/p3-switch.json" "${CODE}"; then
+note_stop "proof 3 switch hit 429/rate/quota."
+S3="blocked"; S4="blocked"; S5="blocked"; S6="blocked"; S7="blocked"
 else
-[ "${CODE}" = "0" ] || { echo "proof 4 switch failed on code"; cat "${OUT}/p4-switch.stderr"; exit 1; }
+[ "${CODE}" = "0" ] || { echo "proof 3 switch failed on code"; cat "${OUT}/p3-switch.stderr"; exit 1; }
 cat > "${OUT}/ws-client.mjs" <<'EOF'
 const WS_URL = process.env.WS_URL;
 const MODE = process.env.MODE || "turn";
@@ -452,19 +415,19 @@ EOF
 echo "client written"
 STREAMB="${WS_BASE}/workspaces/${WSB}/sessions/${SIDB}/stream?fence=${FB0}&expected=${RB0}"
 CODE=0
-WS_URL="${STREAMB}" MODE=turn PROMPT="Read ${SEED_PATH} and reply with its exact contents." FENCE="${FB0}" EXPECTED="${RB0}" OUTFILE="${OUT}/p4-frames.json" STOPFILE="${OUT}/.stopbus" node "${OUT}/ws-client.mjs" || CODE=$?
-cat "${OUT}/p4-frames.json"
+WS_URL="${STREAMB}" MODE=turn PROMPT="Read ${SEED_PATH} and reply with its exact contents." FENCE="${FB0}" EXPECTED="${RB0}" OUTFILE="${OUT}/p3-frames.json" STOPFILE="${OUT}/.stopbus" node "${OUT}/ws-client.mjs" || CODE=$?
+cat "${OUT}/p3-frames.json"
 if [ -f "${OUT}/.stopbus" ]; then
-note_stop "proof 4 stream hit $(cat "${OUT}/.stopbus")."
-S4="blocked"; S5="blocked"; S6="blocked"; S7="blocked"; S8="blocked"
+note_stop "proof 3 stream hit $(cat "${OUT}/.stopbus")."
+S3="blocked"; S4="blocked"; S5="blocked"; S6="blocked"; S7="blocked"
 else
-[ "${CODE}" = "0" ] || { echo "proof 4 stream failed on code"; exit 1; }
-${CLI} entries --ws "${WSB}" --sid "${SIDB}" --after 0 --limit 1000 --base "${BASE}" --json > "${OUT}/p4-entries.json" || exit 1
-${CLI} meta --ws "${WSB}" --sid "${SIDB}" --base "${BASE}" --json > "${OUT}/p4-meta.json" || exit 1
+[ "${CODE}" = "0" ] || { echo "proof 3 stream failed on code"; exit 1; }
+${CLI} entries --ws "${WSB}" --sid "${SIDB}" --after 0 --limit 1000 --base "${BASE}" --json > "${OUT}/p3-entries.json" || exit 1
+${CLI} meta --ws "${WSB}" --sid "${SIDB}" --base "${BASE}" --json > "${OUT}/p3-meta.json" || exit 1
 node -e "
 const fs = require('node:fs');
-const b = JSON.parse(fs.readFileSync('${OUT}/p4-frames.json', 'utf8'));
-const replay = JSON.parse(fs.readFileSync('${OUT}/p4-entries.json', 'utf8'));
+const b = JSON.parse(fs.readFileSync('${OUT}/p3-frames.json', 'utf8'));
+const replay = JSON.parse(fs.readFileSync('${OUT}/p3-entries.json', 'utf8'));
 const byCursor = new Map(replay.entries.map((e) => [e.cursor, e]));
 const entryFrames = b.frames.filter((f) => f.entry);
 if (entryFrames.length === 0) throw new Error('no entry frames streamed');
@@ -477,7 +440,7 @@ console.log('byte-compare ok: ' + entryFrames.length + ' entry frames match stor
 const done = b.frames.find((f) => f.done === true);
 if (!done) throw new Error('missing {done}');
 const u = done.usage || {};
-console.log('p4 usage in=' + (u.inTokens || 0) + ' out=' + (u.outTokens || 0) + ' cacheRead=' + (u.cacheRead || 0) + ' cost=' + (u.costTotal || 0) + ' elapsed=' + (u.elapsedMs || 0) + 'ms');
+console.log('p3 usage in=' + (u.inTokens || 0) + ' out=' + (u.outTokens || 0) + ' cacheRead=' + (u.cacheRead || 0) + ' cost=' + (u.costTotal || 0) + ' elapsed=' + (u.elapsedMs || 0) + 'ms');
 if (!((u.inTokens || 0) > 0 && (u.outTokens || 0) > 0)) throw new Error('done usage must be positive on a keyed turn');
 if (!done.runtime) { console.log('RUNTIME_GAP'); process.exit(7); }
 const r = done.runtime;
@@ -486,34 +449,34 @@ if (r.model !== '${SLUG}' || r.provider !== '${KEYED_PROVIDER}') throw new Error
 if (r.via !== 'createAgentSession') throw new Error('done via wrong: ' + JSON.stringify(r));
 " || CODE=$?
 if [ "${CODE}" = "7" ]; then
-echo "proof 4 stream ran keyed with byte-exact frames, but the done frame carries no runtime (StreamTripleFix declined without a Main amendment); recorded failed-on-code, continuing"
+echo "proof 3 stream ran keyed with byte-exact frames, but the done frame carries no runtime (StreamTripleFix declined without a Main amendment); recorded failed-on-code, continuing"
 FAILED_CODE=1
-S4="failed-on-code"
+S3="failed-on-code"
 node -e "
-const done = require('${OUT}/p4-frames.json').frames.find((f) => f.done === true);
-require('node:fs').writeFileSync('${OUT}/p4-done-usage.json', JSON.stringify({ sid: '${SIDB}', usage: done.usage }) + '\n');
+const done = require('${OUT}/p3-frames.json').frames.find((f) => f.done === true);
+require('node:fs').writeFileSync('${OUT}/p3-done-usage.json', JSON.stringify({ sid: '${SIDB}', usage: done.usage }) + '\n');
 "
-ledger_add "${SIDB}" "${OUT}/p4-done-usage.json"
+ledger_add "${SIDB}" "${OUT}/p3-done-usage.json"
 else
 [ "${CODE}" = "0" ] || exit 1
 node -e "
-const done = require('${OUT}/p4-frames.json').frames.find((f) => f.done === true);
-require('node:fs').writeFileSync('${OUT}/p4-done-usage.json', JSON.stringify({ sid: '${SIDB}', usage: done.usage }) + '\n');
+const done = require('${OUT}/p3-frames.json').frames.find((f) => f.done === true);
+require('node:fs').writeFileSync('${OUT}/p3-done-usage.json', JSON.stringify({ sid: '${SIDB}', usage: done.usage }) + '\n');
 "
-ledger_add "${SIDB}" "${OUT}/p4-done-usage.json"
-S4="green"
+ledger_add "${SIDB}" "${OUT}/p3-done-usage.json"
+S3="green"
 fi
 fi
 fi
 else
-echo "SKIP proof 4 (stopped)"
+echo "SKIP proof 3 (stopped)"
 fi
 
 if [ "${STOP}" = "0" ]; then
-echo "### 9 proof 5: abort-then-next-prompt over WS marks interrupted and continues"
+echo "### 8 proof 4: abort-then-next-prompt over WS marks interrupted and continues"
 WSC_JSON="$(${CLI} workspace create --base "${BASE}" --json)" || exit 1
 WSC="$(node -p "JSON.parse(process.argv[1]).workspaceId" "${WSC_JSON}")"
-printf '%s' "${WSC_JSON}" > "${OUT}/p5-workspace.json"
+printf '%s' "${WSC_JSON}" > "${OUT}/p4-workspace.json"
 printf '%s' "${SEED_BODY}" | ${CLI} files put --ws "${WSC}" --path "${SEED_PATH}" --base "${BASE}" --json || exit 1
 SESSC_JSON="$(${CLI} session create --ws "${WSC}" --base "${BASE}" --json)" || exit 1
 SIDC="$(node -p "JSON.parse(process.argv[1]).sessionId" "${SESSC_JSON}")"
@@ -521,27 +484,27 @@ FC0="$(node -p "JSON.parse(process.argv[1]).fence" "${SESSC_JSON}")"
 RC0="$(node -p "JSON.parse(process.argv[1]).revision" "${SESSC_JSON}")"
 echo "SIDC=${SIDC}"
 CODE=0
-${CLI} model --ws "${WSC}" --sid "${SIDC}" --model "${KEYED_PROVIDER}/${SLUG}" --base "${BASE}" --json > "${OUT}/p5-switch.json" 2> "${OUT}/p5-switch.stderr" || CODE=$?
-if check_stop "${OUT}/p5-switch.json" "${CODE}"; then
-note_stop "proof 5 switch hit 429/rate/quota."
-S5="blocked"; S6="blocked"; S7="blocked"; S8="blocked"
+${CLI} model --ws "${WSC}" --sid "${SIDC}" --model "${KEYED_PROVIDER}/${SLUG}" --base "${BASE}" --json > "${OUT}/p4-switch.json" 2> "${OUT}/p4-switch.stderr" || CODE=$?
+if check_stop "${OUT}/p4-switch.json" "${CODE}"; then
+note_stop "proof 4 switch hit 429/rate/quota."
+S4="blocked"; S5="blocked"; S6="blocked"; S7="blocked"
 else
-[ "${CODE}" = "0" ] || { echo "proof 5 switch failed on code"; cat "${OUT}/p5-switch.stderr"; exit 1; }
+[ "${CODE}" = "0" ] || { echo "proof 4 switch failed on code"; cat "${OUT}/p4-switch.stderr"; exit 1; }
 STREAMC="${WS_BASE}/workspaces/${WSC}/sessions/${SIDC}/stream?fence=${FC0}&expected=${RC0}"
 rm -f "${OUT}/.stopbus"
 CODE=0
-WS_URL="${STREAMC}" MODE=abort-next PROMPT="Read ${SEED_PATH} and reply with its exact contents." PROMPT2="Read ${SEED_PATH} again and reply with its exact contents." FENCE="${FC0}" EXPECTED="${RC0}" OUTFILE="${OUT}/p5-frames.json" STOPFILE="${OUT}/.stopbus" node "${OUT}/ws-client.mjs" || CODE=$?
-cat "${OUT}/p5-frames.json"
+WS_URL="${STREAMC}" MODE=abort-next PROMPT="Read ${SEED_PATH} and reply with its exact contents." PROMPT2="Read ${SEED_PATH} again and reply with its exact contents." FENCE="${FC0}" EXPECTED="${RC0}" OUTFILE="${OUT}/p4-frames.json" STOPFILE="${OUT}/.stopbus" node "${OUT}/ws-client.mjs" || CODE=$?
+cat "${OUT}/p4-frames.json"
 if [ -f "${OUT}/.stopbus" ]; then
-note_stop "proof 5 stream hit $(cat "${OUT}/.stopbus")."
-S5="blocked"; S6="blocked"; S7="blocked"; S8="blocked"
+note_stop "proof 4 stream hit $(cat "${OUT}/.stopbus")."
+S4="blocked"; S5="blocked"; S6="blocked"; S7="blocked"
 else
-[ "${CODE}" = "0" ] || { echo "proof 5 stream failed on code"; exit 1; }
-${CLI} entries --ws "${WSC}" --sid "${SIDC}" --after 0 --limit 1000 --base "${BASE}" --json > "${OUT}/p5-entries.json" || exit 1
-${CLI} meta --ws "${WSC}" --sid "${SIDC}" --base "${BASE}" --json > "${OUT}/p5-meta.json" || exit 1
+[ "${CODE}" = "0" ] || { echo "proof 4 stream failed on code"; exit 1; }
+${CLI} entries --ws "${WSC}" --sid "${SIDC}" --after 0 --limit 1000 --base "${BASE}" --json > "${OUT}/p4-entries.json" || exit 1
+${CLI} meta --ws "${WSC}" --sid "${SIDC}" --base "${BASE}" --json > "${OUT}/p4-meta.json" || exit 1
 SEED_BODY="${SEED_BODY}" node -e "
 const fs = require('node:fs');
-const frames = JSON.parse(fs.readFileSync('${OUT}/p5-frames.json', 'utf8')).frames;
+const frames = JSON.parse(fs.readFileSync('${OUT}/p4-frames.json', 'utf8')).frames;
 const aborted = frames.find((f) => f.aborted === true);
 if (!aborted) throw new Error('missing {aborted} for the cancelled turn');
 console.log('aborted ok: run ' + aborted.runId);
@@ -549,8 +512,8 @@ const done = frames.find((f) => f.done === true);
 if (!done) throw new Error('missing {done} after the abort');
 if (!String(done.result || '').includes(process.env.SEED_BODY)) throw new Error('post-abort result missing seeded read');
 const u = done.usage || {};
-console.log('p5 usage in=' + (u.inTokens || 0) + ' out=' + (u.outTokens || 0) + ' cacheRead=' + (u.cacheRead || 0) + ' cost=' + (u.costTotal || 0) + ' elapsed=' + (u.elapsedMs || 0) + 'ms');
-const entries = JSON.parse(fs.readFileSync('${OUT}/p5-entries.json', 'utf8')).entries;
+console.log('p4 usage in=' + (u.inTokens || 0) + ' out=' + (u.outTokens || 0) + ' cacheRead=' + (u.cacheRead || 0) + ' cost=' + (u.costTotal || 0) + ' elapsed=' + (u.elapsedMs || 0) + 'ms');
+const entries = JSON.parse(fs.readFileSync('${OUT}/p4-entries.json', 'utf8')).entries;
 const cursors = entries.map((e) => e.cursor);
 for (let i = 1; i < cursors.length; i++) {
   if (cursors[i] !== cursors[i - 1] + 1) throw new Error('cursor gap at index ' + i);
@@ -560,23 +523,23 @@ if (!hit) throw new Error('no interrupted entry for the aborted run ' + aborted.
 console.log('interrupted ok: prior run marked interrupted, next prompt continued cleanly');
 const again = entries.find((e) => e.type === 'prompt' && e.body.includes('again'));
 if (!again || again.cursor < hit.cursor) throw new Error('next prompt missing after the abort');
-const meta = JSON.parse(fs.readFileSync('${OUT}/p5-meta.json', 'utf8'));
+const meta = JSON.parse(fs.readFileSync('${OUT}/p4-meta.json', 'utf8'));
 if (meta.openRun !== null) throw new Error('expected no open run, got ' + JSON.stringify(meta.openRun));
-require('node:fs').writeFileSync('${OUT}/p5-done-usage.json', JSON.stringify({ sid: '${SIDC}', usage: done.usage }) + '\n');
+require('node:fs').writeFileSync('${OUT}/p4-done-usage.json', JSON.stringify({ sid: '${SIDC}', usage: done.usage }) + '\n');
 " || exit 1
-ledger_add "${SIDC}" "${OUT}/p5-done-usage.json"
-S5="green"
+ledger_add "${SIDC}" "${OUT}/p4-done-usage.json"
+S4="green"
 fi
 fi
 else
-echo "SKIP proof 5 (stopped)"
+echo "SKIP proof 4 (stopped)"
 fi
 
 if [ "${STOP}" = "0" ]; then
-echo "### 10 proof 6: WS plus a concurrent POST serialize on one chain, second sees first history"
+echo "### 9 proof 5: WS plus a concurrent POST serialize on one chain, second sees first history"
 WSD_JSON="$(${CLI} workspace create --base "${BASE}" --json)" || exit 1
 WSD="$(node -p "JSON.parse(process.argv[1]).workspaceId" "${WSD_JSON}")"
-printf '%s' "${WSD_JSON}" > "${OUT}/p6-workspace.json"
+printf '%s' "${WSD_JSON}" > "${OUT}/p5-workspace.json"
 printf '%s' "${SEED_BODY}" | ${CLI} files put --ws "${WSD}" --path "${SEED_PATH}" --base "${BASE}" --json || exit 1
 SESSD_JSON="$(${CLI} session create --ws "${WSD}" --base "${BASE}" --json)" || exit 1
 SIDD="$(node -p "JSON.parse(process.argv[1]).sessionId" "${SESSD_JSON}")"
@@ -584,36 +547,36 @@ FD0="$(node -p "JSON.parse(process.argv[1]).fence" "${SESSD_JSON}")"
 RD0="$(node -p "JSON.parse(process.argv[1]).revision" "${SESSD_JSON}")"
 echo "SIDD=${SIDD}"
 CODE=0
-${CLI} model --ws "${WSD}" --sid "${SIDD}" --model "${KEYED_PROVIDER}/${SLUG}" --base "${BASE}" --json > "${OUT}/p6-switch.json" 2> "${OUT}/p6-switch.stderr" || CODE=$?
-if check_stop "${OUT}/p6-switch.json" "${CODE}"; then
-note_stop "proof 6 switch hit 429/rate/quota."
-S6="blocked"; S7="blocked"; S8="blocked"
+${CLI} model --ws "${WSD}" --sid "${SIDD}" --model "${KEYED_PROVIDER}/${SLUG}" --base "${BASE}" --json > "${OUT}/p5-switch.json" 2> "${OUT}/p5-switch.stderr" || CODE=$?
+if check_stop "${OUT}/p5-switch.json" "${CODE}"; then
+note_stop "proof 5 switch hit 429/rate/quota."
+S5="blocked"; S6="blocked"; S7="blocked"
 else
-[ "${CODE}" = "0" ] || { echo "proof 6 switch failed on code"; cat "${OUT}/p6-switch.stderr"; exit 1; }
+[ "${CODE}" = "0" ] || { echo "proof 5 switch failed on code"; cat "${OUT}/p5-switch.stderr"; exit 1; }
 STREAMD="${WS_BASE}/workspaces/${WSD}/sessions/${SIDD}/stream?fence=${FD0}&expected=${RD0}"
 rm -f "${OUT}/.stopbus"
-WS_URL="${STREAMD}" MODE=steer-queue PROMPT="Read ${SEED_PATH} and reply with its exact contents." FENCE="${FD0}" EXPECTED="${RD0}" OUTFILE="${OUT}/p6-frames.json" STOPFILE="${OUT}/.stopbus" node "${OUT}/ws-client.mjs" &
+WS_URL="${STREAMD}" MODE=steer-queue PROMPT="Read ${SEED_PATH} and reply with its exact contents." FENCE="${FD0}" EXPECTED="${RD0}" OUTFILE="${OUT}/p5-frames.json" STOPFILE="${OUT}/.stopbus" node "${OUT}/ws-client.mjs" &
 PW=$!
 sleep 3
 CODE=0
-${CLI} run --ws "${WSD}" --sid "${SIDD}" --prompt "Quote the exact seeded body the earlier turn in this session read from ${SEED_PATH}." --base "${BASE}" --json > "${OUT}/p6-post.json" 2> "${OUT}/p6-post.stderr" || CODE=$?
+${CLI} run --ws "${WSD}" --sid "${SIDD}" --prompt "Quote the exact seeded body the earlier turn in this session read from ${SEED_PATH}." --base "${BASE}" --json > "${OUT}/p5-post.json" 2> "${OUT}/p5-post.stderr" || CODE=$?
 wait "${PW}"; CW=$?
 echo "ws exit=${CW} post exit=${CODE}"
-cat "${OUT}/p6-frames.json" "${OUT}/p6-post.json"
+cat "${OUT}/p5-frames.json" "${OUT}/p5-post.json"
 if [ -f "${OUT}/.stopbus" ]; then
-note_stop "proof 6 stream hit $(cat "${OUT}/.stopbus")."
-S6="blocked"; S7="blocked"; S8="blocked"
+note_stop "proof 5 stream hit $(cat "${OUT}/.stopbus")."
+S5="blocked"; S6="blocked"; S7="blocked"
 else
-if check_stop "${OUT}/p6-post.json" "${CODE}"; then
-note_stop "proof 6 POST hit 429/rate/quota."
-S6="blocked"; S7="blocked"; S8="blocked"
+if check_stop "${OUT}/p5-post.json" "${CODE}"; then
+note_stop "proof 5 POST hit 429/rate/quota."
+S5="blocked"; S6="blocked"; S7="blocked"
 else
-[ "${CODE}" = "0" ] || { echo "proof 6 POST failed on code"; cat "${OUT}/p6-post.stderr"; exit 1; }
-[ "${CW}" = "0" ] || { echo "proof 6 WS failed on code"; exit 1; }
-${CLI} entries --ws "${WSD}" --sid "${SIDD}" --after 0 --limit 1000 --base "${BASE}" --json > "${OUT}/p6-entries.json" || exit 1
+[ "${CODE}" = "0" ] || { echo "proof 5 POST failed on code"; cat "${OUT}/p5-post.stderr"; exit 1; }
+[ "${CW}" = "0" ] || { echo "proof 5 WS failed on code"; exit 1; }
+${CLI} entries --ws "${WSD}" --sid "${SIDD}" --after 0 --limit 1000 --base "${BASE}" --json > "${OUT}/p5-entries.json" || exit 1
 SEED_BODY="${SEED_BODY}" node -e "
 const fs = require('node:fs');
-const frames = JSON.parse(fs.readFileSync('${OUT}/p6-frames.json', 'utf8')).frames;
+const frames = JSON.parse(fs.readFileSync('${OUT}/p5-frames.json', 'utf8')).frames;
 if (frames.some((f) => f.busy === true)) throw new Error('queued paths must serialize, never answer {busy:true}');
 const done = frames.find((f) => f.done === true);
 if (!done) throw new Error('WS turn missing {done}');
@@ -621,10 +584,10 @@ if (!String(done.result || '').includes(process.env.SEED_BODY)) throw new Error(
 const steer = frames.find((f) => f.entry && f.entry.type === 'steer');
 if (!steer || !String(steer.entry.body).includes('steer-note-keyed')) throw new Error('steer entry missing mid-turn');
 console.log('serialize+steer ok: no busy, steer landed mid-turn, WS turn done');
-const p = JSON.parse(fs.readFileSync('${OUT}/p6-post.json', 'utf8'));
+const p = JSON.parse(fs.readFileSync('${OUT}/p5-post.json', 'utf8'));
 if (!String(p.result || '').includes(process.env.SEED_BODY)) throw new Error('POST result misses history: the second turn did not see the first read');
 console.log('history ok: queued POST quoted the earlier turn read');
-const entries = JSON.parse(fs.readFileSync('${OUT}/p6-entries.json', 'utf8')).entries;
+const entries = JSON.parse(fs.readFileSync('${OUT}/p5-entries.json', 'utf8')).entries;
 const cursors = entries.map((e) => e.cursor);
 for (let i = 1; i < cursors.length; i++) {
   if (cursors[i] !== cursors[i - 1] + 1) throw new Error('cursor gap at index ' + i);
@@ -648,35 +611,35 @@ if (wRun === pRun) throw new Error('WS turn and POST turn must be distinct runs'
 if (Math.max(...byRun.get(wRun)) >= Math.min(...byRun.get(pRun))) throw new Error('paths interleaved across runs');
 console.log('ordered ok: one chain, WS run precedes POST run, no interleave');
 const u = done.usage || {};
-console.log('p6-ws usage in=' + (u.inTokens || 0) + ' out=' + (u.outTokens || 0) + ' cacheRead=' + (u.cacheRead || 0) + ' cost=' + (u.costTotal || 0) + ' elapsed=' + (u.elapsedMs || 0) + 'ms');
-require('node:fs').writeFileSync('${OUT}/p6-done-usage.json', JSON.stringify({ sid: '${SIDD}', usage: done.usage }) + '\n');
+console.log('p5-ws usage in=' + (u.inTokens || 0) + ' out=' + (u.outTokens || 0) + ' cacheRead=' + (u.cacheRead || 0) + ' cost=' + (u.costTotal || 0) + ' elapsed=' + (u.elapsedMs || 0) + 'ms');
+require('node:fs').writeFileSync('${OUT}/p5-done-usage.json', JSON.stringify({ sid: '${SIDD}', usage: done.usage }) + '\n');
 " || exit 1
-quote_path "${OUT}/p6-post.json" "p6-post"
-ledger_add "${SIDD}" "${OUT}/p6-done-usage.json"
-ledger_add "${SIDD}" "${OUT}/p6-post.json"
-S6="green"
+quote_path "${OUT}/p5-post.json" "p5-post"
+ledger_add "${SIDD}" "${OUT}/p5-done-usage.json"
+ledger_add "${SIDD}" "${OUT}/p5-post.json"
+S5="green"
 fi
 fi
 fi
 else
-echo "SKIP proof 6 (stopped)"
+echo "SKIP proof 5 (stopped)"
 fi
 
 if [ "${STOP}" = "0" ]; then
-echo "### 11 proof 7: MEM-06 reserve on the long-history session"
+echo "### 10 proof 6: MEM-06 reserve on the long-history session"
 CODE=0
-${CLI} run --ws "${WSA}" --sid "${SIDA}" --prompt "Read ${SEED_PATH} one last time and reply with its exact contents (reserve check)." --base "${BASE}" --json > "${OUT}/p7-run.json" 2> "${OUT}/p7-run.stderr" || CODE=$?
-cat "${OUT}/p7-run.json"
-if check_stop "${OUT}/p7-run.json" "${CODE}"; then
-note_stop "proof 7 turn hit 429/rate/quota."
-S7="blocked"; S8="blocked"
+${CLI} run --ws "${WSA}" --sid "${SIDA}" --prompt "Read ${SEED_PATH} one last time and reply with its exact contents (reserve check)." --base "${BASE}" --json > "${OUT}/p6-run.json" 2> "${OUT}/p6-run.stderr" || CODE=$?
+cat "${OUT}/p6-run.json"
+if check_stop "${OUT}/p6-run.json" "${CODE}"; then
+note_stop "proof 6 turn hit 429/rate/quota."
+S6="blocked"; S7="blocked"
 else
-[ "${CODE}" = "0" ] || { echo "proof 7 turn failed on code"; cat "${OUT}/p7-run.stderr"; exit 1; }
-quote_path "${OUT}/p7-run.json" "p7"
-ledger_add "${SIDA}" "${OUT}/p7-run.json"
-${CLI} meta --ws "${WSA}" --sid "${SIDA}" --base "${BASE}" --json > "${OUT}/p7-meta.json" || exit 1
+[ "${CODE}" = "0" ] || { echo "proof 6 turn failed on code"; cat "${OUT}/p6-run.stderr"; exit 1; }
+quote_path "${OUT}/p6-run.json" "p6"
+ledger_add "${SIDA}" "${OUT}/p6-run.json"
+${CLI} meta --ws "${WSA}" --sid "${SIDA}" --base "${BASE}" --json > "${OUT}/p6-meta.json" || exit 1
 CTXW="${CTXW}" MAXT="${MAXT}" node -e "
-const m = require('${OUT}/p7-meta.json');
+const m = require('${OUT}/p6-meta.json');
 const C = Number(process.env.CTXW);
 const M = Number(process.env.MAXT);
 const u = m.usage || {};
@@ -686,14 +649,14 @@ if (!(u.inTokens + M <= C)) throw new Error('reserve violated: inTokens+maxToken
 if (room < 0) throw new Error('no room left for one maxTokens reply');
 console.log('reserve ok: long-history session still fits one maxTokens reply');
 " || exit 1
-S7="green"
+S6="green"
 fi
 else
-echo "SKIP proof 7 (stopped)"
+echo "SKIP proof 6 (stopped)"
 fi
 
 if [ "${STOP}" = "0" ]; then
-echo "### 12 proof 8: CACHE-01 SKIP asserted by grepping the source, not by traffic"
+echo "### 11 proof 7: CACHE-01 SKIP asserted by grepping the source, not by traffic"
 CS_LINE="$(grep -n "completeSimple(" "${ROOT}/packages/pi-cf/src/session.ts" | head -1 | cut -d: -f1)"
 [ -n "${CS_LINE}" ] || { echo "completeSimple call site gone; re-examine the cache path"; exit 1; }
 FROM=$((CS_LINE - 30))
@@ -705,14 +668,14 @@ echo "session id now threads near completeSimple; the SKIP reason is stale"
 exit 1
 fi
 echo "SKIP CACHE-01: no session id threads into completeSimple (session.ts:${CS_LINE}), so no per-session cache key exists to prove."
-printf '%s\n' "SKIP CACHE-01: no session id threads into completeSimple (session.ts:${CS_LINE}), so no per-session cache key exists to prove." > "${OUT}/p8-cache-skip.txt"
-S8="skip"
+printf '%s\n' "SKIP CACHE-01: no session id threads into completeSimple (session.ts:${CS_LINE}), so no per-session cache key exists to prove." > "${OUT}/p7-cache-skip.txt"
+S7="skip"
 else
-echo "SKIP proof 8 (stopped)"
+echo "SKIP proof 7 (stopped)"
 fi
 
 if [ "${STOP}" = "0" ]; then
-echo "### 13 proof 9: per-path total plus the meta rollup cross-check"
+echo "### 12 proof 8: per-path total plus the meta rollup cross-check"
 ${CLI} meta --ws "${WSA}" --sid "${SIDA}" --base "${BASE}" --json > "${OUT}/rollup-meta-A.json" || exit 1
 if [ -n "${SIDB:-}" ]; then ${CLI} meta --ws "${WSB}" --sid "${SIDB}" --base "${BASE}" --json > "${OUT}/rollup-meta-B.json" || exit 1; fi
 if [ -n "${SIDC:-}" ]; then ${CLI} meta --ws "${WSC}" --sid "${SIDC}" --base "${BASE}" --json > "${OUT}/rollup-meta-C.json" || exit 1; fi
@@ -753,12 +716,12 @@ for (const [sid, name] of Object.entries(metas)) {
 }
 console.log('TOTAL in=' + total.inTokens + ' out=' + total.outTokens + ' cacheRead=' + total.cacheRead + ' cost=' + total.costTotal + ' elapsed=' + total.elapsedMs + 'ms');
 " || exit 1
-S9="green"
+S8="green"
 else
-echo "SKIP proof 9 (stopped)"
+echo "SKIP proof 8 (stopped)"
 fi
 
-echo "### 14 proof 10: delete the temp secret file, verify absence, redaction grep"
+echo "### 13 proof 9: delete the temp secret file, verify absence, redaction grep"
 if [ "${CREATED}" = "1" ]; then
 rm -f worker/.dev.vars
 CREATED=0
@@ -790,9 +753,8 @@ if [ "${STOP}" = "1" ]; then
 [ "${S6}" = "pending" ] && S6="blocked"
 [ "${S7}" = "pending" ] && S7="blocked"
 [ "${S8}" = "pending" ] && S8="blocked"
-[ "${S9}" = "pending" ] && S9="blocked"
 fi
-echo "proofs: shakeout=${S0} factory=${S1} thinking=${S2} extension=${S3} stream=${S4} abort=${S5} steer=${S6} reserve=${S7} cache=${S8} rollup=${S9} failed_on_code=${FAILED_CODE} stopped=${STOP}"
+echo "proofs: shakeout=${S0} factory=${S1} thinking=${S2} stream=${S3} abort=${S4} steer=${S5} reserve=${S6} cache=${S7} rollup=${S8} failed_on_code=${FAILED_CODE} stopped=${STOP}"
 if [ "${FAILED_CODE}" != "0" ]; then
 exit 1
 fi

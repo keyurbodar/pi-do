@@ -18,8 +18,6 @@ import {
 import { bashTool, editTool, listTool, readTool, removeTool, textOf, writeTool, type ToolContext } from "./tools.ts";
 import { planStubTurn } from "./stub-plan.ts";
 import type { AgentHarnessTool } from "@earendil-works/pi-agent-core";
-import { loadInlineExtensions, type InlineExtensionFactory } from "./extensions.ts";
-import { loadVfsExtensionFactories } from "./loader.ts";
 import { buildSessionContext, capSessionContext, estimateTokens, type ContextMessage, type EntryReader } from "./context.ts";
 
 export const sessionTools = {
@@ -49,9 +47,6 @@ export interface CreateAgentSessionOptions {
   shell: ShellLike;
   model: SessionModel;
   tools?: Partial<SessionTools>;
-  // Inline ExtensionFactory entries (pi contract, same three powers). The
-  // first-party Worker passes none; foreign hosts pass their own.
-  extensions?: InlineExtensionFactory[];
   apiKey?: string;
   history?: { leaf: number; readEntry: EntryReader };
   sessionId?: string;
@@ -171,26 +166,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
     const signal = runOptions?.signal;
     const onUpdate = runOptions?.onUpdate;
     const apiKey = options.apiKey;
-    const ext = await loadInlineExtensions([
-      ...(options.extensions ?? []),
-      // VFS binds later than inline: read every turn so a put/remove under
-      // .pi/extensions lands on the next run without a new session.
-      ...loadVfsExtensionFactories(files, ws, context),
-    ]);
     const tools: Record<string, AgentHarnessTool<ToolContext, any, any>> = { ...sessionTools, ...options.tools };
-    for (const [name, tool] of ext.tools) {
-      if (name in tools) {
-        throw {
-          error: `extension tool conflicts: ${name}`,
-          hint: "rename the extension tool so it does not shadow a session tool",
-        };
-      }
-      tools[name] = tool;
-    }
-    const startCtx = { prompt, result: "", calls: [] as { tool: string; output: string }[] };
-    for (const hook of ext.hooks.get("turn_start") ?? []) {
-      await hook(startCtx);
-    }
     let history: ContextMessage[] = [];
     if (options.history !== undefined) {
       try {
@@ -214,32 +190,15 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
           : base.messages.filter((message) => message.role === "compactionSummary");
     }
     const keyed = model.api !== "stub" && typeof apiKey === "string" && apiKey.length > 0;
-    const turn = keyed
-      ? await runModelTurn(prompt, apiKey, signal, onUpdate, runOptions?.thinking ?? null, tools, history)
-      : await runStubTurn(prompt, signal, onUpdate, tools, ext.tools);
-    const endCtx = {
-      prompt,
-      result: turn.result,
-      calls: turn.toolCalls.map((call) => ({ tool: call.tool, output: call.output })),
-    };
-    const suffixes: string[] = [];
-    for (const hook of ext.hooks.get("turn_end") ?? []) {
-      const suffix = await hook(endCtx);
-      if (typeof suffix === "string" && suffix.length > 0) suffixes.push(suffix);
-    }
-    if (suffixes.length === 0) return turn;
-    return { ...turn, result: `${turn.result}\n${suffixes.join("\n")}` };
+    if (keyed) return runModelTurn(prompt, apiKey, signal, onUpdate, runOptions?.thinking ?? null, tools, history);
+    return runStubTurn(prompt, signal, onUpdate, tools);
   }
 
-  // Keyless stub: the fixed read+bash plan, then one call per extension tool
-  // with empty args so a keyless turn still exercises the extension tool path
-  // end to end. Zero extensions means the extra loop is a no-op.
   async function runStubTurn(
     prompt: string,
     signal: AbortSignal | undefined,
     onUpdate: ((event: SessionToolEvent) => void) | undefined,
     tools: Record<string, AgentHarnessTool<ToolContext, any, any>>,
-    extensionTools: Map<string, AgentHarnessTool<ToolContext, any, any>>,
   ): Promise<SessionTurn> {
     const modelId = model.id;
     const readFn = tools.read;
@@ -261,18 +220,6 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
       toolCalls.push({ id, tool, args, output });
       outputs.push(output);
       onUpdate?.({ kind: "toolResult", id, tool, args, output });
-    }
-    for (const [name, toolFn] of extensionTools) {
-      signal?.throwIfAborted();
-      await abortablePause(signal);
-      n += 1;
-      const id = `session-${n}`;
-      const args: Record<string, unknown> = {};
-      onUpdate?.({ kind: "toolCall", id, tool: name, args });
-      const output = textOf(await toolFn.execute(id, args, signal, undefined, context));
-      toolCalls.push({ id, tool: name, args, output });
-      outputs.push(output);
-      onUpdate?.({ kind: "toolResult", id, tool: name, args, output });
     }
     return {
       result: outputs.join("\n"),

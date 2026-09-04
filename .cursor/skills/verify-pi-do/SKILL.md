@@ -6,9 +6,8 @@ description: Drives pi-do (Cloudflare Workers coding agent) over its HTTP contro
 # verify-pi-do
 
 Live skill: the app runs from `main` at the v1 cut (PR11 + PR15 + PR26 + PR17
-merged). Every Drive recipe below is active except Extensions (staged for
-PR19/PR20). Never claim a drive result for a staged recipe — run Doctor and
-report the missing prerequisite instead.
+merged). Every Drive recipe below is active. Never claim a drive result for a
+recipe you did not run — run Doctor and report the missing prerequisite instead.
 
 ## Launch
 
