@@ -291,9 +291,9 @@ WS /workspaces/:id/sessions/:sid/stream
       <tr><th>ID</th><th>title</th><th>area</th><th>depends</th><th>scope</th><th>done</th><th>note</th></tr>
       <tr><td>MEM-01</td><td>entry parents + leaf</td><td>memory</td><td>—</td><td>parent cursor column + session leaf, replay unchanged</td><td>100%</td><td>✅ merged</td></tr>
       <tr><td>MEM-02</td><td>context build step</td><td>memory</td><td>MEM-01</td><td>pi-cf build leaf-to-messages, compaction as summary+tail</td><td>100%</td><td>✅ merged</td></tr>
-      <tr><td>MEM-03</td><td>loop sync history</td><td>memory</td><td>MEM-02</td><td>runModelTurn prepends path, stub ignores</td><td>0%</td><td>parallel with 04, 05</td></tr>
-      <tr><td>MEM-04</td><td>tool results projection</td><td>memory</td><td>MEM-02</td><td>project toolCall/toolResult into messages in order</td><td>0%</td><td>parallel with 03, 05</td></tr>
-      <tr><td>MEM-05</td><td>steer projection</td><td>memory</td><td>MEM-02</td><td>steer entries into messages, no lanes</td><td>0%</td><td>parallel with 03, 04</td></tr>
+      <tr><td>MEM-03</td><td>loop sync history</td><td>memory</td><td>MEM-02</td><td>runModelTurn prepends path, stub ignores</td><td>100%</td><td>✅ merged</td></tr>
+      <tr><td>MEM-04</td><td>tool results projection</td><td>memory</td><td>MEM-02</td><td>project toolCall/toolResult into messages in order</td><td>100%</td><td>✅ merged</td></tr>
+      <tr><td>MEM-05</td><td>steer projection</td><td>memory</td><td>MEM-02</td><td>steer entries into messages, no lanes</td><td>100%</td><td>✅ merged</td></tr>
       <tr><td>MEM-06</td><td>token window + cut</td><td>memory</td><td>MEM-02, PR16</td><td>cap built messages oldest-first, PR16 summary as cut</td><td>0%</td><td>after 03–05</td></tr>
       <tr><td>KEY-01</td><td>funded keyed suite</td><td>keyed</td><td>funded key</td><td>batteries for stream/abort/steer/thinking/ext/factory keyed</td><td>0%</td><td>blocked on balance</td></tr>
       <tr><td>KEY-02</td><td>pressure suite</td><td>keyed</td><td>KEY-01</td><td>bursts, archive depth, contention, live eviction</td><td>0%</td><td>parallel with KEY-01 prep</td></tr>
