@@ -471,6 +471,8 @@ function mergedCatalog(
       contextWindow,
       maxTokens,
       cost: requiredCost(owner, def.cost, baseEntry?.cost),
+      reasoning: def.reasoning ?? baseEntry?.reasoning ?? false,
+      thinkingLevelMap: def.thinkingLevelMap ?? baseEntry?.thinkingLevelMap,
     });
   }
   for (const [modelId, override] of Object.entries(custom.overrides)) {
@@ -488,8 +490,11 @@ function mergedCatalog(
         optionalNumber(owner, "contextWindow", override.contextWindow) ??
         entry.contextWindow,
       maxTokens:
-        optionalNumber(owner, "maxTokens", override.maxTokens) ?? entry.maxTokens,
+        optionalNumber(owner, "maxTokens", override.maxTokens) ??
+        entry.maxTokens,
       cost: requiredCost(owner, override.cost, entry.cost),
+      reasoning: override.reasoning ?? entry.reasoning ?? false,
+      thinkingLevelMap: override.thinkingLevelMap ?? entry.thinkingLevelMap,
     });
   }
   return out;
