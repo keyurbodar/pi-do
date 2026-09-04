@@ -6,7 +6,8 @@
 # the alarm runs, append two stub runs with distinct prompts, then feed the
 # fetched rows plus the meta leaf into buildSessionContextFromEntries and
 # assert the context opens with the compactionSummary followed verbatim by
-# the two-turn tail while toolCall/toolResult land in skipped as unprojected.
+# the two-turn tail with toolCall/toolResult projected in cursor order
+# (MEM-04) and nothing left in skipped.
 # Keyless stub only: every run must report runtime provider/model stub/stub.
 # Exit 0 on pass, 1 otherwise. Writes artifacts/RUN_ID/context-build/.
 set -u
@@ -109,30 +110,42 @@ console.log("--- summary text ---");
 console.log(first.text);
 console.log("--- tail ---");
 const tail = ctx.messages.slice(1);
-const want = [
-  { role: "user", text: prompt1 },
-  { role: "assistant", text: runA.result },
-  { role: "user", text: prompt2 },
-  { role: "assistant", text: runB.result },
-];
-if (tail.length !== want.length) {
-  throw new Error("tail must hold exactly the two post-compact turns, got " + tail.length + ": " + JSON.stringify(tail.map((m) => m.role)));
+const tailRows = rows.slice(ci + 1);
+if (tail.length !== tailRows.length) {
+  throw new Error("every tail entry must project, messages " + tail.length + " rows " + tailRows.length);
 }
-for (let i = 0; i < want.length; i++) {
-  if (tail[i].role !== want[i].role) throw new Error("tail[" + i + "] role " + tail[i].role + " want " + want[i].role);
-  if (tail[i].text !== want[i].text) throw new Error("tail[" + i + "] text differs from the live turn");
-  console.log("tail[" + i + "] " + tail[i].role + " cursor=" + tail[i].cursor + ": " + JSON.stringify(tail[i].text).slice(0, 160));
+let seenPrompt = 0;
+let seenResult = 0;
+for (let i = 0; i < tailRows.length; i++) {
+  const row = tailRows[i];
+  const body = JSON.parse(row.body);
+  const msg = tail[i];
+  if (msg.cursor !== row.cursor) throw new Error("tail[" + i + "] cursor " + msg.cursor + " want " + row.cursor);
+  if (row.type === "prompt") {
+    seenPrompt++;
+    const wantText = seenPrompt === 1 ? prompt1 : prompt2;
+    if (msg.role !== "user" || msg.text !== wantText) throw new Error("tail[" + i + "] prompt projects as user with the live text");
+  } else if (row.type === "result") {
+    seenResult++;
+    const wantText = seenResult === 1 ? runA.result : runB.result;
+    if (msg.role !== "assistant" || msg.text !== wantText) throw new Error("tail[" + i + "] result projects as assistant with the live text");
+  } else if (row.type === "toolCall") {
+    if (msg.role !== "toolCall") throw new Error("tail[" + i + "] role " + msg.role + " want toolCall");
+    if (typeof body.tool !== "string" || !msg.text.startsWith(body.tool)) throw new Error("tail[" + i + "] toolCall text starts with the live tool name");
+  } else if (row.type === "toolResult") {
+    if (msg.role !== "toolResult") throw new Error("tail[" + i + "] role " + msg.role + " want toolResult");
+    if (msg.text !== body.output) throw new Error("tail[" + i + "] toolResult text equals the live output");
+  } else {
+    throw new Error("tail[" + i + "] unexpected type " + row.type);
+  }
+  console.log("tail[" + i + "] " + msg.role + " cursor=" + msg.cursor + ": " + JSON.stringify(msg.text).slice(0, 160));
 }
 for (let i = 1; i < ctx.messages.length; i++) {
   if (!(ctx.messages[i].cursor > ctx.messages[i - 1].cursor)) throw new Error("messages must run in cursor order");
 }
-console.log("tail ok: user/assistant texts equal the live prompts/results verbatim in cursor order");
-if (!Array.isArray(ctx.skipped) || ctx.skipped.length === 0) throw new Error("skipped must be non-empty");
-const seen = new Set(ctx.skipped.map((s) => s.type + ":" + s.reason));
-for (const t of ["toolCall", "toolResult"]) {
-  if (!seen.has(t + ":unprojected")) throw new Error("skipped must list " + t + " as unprojected, got " + JSON.stringify(ctx.skipped));
-}
-console.log("skipped ok: " + ctx.skipped.length + " entries, toolCall/toolResult unprojected");
+console.log("tail ok: two turns project verbatim in cursor order, tools paired");
+if (!Array.isArray(ctx.skipped) || ctx.skipped.length !== 0) throw new Error("skipped must be empty, got " + JSON.stringify(ctx.skipped));
+console.log("skipped ok: empty, every entry projected");
 if (ctx.model !== null) throw new Error("keyless stub path must leave model null");
 if (ctx.thinking !== "off") throw new Error("no thinking switch means thinking off, got " + ctx.thinking);
 if (ctx.toolNames !== null) throw new Error("toolNames stays null (MEM-06 owns budgets)");
