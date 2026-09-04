@@ -9,3 +9,4 @@ KEY-02	pressure suite	keyed	KEY-01 green	with KEY-01	PR: bursts, archive depth, 
 VFS-01	workerd-safe extensions	extensions	decision	parked	PR: none — extensions parked entirely at this stage; revisit with a dispatch-namespace spike if hot code matters	parked	owner parked extensions; T8 stands as the known gap
 CAT-01	catalog freshness	models	—	dropped	PR: none — staying on muse-spark-1.2 at this stage	—	dropped (owner cut; revisit if 1.3+ needed)
 SUITE-01	full-suite green pass	quality	MEM-03	after memory	PR: entire verify/ green in one pass on the final tree	0%	— last green was per-PR only
+12	CACHE-01	session cache key	quality	MEM-03	after memory	PR: sid as prompt key plus CH hit footer, reasoning probe passes	100%	✅ merged (t2 CH93.6% keyed, thinking probe no 400)
