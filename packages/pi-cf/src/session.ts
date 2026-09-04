@@ -20,6 +20,7 @@ import { planStubTurn } from "./stub-plan.ts";
 import type { AgentHarnessTool } from "@earendil-works/pi-agent-core";
 import { loadInlineExtensions, type InlineExtensionFactory } from "./extensions.ts";
 import { loadVfsExtensionFactories } from "./loader.ts";
+import { buildSessionContext, type ContextMessage, type EntryReader } from "./context.ts";
 
 export const sessionTools = {
   read: readTool,
@@ -50,6 +51,7 @@ export interface CreateAgentSessionOptions {
   // first-party Worker passes none; foreign hosts pass their own.
   extensions?: InlineExtensionFactory[];
   apiKey?: string;
+  history?: { leaf: number; readEntry: EntryReader };
 }
 
 export interface SessionToolCall {
@@ -186,9 +188,17 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
     for (const hook of ext.hooks.get("turn_start") ?? []) {
       await hook(startCtx);
     }
+    let history: ContextMessage[] = [];
+    if (options.history !== undefined) {
+      try {
+        history = buildSessionContext(options.history.leaf, options.history.readEntry).messages;
+      } catch {
+        history = [];
+      }
+    }
     const keyed = model.api !== "stub" && typeof apiKey === "string" && apiKey.length > 0;
     const turn = keyed
-      ? await runModelTurn(prompt, apiKey, signal, onUpdate, runOptions?.thinking ?? null, tools)
+      ? await runModelTurn(prompt, apiKey, signal, onUpdate, runOptions?.thinking ?? null, tools, history)
       : await runStubTurn(prompt, signal, onUpdate, tools, ext.tools);
     const endCtx = {
       prompt,
@@ -266,14 +276,35 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
     onUpdate: ((event: SessionToolEvent) => void) | undefined,
     thinking: string | null,
     tools: Record<string, AgentHarnessTool<ToolContext, any, any>>,
+    history: ContextMessage[],
   ): Promise<SessionTurn> {
     const modelId = model.id;
+    const piModel = toPiModel(model);
     const piTools: PiTool[] = Object.values(tools).map((tool) => ({
       name: tool.name,
       description: tool.description,
       parameters: tool.parameters,
     }));
-    const messages: PiMessage[] = [{ role: "user", content: prompt, timestamp: Date.now() }];
+    const messages: PiMessage[] = [];
+    for (const item of history) {
+      if (item.role === "assistant") {
+        messages.push({
+          role: "assistant",
+          content: [{ type: "text", text: item.text }],
+          api: piModel.api,
+          provider: piModel.provider,
+          model: piModel.id,
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+          stopReason: "stop",
+          timestamp: Date.now(),
+        });
+      } else if (item.role === "compactionSummary") {
+        messages.push({ role: "user", content: `Session summary:\n${item.text}`, timestamp: Date.now() });
+      } else {
+        messages.push({ role: "user", content: item.text, timestamp: Date.now() });
+      }
+    }
+    messages.push({ role: "user", content: prompt, timestamp: Date.now() });
     const request: SimpleStreamOptions = { signal };
     if (thinking !== null && thinking !== "" && thinking !== "off") request.reasoning = thinking as ThinkingLevel;
     request.apiKey = apiKey;
@@ -289,7 +320,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
       signal?.throwIfAborted();
       await abortablePause(signal);
       const piContext: PiContext = { systemPrompt: SYSTEM_PROMPT, messages, tools: piTools };
-      const answer = await completeSimple(toPiModel(model), piContext, request);
+      const answer = await completeSimple(piModel, piContext, request);
       inTokens += answer.usage.input + answer.usage.cacheWrite;
       outTokens += answer.usage.output;
       cacheRead += answer.usage.cacheRead;

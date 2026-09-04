@@ -1,5 +1,5 @@
 import { createDofsVfs, type FileStore } from "../../packages/pi-cf/src/vfs-dofs";
-import { appendEntry, ensureEntriesSchema, entryHead, listEntries, openRun, recordTurnWithOpen, runInSyncTx, sumResultUsage, withSessionRates } from "../../packages/pi-cf/src/entries";
+import { appendEntry, ensureEntriesSchema, entryHead, getEntry, listEntries, openRun, recordTurnWithOpen, runInSyncTx, sessionLeaf, sumResultUsage, withSessionRates } from "../../packages/pi-cf/src/entries";
 import { archiveMeta, compactionPending, ensureCompactionSchema, maybeMarkForCompaction, pendingSessions, readArchivePage, runCompaction } from "./compaction";
 import { enforceFence } from "../../packages/pi-cf/src/fence";
 import { acceptStream, readAttachment, socketClosed, socketMessage, wrapSocket, type StreamHost } from "./stream";
@@ -1035,6 +1035,7 @@ export class WorkspaceDO implements DurableObject {
           // First-party host: no inline extensions (PR19 keeps behavior unchanged).
           extensions: [],
           apiKey: resolveProviderKey(this.env as unknown as RuntimeEnv, respProvider),
+          history: { leaf: sessionLeaf(sql, sid), readEntry: (cursor) => getEntry(sql, sid, cursor) },
         });
         const turn = await session.run(prompt, { thinking: effThinking });
         recordTurnWithOpen(sql, sid, runId, prompt, turn.toolCalls, turn.result, turn.usage);

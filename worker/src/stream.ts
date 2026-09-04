@@ -16,7 +16,7 @@
 // AbortController map per DO incarnation as the abort witness, plus the
 // session turn queue shared with POST /run; dropping both on eviction is safe
 // because the next openRun flips the orphaned run to interrupted.
-import { appendEntry, closeRun, getEntry, listEntries, openRun, type EntriesSql } from "../../packages/pi-cf/src/entries";
+import { appendEntry, closeRun, getEntry, listEntries, openRun, sessionLeaf, type EntriesSql } from "../../packages/pi-cf/src/entries";
 import { loadInlineExtensions, type InlineExtensionFactory } from "../../packages/pi-cf/src/extensions";
 import { enforceFence } from "../../packages/pi-cf/src/fence";
 import type { FileStore } from "../../packages/pi-cf/src/vfs-dofs";
@@ -386,6 +386,7 @@ async function startTurn(
     if (row !== null) send({ entry: row });
   };
   try {
+    const historyLeaf = sessionLeaf(host.sql, host.sid);
     openRun(host.sql, host.sid, turnId);
     emitAppend("prompt", { runId: turnId, prompt });
     const runtime = buildRuntime(host.runtimeEnv);
@@ -399,6 +400,7 @@ async function startTurn(
       // First-party host: no inline extensions (PR19 keeps behavior unchanged).
       extensions: [],
       apiKey: runtime.stub ? undefined : resolveProviderKey(host.runtimeEnv, runtime.model.provider),
+      history: { leaf: historyLeaf, readEntry: (cursor) => getEntry(host.sql, host.sid, cursor) },
     });
     const turn = await session.run(prompt, {
       signal: turnController.signal,

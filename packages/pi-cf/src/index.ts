@@ -12,9 +12,11 @@ import type { InlineExtensionFactory } from "./extensions.ts";
 import {
   ensureEntriesSchema,
   entryHead,
+  getEntry,
   listEntries,
   openRun,
   recordTurnWithOpen,
+  sessionLeaf,
   sumResultUsage,
   withSessionRates,
   type EntriesSql,
@@ -390,7 +392,7 @@ export function createPiCf(options: CreatePiCfOptions = {}): new (
           const sql = this.state.storage.sql;
           const runId = crypto.randomUUID();
           try {
-            const session = createAgentSession({ files: this.files, ws, shell, model, tools, apiKey, extensions });
+            const session = createAgentSession({ files: this.files, ws, shell, model, tools, apiKey, extensions, history: { leaf: sessionLeaf(sql, sid), readEntry: (cursor) => getEntry(sql, sid, cursor) } });
             const turn = await session.run(prompt);
             recordTurnWithOpen(sql, sid, runId, prompt, turn.toolCalls, turn.result, turn.usage);
             const out = {

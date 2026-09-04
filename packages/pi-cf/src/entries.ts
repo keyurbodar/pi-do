@@ -148,6 +148,18 @@ export function entryHead(sql: EntriesSql, sid: string): { count: number; head: 
   return { count: 0, head: 0 };
 }
 
+export function sessionLeaf(sql: EntriesSql, sid: string): number {
+  try {
+    for (const row of sql.exec("SELECT leaf FROM sessions WHERE sid = ? LIMIT 1", sid)) {
+      if (row !== null && typeof row === "object" && "leaf" in row && typeof row.leaf === "number" && Number.isInteger(row.leaf) && row.leaf > 0) {
+        return row.leaf;
+      }
+    }
+  } catch {
+  }
+  return entryHead(sql, sid).head;
+}
+
 export function runInSyncTx(sql: EntriesSql, fn: () => void): void {
   const tx = sql.transactionSync;
   if (typeof tx === "function") tx.call(sql, fn);
