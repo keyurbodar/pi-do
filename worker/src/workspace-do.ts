@@ -1303,6 +1303,7 @@ export class WorkspaceDO implements DurableObject {
   }
 
   private streamHost(ws: string, sid: string): StreamHost {
+    const triple = this.readTriple(sid);
     return {
       sql: this.state.storage.sql,
       ws,
@@ -1310,7 +1311,8 @@ export class WorkspaceDO implements DurableObject {
       files: this.files,
       shell: this.env.SHELL_WORKER,
       runtimeEnv: this.env as unknown as RuntimeEnv,
-      thinking: this.readTriple(sid)?.thinking ?? null,
+      thinking: triple?.thinking ?? null,
+      model: triple?.provider != null && triple?.id != null ? { provider: triple.provider, id: triple.id } : null,
       workspaceKnown: ws !== "" && this.workspaceExists(ws),
       sessionKnown: ws !== "" && sid !== "" && this.sessionExists(ws, sid),
       readFence: () => this.readFence(sid),

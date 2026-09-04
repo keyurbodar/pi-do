@@ -20,7 +20,7 @@ import { appendEntry, closeRun, getEntry, listEntries, openRun, sessionLeaf, typ
 import { loadInlineExtensions, type InlineExtensionFactory } from "../../packages/pi-cf/src/extensions";
 import { enforceFence } from "../../packages/pi-cf/src/fence";
 import type { FileStore } from "../../packages/pi-cf/src/vfs-dofs";
-import { buildRuntime, clampThinkingLevel, resolveProviderKey, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
+import { buildRuntime, clampThinkingLevel, keyedProviders, resolveCatalogModel, resolveKeyedModel, resolveProviderKey, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
 import { createAgentSession } from "../../packages/pi-cf/src/session";
 export interface StreamShell {
   exec(input: {
@@ -36,6 +36,7 @@ export interface StreamHost {
   shell: StreamShell;
   runtimeEnv: RuntimeEnv;
   thinking: string | null;
+  model: { provider: string; id: string } | null;
   extensions: InlineExtensionFactory[];
   workspaceKnown: boolean;
   sessionKnown: boolean;
@@ -389,17 +390,34 @@ async function startTurn(
     const historyLeaf = sessionLeaf(host.sql, host.sid);
     openRun(host.sql, host.sid, turnId);
     emitAppend("prompt", { runId: turnId, prompt });
-    const runtime = buildRuntime(host.runtimeEnv);
-    const like: RuntimeModel | Record<string, never> = runtime.stub ? {} : runtime.model;
+    const catalog = host.model === null ? null : resolveCatalogModel(host.model.provider, host.model.id);
+    let turnModel: { id: string; name?: string; api?: string; provider?: string; baseUrl?: string };
+    let respProvider: string;
+    let stub: boolean;
+    let like: RuntimeModel | Record<string, never>;
+    if (catalog === null) {
+      const runtime = buildRuntime(host.runtimeEnv);
+      turnModel = runtime.model;
+      respProvider = runtime.model.provider;
+      stub = runtime.stub;
+      like = runtime.stub ? {} : runtime.model;
+    } else {
+      const keyed = keyedProviders(host.runtimeEnv);
+      const keyedModel = keyed.length === 0 ? null : resolveKeyedModel(host.runtimeEnv, catalog.provider, catalog.id);
+      turnModel = keyedModel ?? { id: catalog.id };
+      respProvider = keyedModel?.provider ?? catalog.provider;
+      stub = keyedModel === null;
+      like = catalog;
+    }
     const effThinking = host.thinking === null ? null : clampThinkingLevel(like, host.thinking);
     const session = createAgentSession({
       files: host.files,
       ws: host.ws,
       shell: host.shell,
-      model: runtime.model,
+      model: turnModel,
       // First-party host: no inline extensions (PR19 keeps behavior unchanged).
       extensions: [],
-      apiKey: runtime.stub ? undefined : resolveProviderKey(host.runtimeEnv, runtime.model.provider),
+      apiKey: stub ? undefined : resolveProviderKey(host.runtimeEnv, respProvider),
       history: { leaf: historyLeaf, readEntry: (cursor) => getEntry(host.sql, host.sid, cursor) },
     });
     const turn = await session.run(prompt, {
@@ -414,6 +432,7 @@ async function startTurn(
       },
     });
     emitAppend("result", { runId: turnId, result: turn.result, usage: turn.usage });
+    const runtimeOut = { via: turn.via, model: turn.model, provider: respProvider, thinking: effThinking };
     closeRun(host.sql, host.sid, turnId);
     if (held !== null) {
       const next = { fence: crypto.randomUUID(), revision: held.revision + 1 };
@@ -423,8 +442,8 @@ async function startTurn(
         closeSocket(CLOSE_CONFLICT, "concurrent rotation mid-turn");
         return;
       }
-      send({ done: true, fence: next.fence, revision: next.revision, result: turn.result, usage: turn.usage });
-    } else send({ done: true, result: turn.result, usage: turn.usage });
+      send({ done: true, fence: next.fence, revision: next.revision, result: turn.result, runtime: runtimeOut, usage: turn.usage });
+    } else send({ done: true, result: turn.result, runtime: runtimeOut, usage: turn.usage });
   } catch (e) {
     if (turnController.signal.aborted) {
       host.sql.exec(
