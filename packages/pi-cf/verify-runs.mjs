@@ -26,20 +26,30 @@ function createFakeSql() {
   let seq = 0;
   const entries = [];
   const runs = new Map();
+  const leaves = new Map();
   return {
     exec(query, ...bindings) {
       const q = String(query);
+      if (q.startsWith("PRAGMA")) return [];
       if (q.startsWith("CREATE TABLE")) return [];
       if (q.startsWith("CREATE INDEX")) return [];
       if (q.startsWith("INSERT INTO pi_entries")) {
         seq += 1;
-        entries.push({ id: seq, sid: bindings[0], type: bindings[1], body: bindings[2] });
+        entries.push({ id: seq, sid: bindings[0], parent: bindings[1], type: bindings[2], body: bindings[3] });
         return [];
       }
       if (q.startsWith("SELECT last_insert_rowid")) return [{ id: seq }];
+      if (q.startsWith("SELECT COALESCE(MAX(id)")) {
+        const ids = entries.filter((e) => e.sid === bindings[0]).map((e) => e.id);
+        return [{ head: ids.length === 0 ? 0 : Math.max(...ids) }];
+      }
       if (q.startsWith("UPDATE pi_entries SET cursor")) {
         const row = entries.find((e) => e.id === bindings[1]);
         if (row) row.cursor = bindings[0];
+        return [];
+      }
+      if (q.startsWith("UPDATE sessions SET leaf")) {
+        leaves.set(bindings[1], bindings[0]);
         return [];
       }
       if (q.startsWith("SELECT id AS cursor")) {
@@ -47,7 +57,7 @@ function createFakeSql() {
           .filter((e) => e.sid === bindings[0] && e.id > bindings[1])
           .sort((a, b) => a.id - b.id)
           .slice(0, Math.min(bindings[2] ?? 100, 1000))
-          .map((e) => ({ cursor: e.id, type: e.type, body: e.body }));
+          .map((e) => ({ cursor: e.id, type: e.type, body: e.body, parent: e.parent ?? 0 }));
       }
       if (q.startsWith("SELECT COUNT(*) AS count")) {
         const ids = entries.filter((e) => e.sid === bindings[0]).map((e) => e.id);
@@ -72,6 +82,9 @@ function createFakeSql() {
     },
     statusOf(runId) {
       return runs.get(runId)?.status;
+    },
+    leafOf(sid) {
+      return leaves.get(sid) ?? 0;
     },
   };
 }
@@ -130,7 +143,7 @@ eq(
 
 const c = appendEntry(sql, "s2", "prompt", "raw-string");
 eq("raw-cursor", c, 6);
-eq("raw-body", listEntries(sql, "s2"), [{ cursor: 6, type: "prompt", body: "raw-string" }]);
+eq("raw-body", listEntries(sql, "s2"), [{ cursor: 6, type: "prompt", body: "raw-string", parent: 0 }]);
 
 // Closing an unknown run is a no-op, never an interrupted entry.
 closeRun(sql, "s1", "nope");
@@ -172,5 +185,19 @@ eq(
   JSON.parse(listEntries(sql, "s1").at(-1).body),
   { runId: "r3", interruptedBy: "r4" },
 );
+
+// Parent links chain per session: first entry roots at 0, every later entry
+// points at the previous cursor, even across the global id gap (s2 owns 6).
+for (const sid of ["s1", "s2"]) {
+  const rows = listEntries(sql, sid);
+  eq(
+    `parent-chain-${sid}`,
+    rows.map((e) => e.parent),
+    rows.map((e, i) => (i === 0 ? 0 : rows[i - 1].cursor)),
+  );
+}
+eq("leaf-s1", sql.leafOf("s1"), 7);
+eq("leaf-s2", sql.leafOf("s2"), 6);
+eq("leaf-empty", sql.leafOf("nobody"), 0);
 
 console.log("PASS verify-runs");

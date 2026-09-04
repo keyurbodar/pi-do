@@ -104,6 +104,10 @@ export function createPiCf(options: CreatePiCfOptions = {}): new (
       sql.exec(
         "CREATE TABLE IF NOT EXISTS sessions(sid TEXT PRIMARY KEY, ws TEXT, created_at TEXT, ownerFence TEXT, revision INTEGER NOT NULL DEFAULT 0)",
       );
+      const cols = [...sql.exec("PRAGMA table_info(sessions)")] as Array<{ name?: unknown }>;
+      if (cols.length > 0 && !cols.some((c) => c.name === "leaf")) {
+        sql.exec("ALTER TABLE sessions ADD COLUMN leaf INTEGER NOT NULL DEFAULT 0");
+      }
     }
 
     private enqueueSessionTurn<T>(sid: string, fn: () => Promise<T>): Promise<T> {

@@ -109,7 +109,8 @@ export function readArchivePage(sql: EntriesSql, sid: string, page: number): Arc
         if (e === null || typeof e !== "object") continue;
         if (!("cursor" in e && "type" in e && "body" in e)) continue;
         if (typeof e.cursor !== "number" || typeof e.type !== "string" || typeof e.body !== "string") continue;
-        entries.push({ cursor: e.cursor, type: e.type, body: e.body });
+        const parent = "parent" in e && typeof e.parent === "number" ? e.parent : 0;
+        entries.push({ cursor: e.cursor, type: e.type, body: e.body, parent });
       }
     } catch {
       continue;
