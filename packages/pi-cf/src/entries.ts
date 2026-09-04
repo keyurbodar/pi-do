@@ -11,18 +11,37 @@ export interface EntriesSql {
 
 export interface EntryRow {
   cursor: number;
+  parent: number;
   type: string;
   body: string;
 }
 
+function tableColumns(sql: EntriesSql, table: string): Set<string> {
+  const names = new Set<string>();
+  for (const row of sql.exec(`PRAGMA table_info(${table})`)) {
+    if (row !== null && typeof row === "object" && "name" in row && typeof row.name === "string") {
+      names.add(row.name);
+    }
+  }
+  return names;
+}
+
 export function ensureEntriesSchema(sql: EntriesSql): void {
   sql.exec(
-    "CREATE TABLE IF NOT EXISTS pi_entries (id INTEGER PRIMARY KEY AUTOINCREMENT, ws TEXT, sid TEXT, cursor INTEGER, type TEXT, body TEXT)",
+    "CREATE TABLE IF NOT EXISTS pi_entries (id INTEGER PRIMARY KEY AUTOINCREMENT, ws TEXT, sid TEXT, cursor INTEGER, parent INTEGER NOT NULL DEFAULT 0, type TEXT, body TEXT)",
   );
   sql.exec(
     "CREATE TABLE IF NOT EXISTS runs (sid TEXT, runId TEXT PRIMARY KEY, status TEXT)",
   );
   sql.exec("CREATE INDEX IF NOT EXISTS pi_entries_sid_id ON pi_entries(sid, id)");
+  const entryCols = tableColumns(sql, "pi_entries");
+  if (entryCols.size > 0 && !entryCols.has("parent")) {
+    sql.exec("ALTER TABLE pi_entries ADD COLUMN parent INTEGER NOT NULL DEFAULT 0");
+  }
+  const sessionCols = tableColumns(sql, "sessions");
+  if (sessionCols.size > 0 && !sessionCols.has("leaf")) {
+    sql.exec("ALTER TABLE sessions ADD COLUMN leaf INTEGER NOT NULL DEFAULT 0");
+  }
 }
 
 export function appendEntry(
@@ -32,7 +51,13 @@ export function appendEntry(
   body: unknown,
 ): number {
   const stored = typeof body === "string" ? body : JSON.stringify(body);
-  sql.exec("INSERT INTO pi_entries(sid, type, body) VALUES (?, ?, ?)", sid, type, stored);
+  let parent = 0;
+  for (const row of sql.exec("SELECT COALESCE(MAX(id), 0) AS head FROM pi_entries WHERE sid = ?", sid)) {
+    if (row !== null && typeof row === "object" && "head" in row && typeof row.head === "number") {
+      parent = row.head;
+    }
+  }
+  sql.exec("INSERT INTO pi_entries(sid, parent, type, body) VALUES (?, ?, ?, ?)", sid, parent, type, stored);
   let cursor = -1;
   for (const row of sql.exec("SELECT last_insert_rowid() AS id")) {
     if (row !== null && typeof row === "object" && "id" in row && typeof row.id === "number") {
@@ -41,7 +66,20 @@ export function appendEntry(
   }
   if (cursor < 0) throw new Error("appendEntry: last_insert_rowid returned no row");
   sql.exec("UPDATE pi_entries SET cursor = ? WHERE id = ?", cursor, cursor);
+  advanceSessionLeaf(sql, sid, cursor);
   return cursor;
+}
+
+// Session leaf rides the caller's transactionSync when the driver offers
+// one, since it is just another exec on the same handle. Old databases
+// without the leaf column must not fail the append, so this stays best
+// effort outside a migrated schema.
+export function advanceSessionLeaf(sql: EntriesSql, sid: string, cursor: number): void {
+  try {
+    sql.exec("UPDATE sessions SET leaf = ? WHERE sid = ?", cursor, sid);
+  } catch {
+    // Best effort: sessions predating the leaf migration still accept appends.
+  }
 }
 
 // Ordered replay slice with resume cursor. limit defaults to 100, clamps at
@@ -66,7 +104,7 @@ export function listEntries(
   l = Math.min(l, 1000);
   const out: EntryRow[] = [];
   for (const row of sql.exec(
-    "SELECT id AS cursor, type, body FROM pi_entries WHERE sid = ? AND id > ? ORDER BY id LIMIT ?",
+    "SELECT id AS cursor, COALESCE(parent, 0) AS parent, type, body FROM pi_entries WHERE sid = ? AND id > ? ORDER BY id LIMIT ?",
     sid,
     a,
     l,
@@ -74,7 +112,8 @@ export function listEntries(
     if (row === null || typeof row !== "object") continue;
     if (!("cursor" in row && "type" in row && "body" in row)) continue;
     if (typeof row.cursor !== "number" || typeof row.type !== "string" || typeof row.body !== "string") continue;
-    out.push({ cursor: row.cursor, type: row.type, body: row.body });
+    const parent = "parent" in row && typeof row.parent === "number" ? row.parent : 0;
+    out.push({ cursor: row.cursor, type: row.type, body: row.body, parent });
   }
   return out;
 }
@@ -83,14 +122,15 @@ export function listEntries(
 // from the in-memory appended copy, so the socket stays a view on storage.
 export function getEntry(sql: EntriesSql, sid: string, cursor: number): EntryRow | null {
   for (const row of sql.exec(
-    "SELECT id AS cursor, type, body FROM pi_entries WHERE sid = ? AND id = ? LIMIT 1",
+    "SELECT id AS cursor, COALESCE(parent, 0) AS parent, type, body FROM pi_entries WHERE sid = ? AND id = ? LIMIT 1",
     sid,
     cursor,
   )) {
     if (row === null || typeof row !== "object") continue;
     if (!("cursor" in row && "type" in row && "body" in row)) continue;
     if (typeof row.cursor !== "number" || typeof row.type !== "string" || typeof row.body !== "string") continue;
-    return { cursor: row.cursor, type: row.type, body: row.body };
+    const parent = "parent" in row && typeof row.parent === "number" ? row.parent : 0;
+    return { cursor: row.cursor, type: row.type, body: row.body, parent };
   }
   return null;
 }

@@ -81,6 +81,7 @@ export class WorkspaceDO implements DurableObject {
     if (!names.has("modelProvider")) sql.exec("ALTER TABLE sessions ADD COLUMN modelProvider TEXT");
     if (!names.has("modelId")) sql.exec("ALTER TABLE sessions ADD COLUMN modelId TEXT");
     if (!names.has("thinkingLevel")) sql.exec("ALTER TABLE sessions ADD COLUMN thinkingLevel TEXT");
+    if (!names.has("leaf")) sql.exec("ALTER TABLE sessions ADD COLUMN leaf INTEGER NOT NULL DEFAULT 0");
     sql.exec(
       "CREATE TABLE IF NOT EXISTS workspace_settings(ws TEXT PRIMARY KEY, modelProvider TEXT, modelId TEXT, thinkingLevel TEXT)",
     );
@@ -1181,6 +1182,12 @@ export class WorkspaceDO implements DurableObject {
         }
       }
       const { count, head } = entryHead(sql, sid);
+      let leaf = head;
+      for (const row of sql.exec("SELECT leaf FROM sessions WHERE sid = ? LIMIT 1", sid)) {
+        if (row !== null && typeof row === "object" && "leaf" in row && typeof row.leaf === "number") {
+          leaf = row.leaf;
+        }
+      }
       let openRun: string | null = null;
       for (const row of sql.exec("SELECT runId FROM runs WHERE sid = ? AND status = ? LIMIT 1", sid, "open")) {
         if (row !== null && typeof row === "object" && "runId" in row && typeof row.runId === "string") {
@@ -1191,7 +1198,7 @@ export class WorkspaceDO implements DurableObject {
       const archive = archiveMeta(sql, sid);
       const sums = sumResultUsage(sql, sid);
       const usage = withSessionRates(sums, this.sessionContextWindow(triple));
-      return json({ sid, ws, created, head, count, openRun, model: { provider: triple?.provider ?? null, id: triple?.id ?? null }, thinking: triple?.thinking ?? null, usage, compaction: { pending: compactionPending(sql, sid), archivePages: archive.pages, archiveTotal: archive.total } });
+      return json({ sid, ws, created, head, count, leaf, openRun, model: { provider: triple?.provider ?? null, id: triple?.id ?? null }, thinking: triple?.thinking ?? null, usage, compaction: { pending: compactionPending(sql, sid), archivePages: archive.pages, archiveTotal: archive.total } });
     }
 
     // POST /compact?ws=&sid= — manual trigger; same runCompaction the alarm runs.
