@@ -20,6 +20,54 @@ export interface SessionContext {
   thinking: string;
   toolNames: string[] | null;
   skipped: SkippedEntry[];
+  truncated: boolean;
+  dropped: number;
+}
+
+export const CHARS_PER_TOKEN = 4;
+
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+
+export function capSessionContext(ctx: SessionContext, budgetTokens: number): SessionContext {
+  if (!Number.isFinite(budgetTokens) || budgetTokens <= 0) {
+    return ctx;
+  }
+  const summaries = ctx.messages.filter((message) => message.role === "compactionSummary");
+  const summaryTokens = summaries.reduce((total, message) => total + estimateTokens(message.text), 0);
+  if (summaryTokens > budgetTokens) {
+    return {
+      messages: [...summaries],
+      model: ctx.model,
+      thinking: ctx.thinking,
+      toolNames: ctx.toolNames,
+      skipped: ctx.skipped,
+      truncated: true,
+      dropped: ctx.messages.length - summaries.length,
+    };
+  }
+  const kept = [...ctx.messages];
+  let total = kept.reduce((sum, message) => sum + estimateTokens(message.text), 0);
+  let dropped = 0;
+  while (total > budgetTokens) {
+    const index = kept.findIndex((message) => message.role !== "compactionSummary");
+    if (index === -1) {
+      break;
+    }
+    total -= estimateTokens(kept[index].text);
+    kept.splice(index, 1);
+    dropped += 1;
+  }
+  return {
+    messages: kept,
+    model: ctx.model,
+    thinking: ctx.thinking,
+    toolNames: ctx.toolNames,
+    skipped: ctx.skipped,
+    truncated: dropped > 0,
+    dropped,
+  };
 }
 
 export type EntryReader = (cursor: number) => EntryRow | null;
@@ -43,7 +91,7 @@ function stringField(obj: Record<string, unknown>, key: string): string | null {
 }
 
 export function buildSessionContext(leaf: number, readEntry: EntryReader): SessionContext {
-  const context: SessionContext = { messages: [], model: null, thinking: "off", toolNames: null, skipped: [] };
+  const context: SessionContext = { messages: [], model: null, thinking: "off", toolNames: null, skipped: [], truncated: false, dropped: 0 };
   if (!Number.isInteger(leaf) || leaf <= 0) {
     return context;
   }

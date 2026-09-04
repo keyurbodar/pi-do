@@ -20,7 +20,7 @@ import { planStubTurn } from "./stub-plan.ts";
 import type { AgentHarnessTool } from "@earendil-works/pi-agent-core";
 import { loadInlineExtensions, type InlineExtensionFactory } from "./extensions.ts";
 import { loadVfsExtensionFactories } from "./loader.ts";
-import { buildSessionContext, type ContextMessage, type EntryReader } from "./context.ts";
+import { buildSessionContext, capSessionContext, estimateTokens, type ContextMessage, type EntryReader } from "./context.ts";
 
 export const sessionTools = {
   read: readTool,
@@ -39,6 +39,8 @@ export interface SessionModel {
   api?: string;
   provider?: string;
   baseUrl?: string;
+  contextWindow?: number;
+  maxTokens?: number;
 }
 
 export interface CreateAgentSessionOptions {
@@ -195,6 +197,20 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
       } catch {
         history = [];
       }
+    }
+    const contextWindow = options.model.contextWindow;
+    if (typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0) {
+      const maxOut = options.model.maxTokens;
+      const reserve =
+        (typeof maxOut === "number" && Number.isFinite(maxOut) && maxOut > 0 ? maxOut : 0) +
+        estimateTokens(prompt) +
+        estimateTokens(SYSTEM_PROMPT);
+      const base = { messages: history, model: null, thinking: "off", toolNames: null, skipped: [], truncated: false, dropped: 0 };
+      const budget = contextWindow - reserve;
+      history =
+        budget > 0
+          ? capSessionContext(base, budget).messages
+          : base.messages.filter((message) => message.role === "compactionSummary");
     }
     const keyed = model.api !== "stub" && typeof apiKey === "string" && apiKey.length > 0;
     const turn = keyed
