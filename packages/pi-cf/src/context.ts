@@ -152,6 +152,16 @@ export function buildSessionContext(leaf: number, readEntry: EntryReader): Sessi
         }
         break;
       }
+      case "steer": {
+        const obj = parseBodyObject(entry.body);
+        const text = obj === null ? null : stringField(obj, "text");
+        if (text === null) {
+          context.skipped.push({ cursor: entry.cursor, type: entry.type, reason: "unreadable-body" });
+        } else {
+          context.messages.push({ role: "user", text, cursor: entry.cursor });
+        }
+        break;
+      }
       default: {
         context.skipped.push({ cursor: entry.cursor, type: entry.type, reason: "unprojected" });
         break;
