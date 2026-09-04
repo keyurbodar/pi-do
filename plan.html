@@ -283,6 +283,35 @@ WS /workspaces/:id/sessions/:sid/stream
   </div>
 </section>
 
+<section>
+  <h2>11 — issues (post-queue follow-ups)</h2>
+  <div class="body">
+    <p>Source: <code>issues.tsv</code>. The PR queue is empty; these are the memory program, keyed coverage, and product gaps found during keyed testing. Same PR discipline as §10: small, focused, proven.</p>
+    <div style="overflow-x:auto">
+    <table style="font-size:12px">
+      <tr><th>ID</th><th>title</th><th>area</th><th>depends</th><th>scope</th><th>done</th><th>note</th></tr>
+      <tr><td>MEM-01</td><td>entry parents + leaf</td><td>memory</td><td>—</td><td>parent cursor column + session leaf, replay unchanged</td><td>0%</td><td>enables MEM-02</td></tr>
+      <tr><td>MEM-02</td><td>context build step</td><td>memory</td><td>MEM-01</td><td>pi-cf build leaf-to-messages, compaction as summary+tail</td><td>0%</td><td>mirrors pi buildSessionContext</td></tr>
+      <tr><td>MEM-03</td><td>loop sync history</td><td>memory</td><td>MEM-02</td><td>runModelTurn prepends path, stub ignores</td><td>0%</td><td>parallel with 04, 05</td></tr>
+      <tr><td>MEM-04</td><td>tool results projection</td><td>memory</td><td>MEM-02</td><td>project toolCall/toolResult into messages in order</td><td>0%</td><td>parallel with 03, 05</td></tr>
+      <tr><td>MEM-05</td><td>steer projection</td><td>memory</td><td>MEM-02</td><td>steer entries into messages, no lanes</td><td>0%</td><td>parallel with 03, 04</td></tr>
+      <tr><td>MEM-06</td><td>token window + cut</td><td>memory</td><td>MEM-02, PR16</td><td>cap built messages oldest-first, PR16 summary as cut</td><td>0%</td><td>after 03–05</td></tr>
+      <tr><td>KEY-01</td><td>funded keyed suite</td><td>keyed</td><td>funded key</td><td>batteries for stream/abort/steer/thinking/ext/factory keyed</td><td>0%</td><td>blocked on balance</td></tr>
+      <tr><td>KEY-02</td><td>pressure suite</td><td>keyed</td><td>KEY-01</td><td>bursts, archive depth, contention, live eviction</td><td>0%</td><td>parallel with KEY-01 prep</td></tr>
+      <tr><td>VFS-01</td><td>workerd-safe extensions</td><td>extensions</td><td>decision</td><td>replace AsyncFunction loader, blocked on workerd</td><td>0%</td><td>T8 premise dead</td></tr>
+      <tr><td>CAT-01</td><td>catalog freshness</td><td>models</td><td>—</td><td>pi-ai bump for spark 1.3, audit new ids</td><td>0%</td><td>anytime</td></tr>
+      <tr><td>SUITE-01</td><td>full-suite green pass</td><td>quality</td><td>MEM-03</td><td>entire verify/ green in one pass on final tree</td><td>0%</td><td>per-PR green only so far</td></tr>
+    </table>
+    </div>
+    <h3>Order</h3>
+    <ul>
+      <li><b>First:</b> MEM-01, then MEM-02.</li>
+      <li><b>Parallel:</b> MEM-03 + MEM-04 + MEM-05 once MEM-02 lands. VFS-01 + CAT-01 anytime.</li>
+      <li><b>After:</b> MEM-06, then SUITE-01. KEY-01 + KEY-02 when funded.</li>
+    </ul>
+  </div>
+</section>
+
 <footer>pi-do plan · updated 2026-09-03 · v1 cut: PR11 + PR15 + PR26 + PR17 all merged at 100%. Speed program in speed-report.html §11.</footer>
 
 </div>
