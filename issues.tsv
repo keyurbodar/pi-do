@@ -1,3 +1,4 @@
+13	CAT-02	live availability gate	models	—	after 02	PR: live /v1/models gate at run resolve, stale vs unpinned errors	100%	✅ merged (1.3 full inference, stale+unpinned 404s, empty-set fallback)
 MEM-01	entry parents + leaf	memory	none	first	PR: parent cursor column + session leaf pointer, replay unchanged	100%	✅ merged (chain proven, leaf==head, replay identical)
 MEM-02	context build step	memory	MEM-01	after 01	PR: pi-cf build from leaf to messages (compaction entry as summary+tail, model/thinking/tools from path)	100%	✅ merged (summary-first, tail verbatim, unprojected loud)
 MEM-03	loop sync history	memory	MEM-02	with 04,05	PR: runModelTurn prepends built path before new prompt, stub ignores	100%	✅ merged (history prepended, stub byte-identical)
