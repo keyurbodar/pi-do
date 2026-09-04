@@ -3,7 +3,7 @@ MEM-02	context build step	memory	MEM-01	after 01	PR: pi-cf build from leaf to me
 MEM-03	loop sync history	memory	MEM-02	with 04,05	PR: runModelTurn prepends built path before new prompt, stub ignores	100%	✅ merged (history prepended, stub byte-identical)
 MEM-04	tool results projection	memory	MEM-02	with 03,05	PR: project toolCall/toolResult entries into messages in order	100%	✅ merged (paired in cursor order, lone never dropped)
 MEM-05	steer projection	memory	MEM-02	with 03,04	PR: steer entries project into messages, lanes out of scope	100%	✅ merged (in-order user message)
-MEM-06	token window + cut	memory	MEM-02,PR16	after 03-05	PR: cap built messages by tokens oldest-first, PR16 summary as cut point	0%	—
+MEM-06	token window + cut	memory	MEM-02,PR16	after 03-05	PR: cap built messages by tokens oldest-first, PR16 summary as cut point	100%	✅ merged (summary pinned, output+prompt reserve)
 KEY-01	funded keyed suite	keyed	funded key	with KEY-02	PR: battery set for stream/abort/steer/thinking/ext/factory keyed paths	0%	— blocked on provider balance
 KEY-02	pressure suite	keyed	KEY-01 green	with KEY-01	PR: bursts, archive depth, tab contention, eviction mid-turn live	0%	—
 VFS-01	workerd-safe extensions	extensions	decision	parked	PR: none — extensions parked entirely at this stage; revisit with a dispatch-namespace spike if hot code matters	parked	owner parked extensions; T8 stands as the known gap
