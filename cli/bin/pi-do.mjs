@@ -695,6 +695,11 @@ function formatUsageRow(usage) {
   if ((usage.cacheRead ?? 0) > 0) parts.push(`cache ${formatCount(usage.cacheRead)}`);
   parts.push(`t ${formatElapsed(usage.elapsedMs ?? 0)}`);
   if (usage.tokensPerSec !== null && usage.tokensPerSec !== undefined) parts.push(`${usage.tokensPerSec.toFixed(1)}/s`);
+  const input = usage.inTokens ?? 0;
+  const read = usage.cacheRead ?? 0;
+  const denom = input + read;
+  const hit = denom > 0 ? (read / denom) * 100 : 0;
+  parts.push(`CH${hit.toFixed(1)}%`);
   return parts.join("  ");
 }
 

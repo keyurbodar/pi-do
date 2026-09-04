@@ -401,6 +401,7 @@ async function startTurn(
       extensions: [],
       apiKey: runtime.stub ? undefined : resolveProviderKey(host.runtimeEnv, runtime.model.provider),
       history: { leaf: historyLeaf, readEntry: (cursor) => getEntry(host.sql, host.sid, cursor) },
+      sessionId: host.sid,
     });
     const turn = await session.run(prompt, {
       signal: turnController.signal,
