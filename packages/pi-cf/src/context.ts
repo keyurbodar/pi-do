@@ -1,6 +1,6 @@
 import type { EntryRow } from "./entries.ts";
 
-export type ContextRole = "user" | "assistant" | "compactionSummary";
+export type ContextRole = "user" | "assistant" | "compactionSummary" | "toolCall" | "toolResult";
 
 export interface ContextMessage {
   role: ContextRole;
@@ -139,6 +139,28 @@ export function buildSessionContext(leaf: number, readEntry: EntryReader): Sessi
           context.skipped.push({ cursor: entry.cursor, type: entry.type, reason: "unreadable-body" });
         } else {
           context.messages.push({ role: "assistant", text: result, cursor: entry.cursor });
+        }
+        break;
+      }
+      case "toolCall": {
+        const obj = parseBodyObject(entry.body);
+        const tool = obj === null ? null : stringField(obj, "tool");
+        if (tool === null) {
+          context.skipped.push({ cursor: entry.cursor, type: entry.type, reason: "unreadable-body" });
+        } else {
+          const args = obj === null ? undefined : obj["args"];
+          const text = args !== null && typeof args === "object" ? `${tool} ${JSON.stringify(args)}` : tool;
+          context.messages.push({ role: "toolCall", text, cursor: entry.cursor });
+        }
+        break;
+      }
+      case "toolResult": {
+        const obj = parseBodyObject(entry.body);
+        const output = obj === null ? null : stringField(obj, "output");
+        if (output === null) {
+          context.skipped.push({ cursor: entry.cursor, type: entry.type, reason: "unreadable-body" });
+        } else {
+          context.messages.push({ role: "toolResult", text: output, cursor: entry.cursor });
         }
         break;
       }
