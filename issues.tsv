@@ -8,5 +8,5 @@ MEM-06	token window + cut	memory	MEM-02,PR16	after 03-05	PR: cap built messages 
 KEY-01	funded keyed suite	keyed	funded key	with KEY-02	PR: battery set for stream/abort/steer/thinking/ext/factory keyed paths	0%	— blocked on provider balance
 KEY-02	pressure suite	keyed	KEY-01 green	with KEY-01	PR: bursts, archive depth, tab contention, eviction mid-turn live	0%	—
 VFS-01	workerd-safe extensions	extensions	decision	parked	PR: none — extensions parked entirely at this stage; revisit with a dispatch-namespace spike if hot code matters	parked	owner parked extensions; T8 stands as the known gap
-CAT-01	catalog freshness	models	anytime	anytime	PR: pi-ai bump for spark 1.3 + audit new ids	0%	—
+CAT-01	catalog freshness	models	—	dropped	PR: none — staying on muse-spark-1.2 at this stage	—	dropped (owner cut; revisit if 1.3+ needed)
 SUITE-01	full-suite green pass	quality	MEM-03	after memory	PR: entire verify/ green in one pass on the final tree	0%	— last green was per-PR only
