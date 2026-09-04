@@ -54,6 +54,7 @@ export interface CreateAgentSessionOptions {
   extensions?: InlineExtensionFactory[];
   apiKey?: string;
   history?: { leaf: number; readEntry: EntryReader };
+  sessionId?: string;
 }
 
 export interface SessionToolCall {
@@ -322,6 +323,8 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
     }
     messages.push({ role: "user", content: prompt, timestamp: Date.now() });
     const request: SimpleStreamOptions = { signal };
+    const sessionId = options.sessionId;
+    if (sessionId !== undefined && sessionId.length > 0) request.sessionId = sessionId;
     if (thinking !== null && thinking !== "" && thinking !== "off") request.reasoning = thinking as ThinkingLevel;
     request.apiKey = apiKey;
     const toolCalls: SessionToolCall[] = [];

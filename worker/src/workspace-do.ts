@@ -1036,6 +1036,7 @@ export class WorkspaceDO implements DurableObject {
           extensions: [],
           apiKey: resolveProviderKey(this.env as unknown as RuntimeEnv, respProvider),
           history: { leaf: sessionLeaf(sql, sid), readEntry: (cursor) => getEntry(sql, sid, cursor) },
+          sessionId: sid,
         });
         const turn = await session.run(prompt, { thinking: effThinking });
         recordTurnWithOpen(sql, sid, runId, prompt, turn.toolCalls, turn.result, turn.usage);
