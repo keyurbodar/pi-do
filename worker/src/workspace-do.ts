@@ -5,7 +5,7 @@ import { enforceFence } from "../../packages/pi-cf/src/fence";
 import { acceptStream, readAttachment, socketClosed, socketMessage, wrapSocket, type StreamHost } from "./stream";
 import { createAgentSession } from "../../packages/pi-cf/src/session";
 import { normalizeWorkspacePath } from "../../packages/pi-cf/src/tools";
-import { buildRuntime, clampThinkingLevel, keyedProviders, resolveCatalogModel, resolveKeyedModel, resolveProviderKey, supportedThinkingLevels, THINKING_LEVELS, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
+import { buildRuntime, clampThinkingLevel, keyedProviders, resolveCatalogModel, resolveKeyedModel, resolveKeyedModelLive, resolveProviderKey, supportedThinkingLevels, THINKING_LEVELS, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
 import { createWorkspaceFs, hasGitDir } from "./git-fs";
 import { gateArgv, notARepoBody, NotARepoError, runGitRead } from "./git-reads";
 interface ShellWorkerBinding {
@@ -950,7 +950,10 @@ export class WorkspaceDO implements DurableObject {
       let catalog: RuntimeModel | null = null;
       if (effProvider !== null && effId !== null) {
         try {
-          catalog = resolveCatalogModel(effProvider, effId);
+          const keyedHere = keyedProviders(this.env as unknown as RuntimeEnv);
+          catalog = keyedHere.some((provider) => provider.id === effProvider)
+            ? await resolveKeyedModelLive(this.env as unknown as RuntimeEnv, effProvider, effId)
+            : resolveCatalogModel(effProvider, effId);
         } catch (e) {
           if (e !== null && typeof e === "object" && "error" in e && typeof e.error === "string") {
             const hint = "hint" in e && typeof e.hint === "string" ? e.hint : "retry with a catalog model";

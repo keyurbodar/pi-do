@@ -660,6 +660,82 @@ export function resolveKeyedModel(
     );
   return entry;
 }
+export const LIVE_MODELS_TTL_MS = 10 * 60 * 1000;
+
+const liveModelsCache = new Map<string, { ids: Set<string>; expiresAt: number }>();
+
+export function clearLiveModelsCache(): void {
+  liveModelsCache.clear();
+}
+
+export async function resolveKeyedModelLive(
+  env: RuntimeEnv,
+  providerId: string,
+  modelId: string,
+  customDoc?: unknown,
+  fetchImpl?: typeof fetch,
+): Promise<RuntimeModel> {
+  const doc = customDoc ?? bundledModelsJson;
+  const keyed = keyedProviders(env, doc);
+  const scoped = keyed.find((provider) => provider.id === providerId);
+  if (!scoped)
+    fail(
+      `unknown provider: ${providerId}`,
+      `providers with keys: ${providerIdList(keyed)}`,
+    );
+  const pinned = scoped.catalog.get(modelId);
+  const key = resolveProviderKey(env, providerId);
+  const baseUrl =
+    pinned?.baseUrl ??
+    [...scoped.catalog.values()][0]?.baseUrl ??
+    loadCustomProviders(doc).get(providerId)?.baseUrl ??
+    "";
+  if (key === undefined || providerId === "stub" || baseUrl.length === 0)
+    return resolveKeyedModel(env, providerId, modelId, doc);
+  const cached = liveModelsCache.get(baseUrl);
+  let ids = cached && cached.expiresAt > Date.now() ? cached.ids : undefined;
+  if (!ids) {
+    let live: Set<string> | undefined;
+    try {
+      const response = await (fetchImpl ?? globalThis.fetch)(
+        `${baseUrl.replace(/\/+$/, "")}/models`,
+        {
+          headers: { Authorization: `Bearer ${key}` },
+          signal: AbortSignal.timeout(10_000),
+        },
+      );
+      if (response.ok) {
+        const body: unknown = await response.json();
+        if (isRecord(body) && Array.isArray(body.data)) {
+          const found = new Set<string>();
+          for (const item of body.data)
+            if (isRecord(item) && typeof item.id === "string") found.add(item.id);
+          live = found;
+        }
+      }
+    } catch {
+      live = undefined;
+    }
+    if (!live || live.size === 0) {
+      liveModelsCache.delete(baseUrl);
+      return resolveKeyedModel(env, providerId, modelId, doc);
+    }
+    liveModelsCache.set(baseUrl, { ids: live, expiresAt: Date.now() + LIVE_MODELS_TTL_MS });
+    ids = live;
+  }
+  if (!ids.has(modelId))
+    fail(
+      `stale model: ${providerId}/${modelId}`,
+      `pinned model ${providerId}/${modelId} is missing from the live ${providerId} list; refresh the pin in worker/models.json`,
+    );
+  const entry = scoped.catalog.get(modelId);
+  if (!entry)
+    fail(
+      `unpinned model: ${providerId}/${modelId}`,
+      `available-but-unpinned: ${providerId}/${modelId}; add routing specs (api, baseUrl, contextWindow, maxTokens, cost) for ${providerId}/${modelId} in worker/models.json; specs are never guessed`,
+    );
+  return entry;
+}
 
 export function buildRuntime(
   env: RuntimeEnv,
