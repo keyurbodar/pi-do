@@ -1045,6 +1045,7 @@ export class WorkspaceDO implements DurableObject {
         recordTurnWithOpen(sql, sid, runId, prompt, turn.toolCalls, turn.result, turn.usage);
         // Window reserve: mark for compaction but never compact inside the turn. The alarm runs seconds later so a burst of turns settles into one compaction.
         if (maybeMarkForCompaction(sql, sid)) await this.state.storage.setAlarm(Date.now() + 2000);
+        else if (compactionPending(sql, sid)) await this.state.storage.setAlarm(Date.now() + 2000);
         const runtimeOut = { via: turn.via, model: turn.model, provider: respProvider, thinking: effThinking };
         if (rotated !== null) {
           return json({
