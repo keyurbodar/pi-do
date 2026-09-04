@@ -126,6 +126,11 @@ const n = Array.isArray(b.entries) ? b.entries.length : -1;
 if (n !== 0) throw new Error('expected 0 entries, got ' + n);
 console.log('no entries ok');
 " "${OUT}/ls.json" || exit 1
-
+echo "### 12 dispose the fill sessions so later suites inherit an empty pool"
+i=1
+while [ "${i}" -le 65 ]; do
+  post "${EXEC}/dispose" '{"sid":"cap-'"${i}"'-'"${RUN_ID}"'"}' "drop-${i}.json" 2>/dev/null || true
+  i=$((i + 1))
+done
 echo "PASS ${RUN_ID} ws=${WS}"
 } 2>&1 | tee "${OUT}/transcript.txt"

@@ -79,6 +79,8 @@ each file doing one thing. Current `cli/bin/pi-do.mjs` splits into `lib/` next.
 - Proof = action plus resulting state through a second view. Skipped paths are
   reported, never implied. Never drive a foreign workspace; isolate by fresh
   workspaceId + `verify-*` paths. Skill + map: `.cursor/skills/verify-pi-do/`.
+- Keyless scripts pipe through tee, which masks exit codes: green is a `^PASS`
+  line in the transcript, never exit 0. Grep every transcript.
 - Scoped checks only: typecheck the touched package, run the one verify script
   for the behavior. Never whole-repo suites per change. A check taking minutes
   means the scope is wrong, not the machine.
