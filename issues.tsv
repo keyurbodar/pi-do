@@ -1,5 +1,4 @@
-id	title	area	depends	parallel	scope	status	note
-MEM-01	entry parents + leaf	memory	none	first	PR: parent cursor column + session leaf pointer, replay unchanged	0%	— enables MEM-02
+MEM-01	entry parents + leaf	memory	none	first	PR: parent cursor column + session leaf pointer, replay unchanged	100%	✅ merged (chain proven, leaf==head, replay identical)
 MEM-02	context build step	memory	MEM-01	after 01	PR: pi-cf build from leaf to messages (compaction entry as summary+tail, model/thinking/tools from path)	0%	— mirrors pi buildSessionContext
 MEM-03	loop sync history	memory	MEM-02	with 04,05	PR: runModelTurn prepends built path before new prompt, stub ignores	0%	— proof is two-turn quote without reread
 MEM-04	tool results projection	memory	MEM-02	with 03,05	PR: project toolCall/toolResult entries into messages in order	0%	— where multi-step agency comes from
