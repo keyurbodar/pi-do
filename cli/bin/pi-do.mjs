@@ -738,6 +738,7 @@ function printStreamFrame(frame, json) {
     else process.stdout.write(`done\n`);
     if (frame.result) process.stdout.write(frame.result.endsWith("\n") ? frame.result : `${frame.result}\n`);
     if (frame.usage) process.stdout.write(`usage ${formatUsageRow(frame.usage)}\n`);
+    if (frame.halt) process.stdout.write(`halt: ${frame.halt.reason ?? frame.halt}\n`);
   } else if (frame.aborted) {
     process.stdout.write(`aborted run=${frame.runId ?? ""}\n`);
   } else if (frame.busy) {
@@ -917,6 +918,7 @@ async function doRun(base, json, opts) {
     if (data.result) process.stdout.write(data.result.endsWith("\n") ? data.result : `${data.result}\n`);
     human(`run ok: ${calls.length} tool calls`);
     if (data.usage) human(`usage ${formatUsageRow(data.usage)}`);
+    if (data.halt) human(`halt: ${data.halt.reason ?? data.halt}`);
   }
   process.exit(0);
 }

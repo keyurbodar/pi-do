@@ -385,12 +385,13 @@ export function createPiCf(options: CreatePiCfOptions = {}): new (
           try {
             const session = createAgentSession({ files: this.files, ws, shell, model, tools, apiKey, history: { leaf: sessionLeaf(sql, sid), readEntry: (cursor) => getEntry(sql, sid, cursor) } });
             const turn = await session.run(prompt);
-            recordTurnWithOpen(sql, sid, runId, prompt, turn.toolCalls, turn.result, turn.usage);
+            recordTurnWithOpen(sql, sid, runId, prompt, turn.toolCalls, turn.result, turn.usage, turn.halt ?? null);
             const out = {
               result: turn.result,
               toolCalls: turn.toolCalls,
               runtime: { via: turn.via, model: turn.model },
               usage: turn.usage,
+              ...(turn.halt ? { halt: turn.halt } : {}),
             };
             return rotated !== null ? json({ ...out, fence: rotated.fence, revision: rotated.revision }) : json(out);
           } catch (e) {

@@ -74,6 +74,20 @@ export interface SessionTurn {
   via: "createAgentSession";
   model: string;
   usage: SessionUsage;
+  halt?: SessionHalt;
+}
+
+export type HaltReason = "turns" | "tool-calls" | "duration" | "cost";
+
+export interface SessionHalt {
+  reason: HaltReason;
+}
+
+export interface SessionRunBudgets {
+  maxTurns?: number;
+  maxToolCalls?: number;
+  maxDurationMs?: number;
+  maxCost?: number;
 }
 
 
@@ -89,6 +103,7 @@ export interface SessionRunOptions {
   signal?: AbortSignal;
   onUpdate?: (event: SessionToolEvent) => void;
   thinking?: string | null;
+  budgets?: SessionRunBudgets;
 }
 
 // Abortable pause between steps. Only the streaming path passes a signal,
@@ -116,6 +131,43 @@ const MAX_MODEL_STEPS = 10;
 // Suppressed under this the rate is nonsense (cached/instant responses yield
 // absurd tok/s). Same 100ms floor as OMP calculateTokensPerSecond.
 const MIN_TURN_MS = 100;
+const TOOL_BATCH_CONCURRENCY = 4;
+
+const DEFAULT_RUN_BUDGETS = {
+  maxTurns: MAX_MODEL_STEPS,
+  maxToolCalls: 32,
+  maxDurationMs: 120000,
+  maxCost: 0.5,
+};
+
+type ResolvedRunBudgets = {
+  maxTurns: number;
+  maxToolCalls: number;
+  maxDurationMs: number;
+  maxCost: number;
+};
+
+function validBudget(value: number | undefined, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+function resolveRunBudgets(budgets: SessionRunBudgets | undefined): ResolvedRunBudgets {
+  return {
+    maxTurns: validBudget(budgets?.maxTurns, DEFAULT_RUN_BUDGETS.maxTurns),
+    maxToolCalls: validBudget(budgets?.maxToolCalls, DEFAULT_RUN_BUDGETS.maxToolCalls),
+    maxDurationMs: validBudget(budgets?.maxDurationMs, DEFAULT_RUN_BUDGETS.maxDurationMs),
+    maxCost: validBudget(budgets?.maxCost, DEFAULT_RUN_BUDGETS.maxCost),
+  };
+}
+
+type BatchSlot = {
+  id: string;
+  call: PiToolCall;
+  args: Record<string, unknown>;
+  output: string;
+  isError: boolean;
+  settled: boolean;
+};
 
 const SYSTEM_PROMPT =
   'You are a coding assistant inside a Cloudflare Worker workspace. File paths are workspace-relative ("" is the workspace root). Use the tools to inspect and change files, then answer with a short summary of what you did.';
@@ -190,7 +242,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
           : base.messages.filter((message) => message.role === "compactionSummary");
     }
     const keyed = model.api !== "stub" && typeof apiKey === "string" && apiKey.length > 0;
-    if (keyed) return runModelTurn(prompt, apiKey, signal, onUpdate, runOptions?.thinking ?? null, tools, history);
+    if (keyed) return runModelTurn(prompt, apiKey, signal, onUpdate, runOptions?.thinking ?? null, tools, history, runOptions?.budgets);
     return runStubTurn(prompt, signal, onUpdate, tools);
   }
 
@@ -241,6 +293,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
     thinking: string | null,
     tools: Record<string, AgentHarnessTool<ToolContext, any, any>>,
     history: ContextMessage[],
+    budgets: SessionRunBudgets | undefined,
   ): Promise<SessionTurn> {
     const modelId = model.id;
     const piModel = toPiModel(model);
@@ -282,9 +335,27 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
     let outTokens = 0;
     let cacheRead = 0;
     let costTotal = 0;
-    for (let step = 0; step < MAX_MODEL_STEPS; step += 1) {
+    const limits = resolveRunBudgets(budgets);
+    for (let step = 0; ; step += 1) {
       signal?.throwIfAborted();
       await abortablePause(signal);
+      let halt: SessionHalt | undefined = undefined;
+      if (step >= limits.maxTurns) halt = { reason: "turns" };
+      else if (toolCalls.length >= limits.maxToolCalls) halt = { reason: "tool-calls" };
+      else if (Date.now() - openedAt >= limits.maxDurationMs) halt = { reason: "duration" };
+      else if (costTotal >= limits.maxCost) halt = { reason: "cost" };
+      if (halt !== undefined) {
+        const haltElapsedMs = Date.now() - openedAt;
+        const haltTokensPerSec = haltElapsedMs < MIN_TURN_MS || outTokens <= 0 ? null : (outTokens * 1000) / haltElapsedMs;
+        return {
+          result,
+          toolCalls,
+          via: "createAgentSession",
+          model: modelId,
+          usage: { inTokens, outTokens, cacheRead, costTotal, elapsedMs: haltElapsedMs, tokensPerSec: haltTokensPerSec },
+          halt,
+        };
+      }
       const piContext: PiContext = { systemPrompt: SYSTEM_PROMPT, messages, tools: piTools };
       const answer = await completeSimple(piModel, piContext, request);
       inTokens += answer.usage.input + answer.usage.cacheWrite;
@@ -305,6 +376,8 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
       const calls = answer.content.filter((block): block is PiToolCall => block.type === "toolCall");
       if (answer.stopReason !== "toolUse" || calls.length === 0) break;
       messages.push(answer);
+      const slots: BatchSlot[] = [];
+      const thunks: Array<() => Promise<void>> = [];
       for (const call of calls) {
         signal?.throwIfAborted();
         n += 1;
@@ -312,27 +385,58 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
         const args = call.arguments ?? {};
         onUpdate?.({ kind: "toolCall", id, tool: call.name, args });
         const toolFn = tools[call.name];
-        let output: string;
-        let isError = false;
         if (toolFn === undefined) {
-          output = `unknown tool: ${call.name} (available: ${Object.keys(tools).join(", ")})`;
-          isError = true;
+          const output = `unknown tool: ${call.name} (available: ${Object.keys(tools).join(", ")})`;
+          slots.push({ id, call, args, output, isError: true, settled: true });
+          onUpdate?.({ kind: "toolResult", id, tool: call.name, args, output });
         } else {
-          try {
-            output = textOf(await toolFn.execute(id, args, signal, undefined, context));
-          } catch (e) {
-            output = errorText(e);
-            isError = true;
-          }
+          const slot: BatchSlot = { id, call, args, output: "", isError: false, settled: false };
+          slots.push(slot);
+          const fn = toolFn;
+          thunks.push(async () => {
+            try {
+              slot.output = textOf(await fn.execute(id, args, signal, undefined, context));
+            } catch (e) {
+              slot.output = errorText(e);
+              slot.isError = true;
+            }
+            slot.settled = true;
+            onUpdate?.({ kind: "toolResult", id, tool: call.name, args, output: slot.output });
+          });
         }
-        toolCalls.push({ id, tool: call.name, args, output });
-        onUpdate?.({ kind: "toolResult", id, tool: call.name, args, output });
+      }
+      if (thunks.length === 1) {
+        signal?.throwIfAborted();
+        await thunks[0]();
+      } else if (thunks.length > 1 && calls.some((call) => call.name === "bash")) {
+        for (const thunk of thunks) {
+          signal?.throwIfAborted();
+          await thunk();
+        }
+      } else if (thunks.length > 1) {
+        let next = 0;
+        const worker = async (): Promise<void> => {
+          while (next < thunks.length) {
+            const thunk = thunks[next];
+            next += 1;
+            signal?.throwIfAborted();
+            await thunk();
+          }
+        };
+        const width = Math.min(TOOL_BATCH_CONCURRENCY, thunks.length);
+        const runners: Array<Promise<void>> = [];
+        for (let w = 0; w < width; w += 1) runners.push(worker());
+        await Promise.all(runners);
+      }
+      signal?.throwIfAborted();
+      for (const slot of slots) {
+        toolCalls.push({ id: slot.id, tool: slot.call.name, args: slot.args, output: slot.output });
         messages.push({
           role: "toolResult",
-          toolCallId: call.id,
-          toolName: call.name,
-          content: [{ type: "text", text: output }],
-          isError,
+          toolCallId: slot.call.id,
+          toolName: slot.call.name,
+          content: [{ type: "text", text: slot.output }],
+          isError: slot.isError,
           timestamp: Date.now(),
         });
       }
