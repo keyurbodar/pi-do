@@ -7,7 +7,7 @@ import { createAgentSession } from "../../packages/pi-cf/src/session";
 import { normalizeWorkspacePath } from "../../packages/pi-cf/src/tools";
 import { buildRuntime, clampThinkingLevel, keyedProviders, resolveCatalogModel, resolveKeyedModel, resolveKeyedModelLive, resolveProviderKey, supportedThinkingLevels, THINKING_LEVELS, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
 import { createWorkspaceFs, hasGitDir } from "./git-fs";
-import { gateArgv, notARepoBody, NotARepoError, runGitRead } from "./git-reads";
+import { gateArgv, notARepoBody, NotARepoError, runGitRead, runGitWrite, WRITE_SUBCOMMANDS } from "./git-reads";
 interface ShellWorkerBinding {
   exec(input: {
     command: string;
@@ -416,12 +416,8 @@ export class WorkspaceDO implements DurableObject {
       } catch {
         argv = undefined;
       }
-      // Allowlist gate first: nothing executes below for 403/501.
       const gate = gateArgv(argv);
       if (!gate.ok) return json({ error: gate.error, hint: gate.hint }, gate.status);
-      // Allowed read: snapshot the files table once, run isomorphic-git over it.
-      // No .git tree at all is deterministically not-a-repo: answer 404 here so
-      // isomorphic-git's low-level ENOENT probes never surface as a 500/400.
       try {
         const rows = [
           ...this.state.storage.sql.exec("SELECT path, body FROM files WHERE ws = ?", ws),
@@ -430,8 +426,26 @@ export class WorkspaceDO implements DurableObject {
           path: r.path,
           body: r.body instanceof Uint8Array ? r.body : new Uint8Array(r.body),
         }));
-        if (!hasGitDir(files)) return json(notARepoBody(), 404);
+        if (gate.sub !== "init" && !hasGitDir(files)) return json(notARepoBody(), 404);
         const fs = createWorkspaceFs(files);
+        if (gate.sub in WRITE_SUBCOMMANDS) {
+          const result = await runGitWrite(fs, gate.sub, gate.rest);
+          const now = new Date().toISOString();
+          const dirty = fs.dirty();
+          for (const up of dirty.upserts) {
+            this.state.storage.sql.exec(
+              "INSERT OR REPLACE INTO files(ws, path, body, updated_at) VALUES (?, ?, ?, ?)",
+              ws,
+              up.path,
+              up.body,
+              now,
+            );
+          }
+          for (const del of dirty.deletes) {
+            this.state.storage.sql.exec("DELETE FROM files WHERE ws = ? AND path = ?", ws, del);
+          }
+          return json({ ...result, exitCode: 0 });
+        }
         const result = await runGitRead(fs, gate.sub, gate.rest);
         return json({ ...result, exitCode: 0 });
       } catch (e) {
@@ -439,7 +453,7 @@ export class WorkspaceDO implements DurableObject {
         const msg = e instanceof Error ? e.message : String(e ?? "git failed");
         if (/not a git repository/i.test(msg)) return json(notARepoBody(), 404);
         return json(
-          { error: msg.slice(0, 300), hint: "retry with argv [status|log|diff|show]; writes are deferred" },
+          { error: msg.slice(0, 300), hint: "retry with argv [status|log|diff|show|add|commit|rm|checkout|switch|init]; clone/fetch/push are forbidden" },
           400,
         );
       }
