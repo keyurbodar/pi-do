@@ -57,6 +57,7 @@ export interface CreateAgentSessionOptions {
   apiKey?: string;
   history?: { leaf: number; readEntry: EntryReader };
   sessionId?: string;
+  cacheRetention?: "short" | "long";
 }
 
 export interface SessionToolCall {
@@ -73,6 +74,7 @@ export interface SessionUsage {
   costTotal: number;
   elapsedMs: number;
   tokensPerSec: number | null;
+  retention?: "short" | "long";
 }
 
 export interface SessionTurn {
@@ -225,6 +227,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
     const signal = runOptions?.signal;
     const onUpdate = runOptions?.onUpdate;
     const apiKey = options.apiKey;
+    const retention = options.cacheRetention ?? "short";
     const tools: Record<string, AgentHarnessTool<ToolContext, any, any>> = { ...sessionTools, ...options.tools };
     let history: ContextMessage[] = [];
     if (options.history !== undefined) {
@@ -249,8 +252,8 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
           : base.messages.filter((message) => message.role === "compactionSummary");
     }
     const keyed = model.api !== "stub" && typeof apiKey === "string" && apiKey.length > 0;
-    if (keyed) return runModelTurn(prompt, apiKey, signal, onUpdate, runOptions?.thinking ?? null, tools, history, runOptions?.budgets);
-    return runStubTurn(prompt, signal, onUpdate, tools);
+    if (keyed) return runModelTurn(prompt, apiKey, signal, onUpdate, runOptions?.thinking ?? null, tools, history, runOptions?.budgets, retention);
+    return runStubTurn(prompt, signal, onUpdate, tools, retention);
   }
 
   async function runStubTurn(
@@ -258,6 +261,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
     signal: AbortSignal | undefined,
     onUpdate: ((event: SessionToolEvent) => void) | undefined,
     tools: Record<string, AgentHarnessTool<ToolContext, any, any>>,
+    retention: "short" | "long",
   ): Promise<SessionTurn> {
     const modelId = model.id;
     const readFn = tools.read;
@@ -285,7 +289,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
       toolCalls,
       via: "createAgentSession",
       model: modelId,
-      usage: { inTokens: 0, outTokens: 0, cacheRead: 0, costTotal: 0, elapsedMs: 0, tokensPerSec: null },
+      usage: { inTokens: 0, outTokens: 0, cacheRead: 0, costTotal: 0, elapsedMs: 0, tokensPerSec: null, retention },
     };
   }
 
@@ -301,6 +305,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
     tools: Record<string, AgentHarnessTool<ToolContext, any, any>>,
     history: ContextMessage[],
     budgets: SessionRunBudgets | undefined,
+    retention: "short" | "long",
   ): Promise<SessionTurn> {
     const modelId = model.id;
     const piModel = toPiModel(model);
@@ -334,6 +339,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
     if (sessionId !== undefined && sessionId.length > 0) request.sessionId = sessionId;
     if (thinking !== null && thinking !== "" && thinking !== "off") request.reasoning = thinking as ThinkingLevel;
     request.apiKey = apiKey;
+    request.cacheRetention = retention;
     const toolCalls: SessionToolCall[] = [];
     let n = 0;
     let result = "";
@@ -455,7 +461,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
       toolCalls,
       via: "createAgentSession",
       model: modelId,
-      usage: { inTokens, outTokens, cacheRead, costTotal, elapsedMs, tokensPerSec },
+      usage: { inTokens, outTokens, cacheRead, costTotal, elapsedMs, tokensPerSec, retention },
     };
   }
 

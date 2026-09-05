@@ -91,7 +91,7 @@ example:
 const SESSION_HELP = `pi-do session — manage sessions
 
 usage:
-  pi-do session create --ws WS [--base URL] [--json]
+  pi-do session create --ws WS [--base URL] [--retention short|long] [--json]
 
 subcommands:
   create    mint a session (POST /workspaces/:id/sessions)
@@ -103,7 +103,7 @@ example:
 const SESSION_CREATE_HELP = `pi-do session create — mint a session in a workspace
 
 usage:
-  pi-do session create --ws WS [--base URL] [--json]
+  pi-do session create --ws WS [--retention short|long] [--base URL] [--json]
 
 behavior:
   POSTs /workspaces/:id/sessions. Prints the new session id.
@@ -526,6 +526,7 @@ function parseArgs(argv) {
     model: undefined,
     level: undefined,
     provider: undefined,
+    retention: undefined,
     all: false,
   };
   const positionals = [];
@@ -628,6 +629,10 @@ function parseArgs(argv) {
       opts.provider = takeValue("--provider");
     } else if (tok.startsWith("--provider=")) {
       opts.provider = tok.slice("--provider=".length);
+    } else if (tok === "--retention") {
+      opts.retention = takeValue("--retention");
+    } else if (tok.startsWith("--retention=")) {
+      opts.retention = tok.slice("--retention=".length);
     } else if (tok === "--all") {
       opts.all = true;
     } else if (tok === "--recursive") {
@@ -698,6 +703,7 @@ function formatUsageRow(usage) {
   const denom = input + read;
   const hit = denom > 0 ? (read / denom) * 100 : 0;
   parts.push(`CH${hit.toFixed(1)}%`);
+  parts.push(`ret ${usage.retention ?? "short"}`);
   return parts.join("  ");
 }
 
@@ -854,10 +860,12 @@ async function doWorkspaceCreate(base, json) {
 }
 async function doSessionCreate(base, json, opts) {
   if (!opts.ws) failUsage(`session create needs --ws WS.`, SESSION_CREATE_HELP);
+  if (opts.retention !== undefined && opts.retention !== "short" && opts.retention !== "long") failUsage(`session create needs --retention short|long.`, SESSION_CREATE_HELP);
   const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/sessions`;
+  const body = opts.retention === undefined ? undefined : { retention: opts.retention };
   let res;
   try {
-    res = await fetch(url, { method: "POST" });
+    res = await fetch(url, body === undefined ? { method: "POST" } : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   } catch (e) {
     human(`error: cannot reach server at ${base}`);
     human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
@@ -868,9 +876,9 @@ async function doSessionCreate(base, json, opts) {
   const data = await res.json();
   if (json) {
     printJson(data);
-    human(`session ${data.sessionId}`);
+    human(`session ${data.sessionId} ret ${data.retention ?? "short"}`);
   } else {
-    process.stdout.write(`session ${data.sessionId}\n`);
+    process.stdout.write(`session ${data.sessionId} ret ${data.retention ?? "short"}\n`);
   }
   process.exit(0);
 }

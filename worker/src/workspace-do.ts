@@ -81,6 +81,7 @@ export class WorkspaceDO implements DurableObject {
     if (!names.has("modelProvider")) sql.exec("ALTER TABLE sessions ADD COLUMN modelProvider TEXT");
     if (!names.has("modelId")) sql.exec("ALTER TABLE sessions ADD COLUMN modelId TEXT");
     if (!names.has("thinkingLevel")) sql.exec("ALTER TABLE sessions ADD COLUMN thinkingLevel TEXT");
+    if (!names.has("cacheRetention")) sql.exec("ALTER TABLE sessions ADD COLUMN cacheRetention TEXT");
     if (!names.has("leaf")) sql.exec("ALTER TABLE sessions ADD COLUMN leaf INTEGER NOT NULL DEFAULT 0");
     sql.exec(
       "CREATE TABLE IF NOT EXISTS workspace_settings(ws TEXT PRIMARY KEY, modelProvider TEXT, modelId TEXT, thinkingLevel TEXT)",
@@ -128,16 +129,17 @@ export class WorkspaceDO implements DurableObject {
     ];
     return rows.length > 0;
   }
-  private readTriple(sid: string): { provider: string | null; id: string | null; thinking: string | null } | null {
+  private readTriple(sid: string): { provider: string | null; id: string | null; thinking: string | null; retention: "short" | "long" } | null {
     const rows = [
-      ...this.state.storage.sql.exec("SELECT modelProvider, modelId, thinkingLevel FROM sessions WHERE sid = ?", sid),
-    ] as Array<{ modelProvider?: unknown; modelId?: unknown; thinkingLevel?: unknown }>;
+      ...this.state.storage.sql.exec("SELECT modelProvider, modelId, thinkingLevel, cacheRetention FROM sessions WHERE sid = ?", sid),
+    ] as Array<{ modelProvider?: unknown; modelId?: unknown; thinkingLevel?: unknown; cacheRetention?: unknown }>;
     if (rows.length === 0) return null;
     const raw = rows[0];
     return {
       provider: typeof raw.modelProvider === "string" ? raw.modelProvider : null,
       id: typeof raw.modelId === "string" ? raw.modelId : null,
       thinking: typeof raw.thinkingLevel === "string" ? raw.thinkingLevel : null,
+      retention: raw.cacheRetention === "long" ? "long" : "short",
     };
   }
 
@@ -364,11 +366,32 @@ export class WorkspaceDO implements DurableObject {
           404,
         );
       }
+      let retention: unknown;
+      let hasRetention = false;
+      try {
+        const body: unknown = await request.json();
+        if (body !== null && typeof body === "object" && "retention" in body) {
+          retention = (body as { retention?: unknown }).retention;
+          hasRetention = true;
+        }
+      } catch {
+        retention = undefined;
+      }
+      const effRetention = hasRetention ? retention : "short";
+      if (effRetention !== "short" && effRetention !== "long") {
+        return json(
+          {
+            error: "bad retention",
+            hint: 'retry with {"retention": "short"|"long"}; omit it for short',
+          },
+          400,
+        );
+      }
       const sessionId = crypto.randomUUID();
       const fence = crypto.randomUUID();
       const defaults = this.readSettings(ws);
       this.state.storage.sql.exec(
-        "INSERT INTO sessions(sid, ws, created_at, ownerFence, revision, modelProvider, modelId, thinkingLevel) VALUES (?, ?, ?, ?, 0, ?, ?, ?)",
+        "INSERT INTO sessions(sid, ws, created_at, ownerFence, revision, modelProvider, modelId, thinkingLevel, cacheRetention) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)",
         sessionId,
         ws,
         new Date().toISOString(),
@@ -376,8 +399,9 @@ export class WorkspaceDO implements DurableObject {
         defaults.provider,
         defaults.id,
         defaults.thinking,
+        effRetention,
       );
-      return json({ sessionId, fence, revision: 0, model: { provider: defaults.provider, id: defaults.id }, thinking: defaults.thinking });
+      return json({ sessionId, fence, revision: 0, model: { provider: defaults.provider, id: defaults.id }, thinking: defaults.thinking, retention: effRetention });
     }
 
     if (request.method === "POST" && url.pathname === "/git") {
@@ -1038,6 +1062,7 @@ export class WorkspaceDO implements DurableObject {
           apiKey: resolveProviderKey(this.env as unknown as RuntimeEnv, respProvider),
           history: { leaf: sessionLeaf(sql, sid), readEntry: (cursor) => getEntry(sql, sid, cursor) },
           sessionId: sid,
+          cacheRetention: stored?.retention ?? "short",
         });
         const turn = await session.run(prompt, { thinking: effThinking });
         recordTurnWithOpen(sql, sid, runId, prompt, turn.toolCalls, turn.result, turn.usage, turn.halt ?? null);
@@ -1204,7 +1229,7 @@ export class WorkspaceDO implements DurableObject {
       const archive = archiveMeta(sql, sid);
       const sums = sumResultUsage(sql, sid);
       const usage = withSessionRates(sums, this.sessionContextWindow(triple));
-      return json({ sid, ws, created, head, count, leaf, openRun, model: { provider: triple?.provider ?? null, id: triple?.id ?? null }, thinking: triple?.thinking ?? null, usage, compaction: { pending: compactionPending(sql, sid), archivePages: archive.pages, archiveTotal: archive.total } });
+      return json({ sid, ws, created, head, count, leaf, openRun, model: { provider: triple?.provider ?? null, id: triple?.id ?? null }, thinking: triple?.thinking ?? null, retention: triple?.retention ?? "short", usage, compaction: { pending: compactionPending(sql, sid), archivePages: archive.pages, archiveTotal: archive.total } });
     }
 
     // POST /compact?ws=&sid= — manual trigger; same runCompaction the alarm runs.
@@ -1317,6 +1342,7 @@ export class WorkspaceDO implements DurableObject {
       shell: this.env.SHELL_WORKER,
       runtimeEnv: this.env as unknown as RuntimeEnv,
       thinking: triple?.thinking ?? null,
+      retention: triple?.retention ?? "short",
       model: triple?.provider != null && triple?.id != null ? { provider: triple.provider, id: triple.id } : null,
       workspaceKnown: ws !== "" && this.workspaceExists(ws),
       sessionKnown: ws !== "" && sid !== "" && this.sessionExists(ws, sid),

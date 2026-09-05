@@ -32,6 +32,7 @@ export interface StreamHost {
   shell: StreamShell;
   runtimeEnv: RuntimeEnv;
   thinking: string | null;
+  retention: "short" | "long";
   model: { provider: string; id: string } | null;
   workspaceKnown: boolean;
   sessionKnown: boolean;
@@ -293,6 +294,7 @@ async function startTurn(
       apiKey: stub ? undefined : resolveProviderKey(host.runtimeEnv, respProvider),
       history: { leaf: historyLeaf, readEntry: (cursor) => getEntry(host.sql, host.sid, cursor) },
       sessionId: host.sid,
+      cacheRetention: host.retention,
     });
     const turn = await session.run(prompt, {
       signal: turnController.signal,
