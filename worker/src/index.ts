@@ -61,7 +61,11 @@ export default {
       inner.searchParams.set("ws", workspaceId);
       return await env.WORKSPACE_DO.get(
         env.WORKSPACE_DO.idFromName(workspaceId),
-      ).fetch(inner.toString(), { method: "POST" });
+      ).fetch(inner.toString(), {
+        method: request.method,
+        headers: { "content-type": "application/json" },
+        body: rawBody,
+      } as RequestInit);
     }
 
     // POST /workspaces/:id/sessions/:sid/git → narrow argv git (allowlist first)

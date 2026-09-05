@@ -298,6 +298,7 @@ function parseResultUsage(body: string): Omit<SessionUsage, "tokensPerSec"> {
     cacheRead: "cacheRead" in usage ? num(usage.cacheRead) : 0,
     costTotal: "costTotal" in usage ? num(usage.costTotal) : 0,
     elapsedMs: "elapsedMs" in usage ? num(usage.elapsedMs) : 0,
+    ...("retention" in usage && usage.retention === "long" ? { retention: "long" as const } : {}),
   };
 }
 
