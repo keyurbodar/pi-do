@@ -103,6 +103,17 @@ function freshBash(): Bash {
 }
 
 const sessions = new Map<string, ExecSession>();
+export const MAX_BG_PROCESSES = 64;
+interface BgProcess {
+  bash: Bash;
+  controller: AbortController;
+  done: boolean;
+  result: ShellExecResult | null;
+  startedAt: number;
+  killRequested: boolean;
+  timedOut: boolean;
+}
+const bgProcesses = new Map<string, BgProcess>();
 
 export class ShellWorker<Env = unknown> extends WorkerEntrypoint<Env> {
   private sessions = sessions;
@@ -213,6 +224,91 @@ export class ShellWorker<Env = unknown> extends WorkerEntrypoint<Env> {
       return { disposed: true, stdoutBytes: session.stdoutBytes, stderrBytes: session.stderrBytes };
     }
     return { disposed: true, stdoutBytes: 0, stderrBytes: 0 };
+  }
+
+  async bgStart(input: { command: string; cwd?: string; env?: Record<string, string> }): Promise<{ handle: string }> {
+    const command = input?.command;
+    if (typeof command !== "string" || command.length === 0) {
+      throw new Error("bg needs a command string");
+    }
+    const cwd = resolveCwd(input.cwd, DEFAULT_CWD);
+    if (bgProcesses.size >= MAX_BG_PROCESSES) {
+      let oldest: string | undefined;
+      let oldestStarted = Infinity;
+      for (const [handle, entry] of bgProcesses) {
+        if (!entry.done) continue;
+        if (entry.startedAt < oldestStarted) {
+          oldest = handle;
+          oldestStarted = entry.startedAt;
+        }
+      }
+      if (oldest === undefined) {
+        throw new Error(`bg processes full (${MAX_BG_PROCESSES} live, all running): kill one first`);
+      }
+      bgProcesses.delete(oldest);
+      throw new Error(`bg processes full (${MAX_BG_PROCESSES} live): disposed oldest done process ${oldest} to make room, retry the command`);
+    }
+    const handle = `bg-${crypto.randomUUID()}`;
+    const controller = new AbortController();
+    const entry: BgProcess = { bash: freshBash(), controller, done: false, result: null, startedAt: Date.now(), killRequested: false, timedOut: false };
+    bgProcesses.set(handle, entry);
+    const timer = setTimeout(() => {
+      entry.timedOut = true;
+      controller.abort(new Error("Execution timed out"));
+    }, EXEC_TIMEOUT_MS);
+    void (async () => {
+      try {
+        const result = await entry.bash.exec(command, { cwd, env: input.env, signal: controller.signal });
+        if (entry.timedOut || entry.killRequested || controller.signal.aborted) {
+          entry.result = { stdout: "", stderr: "", exit: 124, timedOut: true, killed: entry.killRequested };
+        } else {
+          entry.result = { stdout: truncate(result.stdout), stderr: truncate(result.stderr), exit: result.exitCode, timedOut: false, killed: false };
+        }
+      } catch (error) {
+        if (entry.timedOut || entry.killRequested || controller.signal.aborted) {
+          entry.result = { stdout: "", stderr: "", exit: 124, timedOut: true, killed: entry.killRequested };
+        } else {
+          const message = error instanceof Error ? error.message : String(error);
+          entry.result = { stdout: "", stderr: truncate(`${message}\n`), exit: 1, timedOut: false, killed: false };
+        }
+      } finally {
+        clearTimeout(timer);
+        entry.done = true;
+      }
+    })();
+    return { handle };
+  }
+  async bgRead(input: { handle: string }): Promise<{ done: boolean; stdout?: string; stderr?: string; exit?: number; timedOut?: boolean; killed?: boolean }> {
+    const handle = input?.handle;
+    if (typeof handle !== "string" || handle.length === 0) {
+      throw new Error("bg needs a handle string");
+    }
+    const entry = bgProcesses.get(handle);
+    if (entry === undefined) {
+      throw new Error(`no such bg process: ${handle}`);
+    }
+    if (!entry.done || entry.result === null) {
+      return { done: false };
+    }
+    return { done: true, stdout: entry.result.stdout, stderr: entry.result.stderr, exit: entry.result.exit, timedOut: entry.result.timedOut, killed: entry.result.killed };
+  }
+  async bgKill(input: { handle: string }): Promise<{ killed: boolean }> {
+    const handle = input?.handle;
+    if (typeof handle !== "string" || handle.length === 0) {
+      throw new Error("bg needs a handle string");
+    }
+    const entry = bgProcesses.get(handle);
+    if (entry === undefined) {
+      throw new Error(`no such bg process: ${handle}`);
+    }
+    if (!entry.done) {
+      entry.killRequested = true;
+      entry.controller.abort(new Error("Execution killed"));
+      bgProcesses.delete(handle);
+      return { killed: true };
+    }
+    bgProcesses.delete(handle);
+    return { killed: false };
   }
 }
 

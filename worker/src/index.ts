@@ -13,6 +13,9 @@ interface ShellWorkerEntrypoint {
   }): Promise<{ stdout: string; stderr: string; exit: number; timedOut: boolean; killed: boolean }>;
   kill(input: { sid: string }): Promise<{ killed: boolean }>;
   dispose(input: { sid: string }): Promise<{ disposed: true; stdoutBytes: number; stderrBytes: number }>;
+  bgStart(input: { command: string; cwd?: string; env?: Record<string, string> }): Promise<{ handle: string }>;
+  bgRead(input: { handle: string }): Promise<{ done: boolean; stdout?: string; stderr?: string; exit?: number; timedOut?: boolean; killed?: boolean }>;
+  bgKill(input: { handle: string }): Promise<{ killed: boolean }>;
 }
 
 interface Env {
@@ -539,6 +542,189 @@ export default {
       }
       const outcome = await env.SHELL_WORKER.dispose({ sid: body.sid });
       return Response.json({ disposed: outcome.disposed, stdoutBytes: outcome.stdoutBytes, stderrBytes: outcome.stderrBytes });
+    }
+    if (
+      request.method === "POST" &&
+      parts.length === 3 &&
+      parts[0] === "workspaces" &&
+      parts[2] === "bg"
+    ) {
+      const workspaceId = parts[1];
+      const probe = await env.WORKSPACE_DO.get(
+        env.WORKSPACE_DO.idFromName(workspaceId),
+      ).fetch(`http://do/exists?ws=${encodeURIComponent(workspaceId)}`);
+      if (probe.status === 404) {
+        return Response.json(
+          {
+            error: "unknown workspace",
+            hint: "create one with POST /workspaces first",
+          },
+          { status: 404 },
+        );
+      }
+      let body: { command?: unknown; cwd?: unknown; env?: unknown };
+      try {
+        body = JSON.parse(new TextDecoder().decode(rawBody)) as typeof body;
+      } catch {
+        return Response.json(
+          {
+            error: "missing command",
+            hint: 'retry as POST /workspaces/:id/bg with JSON {"command": "sleep 30"}',
+          },
+          { status: 400 },
+        );
+      }
+      if (typeof body?.command !== "string" || body.command.length === 0) {
+        return Response.json(
+          {
+            error: "missing command",
+            hint: 'retry as POST /workspaces/:id/bg with JSON {"command": "sleep 30"}',
+          },
+          { status: 400 },
+        );
+      }
+      if (body.cwd !== undefined && typeof body.cwd !== "string") {
+        return Response.json(
+          {
+            error: "bad cwd",
+            hint: 'cwd must be a string path, e.g. {"command": "pwd", "cwd": "/workspace"}',
+          },
+          { status: 400 },
+        );
+      }
+      try {
+        const outcome = await env.SHELL_WORKER.bgStart({
+          command: body.command,
+          cwd: body.cwd,
+          env: body.env as Record<string, string> | undefined,
+        });
+        return Response.json({ handle: outcome.handle });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        if (message.startsWith("exec cwd escapes")) {
+          return Response.json(
+            {
+              error: message,
+              hint: "stay under /workspace, e.g. {\"command\": \"pwd\", \"cwd\": \"/workspace\"}",
+            },
+            { status: 400 },
+          );
+        }
+        if (message.startsWith("bg processes full")) {
+          return Response.json(
+            {
+              error: message,
+              hint: "kill a running process via POST /workspaces/:id/bg/kill, then retry",
+            },
+            { status: 429 },
+          );
+        }
+        throw e;
+      }
+    }
+    if (
+      request.method === "GET" &&
+      parts.length === 3 &&
+      parts[0] === "workspaces" &&
+      parts[2] === "bg"
+    ) {
+      const workspaceId = parts[1];
+      const probe = await env.WORKSPACE_DO.get(
+        env.WORKSPACE_DO.idFromName(workspaceId),
+      ).fetch(`http://do/exists?ws=${encodeURIComponent(workspaceId)}`);
+      if (probe.status === 404) {
+        return Response.json(
+          {
+            error: "unknown workspace",
+            hint: "create one with POST /workspaces first",
+          },
+          { status: 404 },
+        );
+      }
+      const handle = url.searchParams.get("handle");
+      if (handle === null || handle.length === 0) {
+        return Response.json(
+          {
+            error: "missing handle",
+            hint: "retry as GET /workspaces/:id/bg?handle=H with the handle from POST /workspaces/:id/bg",
+          },
+          { status: 400 },
+        );
+      }
+      try {
+        const result = await env.SHELL_WORKER.bgRead({ handle });
+        return Response.json(result);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        if (message.startsWith("no such bg process")) {
+          return Response.json(
+            {
+              error: message,
+              hint: "start one with POST /workspaces/:id/bg first, or it was killed",
+            },
+            { status: 404 },
+          );
+        }
+        throw e;
+      }
+    }
+    if (
+      request.method === "POST" &&
+      parts.length === 4 &&
+      parts[0] === "workspaces" &&
+      parts[2] === "bg" &&
+      parts[3] === "kill"
+    ) {
+      const workspaceId = parts[1];
+      const probe = await env.WORKSPACE_DO.get(
+        env.WORKSPACE_DO.idFromName(workspaceId),
+      ).fetch(`http://do/exists?ws=${encodeURIComponent(workspaceId)}`);
+      if (probe.status === 404) {
+        return Response.json(
+          {
+            error: "unknown workspace",
+            hint: "create one with POST /workspaces first",
+          },
+          { status: 404 },
+        );
+      }
+      let body: { handle?: unknown };
+      try {
+        body = JSON.parse(new TextDecoder().decode(rawBody)) as typeof body;
+      } catch {
+        return Response.json(
+          {
+            error: "missing handle",
+            hint: 'retry as POST /workspaces/:id/bg/kill with JSON {"handle": "bg-..."}',
+          },
+          { status: 400 },
+        );
+      }
+      if (typeof body?.handle !== "string" || body.handle.length === 0) {
+        return Response.json(
+          {
+            error: "missing handle",
+            hint: 'retry as POST /workspaces/:id/bg/kill with JSON {"handle": "bg-..."}',
+          },
+          { status: 400 },
+        );
+      }
+      try {
+        const outcome = await env.SHELL_WORKER.bgKill({ handle: body.handle });
+        return Response.json({ killed: outcome.killed });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        if (message.startsWith("no such bg process")) {
+          return Response.json(
+            {
+              error: message,
+              hint: "start one with POST /workspaces/:id/bg first, or it was killed",
+            },
+            { status: 404 },
+          );
+        }
+        throw e;
+      }
     }
 
     // GET /workspaces/:id/sessions/:sid/stream → WS upgrade for live turns.
