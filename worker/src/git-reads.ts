@@ -1,21 +1,16 @@
-// git-reads.ts — narrow argv dispatcher for PR05.
-//
-// Reuses the argv-dispatcher shape from refs/computer/src/git/cli.ts (single
-// `runGitCli`-style switch over argv[0] onto dependency-injected cores), not
-// the code: the allowlist gate runs before anything executes, reads go through
-// isomorphic-git over the workspace fs adapter, writes never execute.
+import { add, branch, checkout, commit, init, log, readBlob, readCommit, remove, resolveRef, statusMatrix } from "isomorphic-git";
 
-import { log, readBlob, readCommit, resolveRef, statusMatrix } from "isomorphic-git";
 export const READ_SUBCOMMANDS: Record<string, true> = { status: true, log: true, diff: true, show: true };
-
-// Local writes with no network side effects. Deferred to a later PR; they
-// answer 501 so callers can distinguish "forbidden" (403) from "not yet" (501).
-const DEFERRED_WRITES: Record<string, true> = {
+export const WRITE_SUBCOMMANDS: Record<string, true> = {
   add: true,
   commit: true,
   rm: true,
   checkout: true,
   switch: true,
+  init: true,
+};
+
+const DEFERRED: Record<string, true> = {
   branch: true,
   tag: true,
   reset: true,
@@ -24,13 +19,13 @@ const DEFERRED_WRITES: Record<string, true> = {
   rebase: true,
   "cherry-pick": true,
   revert: true,
-  init: true,
   mv: true,
   clean: true,
   restore: true,
 };
 
-export const READ_HINT = "allowed argv: status, log, diff, show; writes are deferred";
+export const READ_HINT =
+  "allowed argv: status, log, diff, show, add, commit, rm, checkout, switch, init; forbidden: clone, fetch, push";
 
 export class NotARepoError extends Error {
   constructor(readonly dir = "/") {
@@ -42,7 +37,7 @@ export class NotARepoError extends Error {
 export function notARepoBody(): { error: string; hint: string } {
   return {
     error: "not a git repository",
-    hint: "upload a .git directory via PUT /workspaces/:id/files?path=.git/HEAD (then objects/ + refs/), or wait for git init (lands after PR05)",
+    hint: "upload a .git directory via PUT /workspaces/:id/files?path=.git/HEAD (then objects/ + refs/), or run git init",
   };
 }
 
@@ -69,8 +64,9 @@ export function gateArgv(argv: unknown): Gate {
     return { ok: false, status: 403, error: `git ${sub} forbidden`, hint: READ_HINT };
   }
   if (READ_SUBCOMMANDS[sub] === true) return { ok: true, sub, rest: rest as string[] };
-  if (DEFERRED_WRITES[sub] === true) {
-    return { ok: false, status: 501, error: `git ${sub} deferred`, hint: `writes land after PR05; ${READ_HINT}` };
+  if (WRITE_SUBCOMMANDS[sub] === true) return { ok: true, sub, rest: rest as string[] };
+  if (DEFERRED[sub] === true) {
+    return { ok: false, status: 501, error: `git ${sub} not yet supported`, hint: READ_HINT };
   }
   return { ok: false, status: 403, error: `git ${sub} forbidden`, hint: READ_HINT };
 }
@@ -94,10 +90,33 @@ export interface GitReadResult {
   files?: Array<{ path: string; index?: string; worktree?: string; change?: string }>;
   commits?: Array<{ oid: string; message: string }>;
   commit?: { oid: string; message: string };
+  ref?: string;
 }
+
+const AUTHOR = { name: "pi-do", email: "pi-do@local" };
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e ?? "unknown error");
+}
+
+function stripLeading(p: string): string {
+  return p.replace(/^\/+/, "");
+}
+
+type UnlinkFn = (p: string) => Promise<void>;
+
+function unlinkOf(fs: object): UnlinkFn | undefined {
+  if (fs !== null && typeof fs === "object" && "promises" in fs) {
+    const promises = fs.promises;
+    if (promises !== null && typeof promises === "object" && "unlink" in promises) {
+      const unlink = promises.unlink;
+      if (typeof unlink === "function") {
+        const fn: UnlinkFn = unlink as UnlinkFn;
+        return fn;
+      }
+    }
+  }
+  return undefined;
 }
 
 async function runStatus(fs: object): Promise<GitReadResult> {
@@ -196,6 +215,160 @@ export async function runGitRead(fs: object, sub: string, rest: string[]): Promi
       return runDiff(fs);
     case "show":
       return runShow(fs, rest);
+    default:
+      throw new Error(`git ${sub} forbidden`);
+  }
+}
+
+async function runAdd(fs: object, rest: string[]): Promise<GitReadResult> {
+  if (rest.length === 0) throw new Error("git add needs <path...>");
+  const paths = rest.map((p) => stripLeading(p));
+  for (const p of paths) {
+    if (!p) throw new Error("git add needs <path...>");
+  }
+  try {
+    for (const filepath of paths) {
+      await add({ fs: fs as never, dir: "/", filepath });
+    }
+  } catch (e) {
+    if (e instanceof NotARepoError) throw e;
+    if (isNotARepoCause(e)) throw new NotARepoError("/");
+    throw new Error(`git add failed: ${errMsg(e)}`);
+  }
+  const files = paths.map((path) => ({ path, change: "A" }));
+  return { stdout: files.map((f) => `${f.change} ${f.path}`).join("\n") + "\n", files };
+}
+
+async function runRm(fs: object, rest: string[]): Promise<GitReadResult> {
+  if (rest.length === 0) throw new Error("git rm needs <path...>");
+  const paths = rest.map((p) => stripLeading(p));
+  for (const p of paths) {
+    if (!p) throw new Error("git rm needs <path...>");
+  }
+  try {
+    const unlink = unlinkOf(fs);
+    for (const filepath of paths) {
+      await remove({ fs: fs as never, dir: "/", filepath });
+      try {
+        await unlink?.(filepath);
+      } catch {
+      }
+    }
+  } catch (e) {
+    if (e instanceof NotARepoError) throw e;
+    if (isNotARepoCause(e)) throw new NotARepoError("/");
+    throw new Error(`git rm failed: ${errMsg(e)}`);
+  }
+  const files = paths.map((path) => ({ path, change: "D" }));
+  return { stdout: files.map((f) => `${f.change} ${f.path}`).join("\n") + "\n", files };
+}
+
+async function runCommit(fs: object, rest: string[]): Promise<GitReadResult> {
+  let message: string | undefined;
+  const paths: string[] = [];
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i];
+    if (arg === "-m" || arg === "--message") {
+      const value = rest[i + 1];
+      if (value === undefined) throw new Error("git commit needs -m <message>");
+      message = value;
+      i++;
+    } else if (arg === "--") {
+      paths.push(...rest.slice(i + 1));
+      break;
+    } else if (arg.startsWith("-")) {
+      throw new Error(`git commit needs -m <message>: unknown flag '${arg}'`);
+    } else {
+      paths.push(arg);
+    }
+  }
+  if (message === undefined || message.length === 0) throw new Error("git commit needs -m <message>");
+  const filepaths = paths.map((p) => stripLeading(p));
+  for (const p of filepaths) {
+    if (!p) throw new Error("git commit needs <path...>: bad path");
+  }
+  try {
+    for (const filepath of filepaths) {
+      await add({ fs: fs as never, dir: "/", filepath });
+    }
+    const oid = (await commit({ fs: fs as never, dir: "/", message, author: AUTHOR })) as unknown as string;
+    return { stdout: `${oid} ${message.split("\n")[0]}\n`, commit: { oid, message } };
+  } catch (e) {
+    if (e instanceof NotARepoError) throw e;
+    if (isNotARepoCause(e)) throw new NotARepoError("/");
+    throw new Error(`git commit failed: ${errMsg(e)}`);
+  }
+}
+
+async function runCheckout(fs: object, sub: string, rest: string[]): Promise<GitReadResult> {
+  let ref: string | undefined;
+  let create = false;
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i];
+    if (arg === "-b" || arg === "-c") {
+      const value = rest[i + 1];
+      if (value === undefined) throw new Error(`git ${sub} needs <ref> or -b <new-branch>`);
+      ref = stripLeading(value);
+      create = true;
+      i++;
+    } else if (arg.startsWith("-")) {
+      throw new Error(`git ${sub} needs <ref> or -b <new-branch>: unknown flag '${arg}'`);
+    } else {
+      if (ref !== undefined) throw new Error(`git ${sub} needs <ref> or -b <new-branch>: too many args`);
+      ref = arg;
+    }
+  }
+  if (ref === undefined || ref === "") throw new Error(`git ${sub} needs <ref> or -b <new-branch>`);
+  try {
+    if (create) {
+      await branch({ fs: fs as never, dir: "/", ref, checkout: true });
+    } else {
+      await checkout({ fs: fs as never, dir: "/", ref });
+    }
+  } catch (e) {
+    if (e instanceof NotARepoError) throw e;
+    if (isNotARepoCause(e)) throw new NotARepoError("/");
+    throw new Error(`git ${sub} failed: ${errMsg(e)}`);
+  }
+  return { stdout: `${sub} ${ref}\n`, ref };
+}
+
+async function runInit(fs: object, rest: string[]): Promise<GitReadResult> {
+  let defaultBranch = "main";
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i];
+    if (arg === "-b" || arg === "--default-branch") {
+      const value = rest[i + 1];
+      if (value === undefined || value === "") throw new Error("git init takes [] or [-b|--default-branch <branch>]");
+      defaultBranch = stripLeading(value) || "main";
+      i++;
+    } else if (arg.startsWith("-")) {
+      throw new Error("git init takes [] or [-b|--default-branch <branch>]: unknown flag");
+    } else {
+      throw new Error("git init takes [] or [-b|--default-branch <branch>]");
+    }
+  }
+  try {
+    await init({ fs: fs as never, dir: "/", defaultBranch });
+  } catch (e) {
+    throw new Error(`git init failed: ${errMsg(e)}`);
+  }
+  return { stdout: `init ${defaultBranch}\n`, ref: defaultBranch };
+}
+
+export async function runGitWrite(fs: object, sub: string, rest: string[]): Promise<GitReadResult> {
+  switch (sub) {
+    case "add":
+      return runAdd(fs, rest);
+    case "rm":
+      return runRm(fs, rest);
+    case "commit":
+      return runCommit(fs, rest);
+    case "checkout":
+    case "switch":
+      return runCheckout(fs, sub, rest);
+    case "init":
+      return runInit(fs, rest);
     default:
       throw new Error(`git ${sub} forbidden`);
   }

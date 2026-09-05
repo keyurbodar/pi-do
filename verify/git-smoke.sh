@@ -62,15 +62,16 @@ test "${CODE2}" = "404" || { echo "FAIL: status after push must stay 404, got ${
 test "${LS_BEFORE}" = "${LS_AFTER}" || { echo "FAIL: files changed after rejected push"; exit 1; }
 echo "PASS push 403, nothing executed"
 
-echo "### 5 writes deferred: git commit is 501"
+echo "### 5 commit without a repo is structured not-a-repo (never 501/500)"
 CODE="$(curl -s -o "${OUT}/commit.body" -w '%{http_code}' --max-time 10 -X POST \
   "${BASE}/workspaces/${WS}/sessions/${SID}/git" \
   -H 'content-type: application/json' -d '{"argv":["commit","-m","x"]}')"
 echo "commit code=${CODE}"
 cat "${OUT}/commit.body"; echo
-test "${CODE}" = "501" || { echo "FAIL: expected 501 on commit, got ${CODE}"; exit 1; }
-need_hint "${OUT}/commit.body" || { echo "FAIL: 501 body needs error+hint"; exit 1; }
-echo "PASS commit 501"
+test "${CODE}" = "404" || { echo "FAIL: expected 404 not-a-repo, got ${CODE}"; exit 1; }
+need_hint "${OUT}/commit.body" || { echo "FAIL: not-a-repo body needs error+hint"; exit 1; }
+grep -q "not a git repository" "${OUT}/commit.body" || { echo "FAIL: body must say not a git repository"; exit 1; }
+echo "PASS commit without repo 404"
 
 echo "### 6 unknown workspace session mint is 404 with hint"
 CODE="$(curl -s -o "${OUT}/nosuch-ws.body" -w '%{http_code}' --max-time 10 -X POST \

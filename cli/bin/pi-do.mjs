@@ -245,16 +245,18 @@ example:
   pi-do settings --ws <id> --model anthropic/claude-opus-4-6 --level high
 `;
 
-const GIT_HELP = `pi-do git — narrow git reads over a session
+const GIT_HELP = `pi-do git — narrow git reads and local writes over a session
 
 usage:
   pi-do git --ws WS --sid SID [--base URL] [--json] <argv...>
   pi-do git --ws WS --sid SID [--base URL] [--json] -- <argv...>
 
 behavior:
-  POSTs { argv } to /workspaces/:id/sessions/:sid/git. Reads only:
-  status, log, diff, show. Anything else is rejected before anything
-  executes (403 forbidden, or 501 when the verb is a deferred write).
+  POSTs { argv } to /workspaces/:id/sessions/:sid/git. Reads:
+  status, log, diff, show. Local writes: add, commit, rm,
+  checkout/switch, init. Anything else is rejected before anything
+  executes (403 forbidden for clone/fetch/push, or 501 when the verb
+  is a deferred write).
 
 exit codes:
   0  ok (stdout is the command output)

@@ -1,19 +1,9 @@
-// git-fs.ts — isomorphic-git fs adapter over the workspace files table.
-//
-// Shape reuse (not code) from refs/computer/packages/computer/src/git/adapter.ts:
-// isomorphic-git wants an `fs` object whose `.promises` is an own property
-// implementing the node:fs/promises subset it probes. We back that subset
-// with one in-memory snapshot of the files table per request (flat key list,
-// directories synthesized from prefixes). Read-only: write entry points throw
-// EROFS so a buggy caller fails loudly instead of silently dropping a write.
-
 export interface WorkspaceFile {
   path: string;
   body: Uint8Array;
 }
 
 function normalize(p: string): string | null {
-  // Strip leading slashes, drop one trailing slash, reject dot-dot.
   const clean = p.replace(/^\/+/, "").replace(/\/$/, "");
   const parts = clean.split("/");
   for (const seg of parts) {
@@ -28,27 +18,31 @@ function enoent(p: string): Error {
   return e;
 }
 
+function enotdir(p: string): Error {
+  const e = new Error(`ENOTDIR: not a directory, scandir '${p}'`) as Error & { code: string };
+  e.code = "ENOTDIR";
+  return e;
+}
+
 function erofs(op: string): Error {
-  const e = new Error(`EROFS: writes deferred, '${op}' unavailable in PR05`) as Error & { code: string };
+  const e = new Error(`EROFS: operation not supported, '${op}'`) as Error & { code: string };
   e.code = "EROFS";
   return e;
 }
 
-export function createWorkspaceFs(files: WorkspaceFile[]): { promises: Record<string, unknown> } {
+export function createWorkspaceFs(files: WorkspaceFile[]): {
+  promises: Record<string, unknown>;
+  dirty(): { upserts: WorkspaceFile[]; deletes: string[] };
+} {
   const map = new Map<string, Uint8Array>();
   for (const f of files) {
     const key = normalize(f.path);
     if (key === null || key === "") continue;
-    map.set(key, f.body);
+    map.set(key, f.body.slice(0));
   }
-  // Ephemeral index overlay: statusMatrix refreshes `.git/index` (via an
-  // `index.lock` + rename) even on pure reads. Those bytes live only in this
-  // per-request map and never reach the files table — the VFS is unchanged.
-  const overlay = new Map<string, Uint8Array>();
-  const isEphemeralIndex = (key: string): boolean =>
-    key === ".git/index" || key === ".git/index.lock";
-  const fileBytes = (key: string): Uint8Array | undefined =>
-    (isEphemeralIndex(key) ? overlay.get(key) : undefined) ?? map.get(key);
+  const snapshot = new Map<string, Uint8Array>();
+  for (const [key, bytes] of map) snapshot.set(key, bytes.slice(0));
+
   const toBytes = (data: unknown): Uint8Array => {
     if (data instanceof Uint8Array) return data.slice(0);
     if (typeof data === "string") return new TextEncoder().encode(data);
@@ -59,9 +53,17 @@ export function createWorkspaceFs(files: WorkspaceFile[]): { promises: Record<st
     return new Uint8Array(0);
   };
 
-  const isFile = (key: string): boolean => map.has(key) || overlay.has(key);
+  const sameBytes = (a: Uint8Array, b: Uint8Array): boolean => {
+    if (a.byteLength !== b.byteLength) return false;
+    for (let i = 0; i < a.byteLength; i++) {
+      if (a[i] !== b[i]) return false;
+    }
+    return true;
+  };
+
+  const isFile = (key: string): boolean => map.has(key);
   const isDir = (key: string): boolean => {
-    if (key === "") return map.size > 0;
+    if (key === "") return true;
     const prefix = `${key}/`;
     for (const k of map.keys()) {
       if (k.startsWith(prefix)) return true;
@@ -69,12 +71,10 @@ export function createWorkspaceFs(files: WorkspaceFile[]): { promises: Record<st
     return false;
   };
 
-  // Fixed timestamps: determinism beats realism. isomorphic-git calls
-  // stat.mtime.valueOf() during statusMatrix, so all three must exist.
   const STAMP = new Date("2025-01-01T00:00:00.000Z");
   const statLike = (key: string, display: string) => {
     if (isFile(key)) {
-      const size = fileBytes(key)?.byteLength ?? 0;
+      const size = map.get(key)?.byteLength ?? 0;
       return {
         type: "file" as const,
         mode: 0o100644,
@@ -116,7 +116,7 @@ export function createWorkspaceFs(files: WorkspaceFile[]): { promises: Record<st
     readFile: async (filePath: string, options?: unknown): Promise<Uint8Array | string> => {
       const key = normalize(String(filePath));
       if (key === null || key === "") throw enoent(String(filePath));
-      const bytes = fileBytes(key);
+      const bytes = map.get(key);
       if (!bytes) throw enoent(String(filePath));
       const enc = decodeOpt(options);
       if (enc && /utf-?8/i.test(enc)) return new TextDecoder().decode(bytes);
@@ -125,15 +125,11 @@ export function createWorkspaceFs(files: WorkspaceFile[]): { promises: Record<st
     readdir: async (dirPath: string): Promise<string[]> => {
       const key = normalize(String(dirPath));
       if (key === null) throw enoent(String(dirPath));
-      if (isFile(key)) {
-        const e = new Error(`ENOTDIR: not a directory, scandir '${dirPath}'`) as Error & { code: string };
-        e.code = "ENOTDIR";
-        throw e;
-      }
+      if (isFile(key)) throw enotdir(String(dirPath));
       if (!isDir(key)) throw enoent(String(dirPath));
       const prefix = key === "" ? "" : `${key}/`;
       const kids = new Set<string>();
-      for (const k of [...map.keys(), ...overlay.keys()]) {
+      for (const k of map.keys()) {
         if (!k.startsWith(prefix)) continue;
         const rest = k.slice(prefix.length);
         const seg = rest.split("/")[0];
@@ -150,51 +146,58 @@ export function createWorkspaceFs(files: WorkspaceFile[]): { promises: Record<st
     readlink: async (p: string): Promise<string> => {
       throw enoent(String(p));
     },
-    // Write entry points: present so probing sees them, refusing everything
-    // except the ephemeral index refresh described above.
     writeFile: async (p: string, data?: unknown): Promise<void> => {
       const key = normalize(String(p));
-      if (key !== null && isEphemeralIndex(key)) {
-        overlay.set(key, toBytes(data));
-        return;
-      }
-      throw erofs(`writeFile ${p}`);
+      if (key === null || key === "") throw enoent(String(p));
+      map.set(key, toBytes(data));
     },
-    // Ensure-dir probe: isomorphic-git mkdirs the gitdir before reads.
-    // No-op when the dir already exists in the snapshot (nothing changes);
-    // anything else stays EROFS — writes wait.
+    appendFile: async (p: string, data?: unknown): Promise<void> => {
+      const key = normalize(String(p));
+      if (key === null || key === "") throw enoent(String(p));
+      const prev = map.get(key) ?? new Uint8Array(0);
+      const next = toBytes(data);
+      const out = new Uint8Array(prev.byteLength + next.byteLength);
+      out.set(prev, 0);
+      out.set(next, prev.byteLength);
+      map.set(key, out);
+    },
     mkdir: async (p: string): Promise<void> => {
       const key = normalize(String(p));
-      if (key !== null && (key === "" || isDir(key) || isFile(key))) return;
-      throw erofs(`mkdir ${p}`);
+      if (key === null) throw enoent(String(p));
     },
-    // Lock release for the ephemeral index refresh: drop the overlay copy.
-    // Anything outside `.git/index*` stays EROFS.
     unlink: async (p: string): Promise<void> => {
       const key = normalize(String(p));
-      if (key !== null && isEphemeralIndex(key) && overlay.delete(key)) return;
-      if (key !== null && isEphemeralIndex(key) && !map.has(key)) throw enoent(String(p));
-      throw erofs(`unlink ${p}`);
+      if (key === null || key === "") throw enoent(String(p));
+      if (!map.delete(key)) throw enoent(String(p));
     },
-    // Lock commit for the ephemeral index refresh: move overlay bytes to the
-    // overlay index copy. Never touches the files table.
     rename: async (oldP: string, newP: string): Promise<void> => {
       const oldKey = normalize(String(oldP));
       const newKey = normalize(String(newP));
-      if (oldKey !== null && newKey !== null && isEphemeralIndex(oldKey) && isEphemeralIndex(newKey)) {
-        const bytes = fileBytes(oldKey);
-        if (!bytes) throw enoent(String(oldP));
-        overlay.set(newKey, bytes);
-        overlay.delete(oldKey);
-        return;
-      }
-      throw erofs(`rename ${oldP} -> ${newP}`);
+      if (oldKey === null || oldKey === "" || newKey === null || newKey === "") throw enoent(String(oldP));
+      const bytes = map.get(oldKey);
+      if (!bytes) throw enoent(String(oldP));
+      map.set(newKey, bytes);
+      map.delete(oldKey);
     },
     rmdir: async (p: string): Promise<void> => {
-      throw erofs(`rmdir ${p}`);
+      const key = normalize(String(p));
+      if (key === null) throw enoent(String(p));
+      if (isFile(key)) throw enotdir(String(p));
+      if (!isDir(key)) throw enoent(String(p));
     },
     rm: async (p: string): Promise<void> => {
-      throw erofs(`rm ${p}`);
+      const key = normalize(String(p));
+      if (key === null || key === "") throw enoent(String(p));
+      if (map.delete(key)) return;
+      const prefix = `${key}/`;
+      let found = false;
+      for (const k of [...map.keys()]) {
+        if (k.startsWith(prefix)) {
+          map.delete(k);
+          found = true;
+        }
+      }
+      if (!found) throw enoent(String(p));
     },
     symlink: async (): Promise<void> => {
       throw erofs("symlink");
@@ -204,10 +207,23 @@ export function createWorkspaceFs(files: WorkspaceFile[]): { promises: Record<st
     },
   };
 
-  return { promises };
+  return {
+    promises,
+    dirty: () => {
+      const upserts: WorkspaceFile[] = [];
+      const deletes: string[] = [];
+      for (const [key, bytes] of map) {
+        const orig = snapshot.get(key);
+        if (!orig || !sameBytes(orig, bytes)) upserts.push({ path: key, body: bytes.slice(0) });
+      }
+      for (const key of snapshot.keys()) {
+        if (!map.has(key)) deletes.push(key);
+      }
+      return { upserts, deletes };
+    },
+  };
 }
 
-/** True when the snapshot carries a `.git/` tree (leading slash tolerated). */
 export function hasGitDir(files: WorkspaceFile[]): boolean {
   return files.some((f) => {
     const key = normalize(f.path);
