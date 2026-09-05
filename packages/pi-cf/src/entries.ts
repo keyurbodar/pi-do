@@ -1,7 +1,7 @@
 // entries.ts — sole writer of pi_entries plus the runs open/close ledger.
 // Pure functions over a minimal SQL interface; no DO imports, so the same
 // logic runs against the DO SqlStorage and the in-memory fake in verify-runs.
-import type { SessionUsage } from "./session";
+import type { SessionHalt, SessionUsage } from "./session";
 
 export interface EntriesSql {
   exec(query: string, ...bindings: unknown[]): Iterable<unknown>;
@@ -215,13 +215,16 @@ function recordTurnInner(
   toolCalls: TurnCall[],
   result: string,
   usage?: SessionUsage,
+  halt?: SessionHalt | null,
 ): void {
   appendEntry(sql, sid, "prompt", { runId, prompt });
   for (const call of toolCalls) {
     appendEntry(sql, sid, "toolCall", { runId, id: call.id, tool: call.tool, args: call.args });
     appendEntry(sql, sid, "toolResult", { runId, id: call.id, tool: call.tool, output: call.output });
   }
-  appendEntry(sql, sid, "result", usage === undefined ? { runId, result } : { runId, result, usage });
+  const resultBody: { runId: string; result: string; usage?: SessionUsage; halt?: SessionHalt } = usage === undefined ? { runId, result } : { runId, result, usage };
+  if (halt !== undefined && halt !== null) resultBody.halt = halt;
+  appendEntry(sql, sid, "result", resultBody);
   closeRun(sql, sid, runId);
 }
 
@@ -233,9 +236,10 @@ export function recordTurn(
   toolCalls: TurnCall[],
   result: string,
   usage?: SessionUsage,
+  halt?: SessionHalt | null,
 ): void {
   runInSyncTx(sql, () => {
-    recordTurnInner(sql, sid, runId, prompt, toolCalls, result, usage);
+    recordTurnInner(sql, sid, runId, prompt, toolCalls, result, usage, halt);
   });
 }
 
@@ -249,10 +253,11 @@ export function recordTurnWithOpen(
   toolCalls: TurnCall[],
   result: string,
   usage?: SessionUsage,
+  halt?: SessionHalt | null,
 ): void {
   runInSyncTx(sql, () => {
     openRunInner(sql, sid, runId);
-    recordTurnInner(sql, sid, runId, prompt, toolCalls, result, usage);
+    recordTurnInner(sql, sid, runId, prompt, toolCalls, result, usage, halt);
   });
 }
 

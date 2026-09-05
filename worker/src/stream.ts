@@ -305,7 +305,7 @@ async function startTurn(
         }
       },
     });
-    emitAppend("result", { runId: turnId, result: turn.result, usage: turn.usage });
+    emitAppend("result", turn.halt ? { runId: turnId, result: turn.result, usage: turn.usage, halt: turn.halt } : { runId: turnId, result: turn.result, usage: turn.usage });
     const runtimeOut = { via: turn.via, model: turn.model, provider: respProvider, thinking: effThinking };
     closeRun(host.sql, host.sid, turnId);
     if (held !== null) {
@@ -316,8 +316,8 @@ async function startTurn(
         closeSocket(CLOSE_CONFLICT, "concurrent rotation mid-turn");
         return;
       }
-      send({ done: true, fence: next.fence, revision: next.revision, result: turn.result, runtime: runtimeOut, usage: turn.usage });
-    } else send({ done: true, result: turn.result, runtime: runtimeOut, usage: turn.usage });
+      send({ done: true, fence: next.fence, revision: next.revision, result: turn.result, runtime: runtimeOut, usage: turn.usage, ...(turn.halt ? { halt: turn.halt } : {}) });
+    } else send({ done: true, result: turn.result, runtime: runtimeOut, usage: turn.usage, ...(turn.halt ? { halt: turn.halt } : {}) });
   } catch (e) {
     if (turnController.signal.aborted) {
       host.sql.exec(

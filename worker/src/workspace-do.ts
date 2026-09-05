@@ -1040,7 +1040,7 @@ export class WorkspaceDO implements DurableObject {
           sessionId: sid,
         });
         const turn = await session.run(prompt, { thinking: effThinking });
-        recordTurnWithOpen(sql, sid, runId, prompt, turn.toolCalls, turn.result, turn.usage);
+        recordTurnWithOpen(sql, sid, runId, prompt, turn.toolCalls, turn.result, turn.usage, turn.halt ?? null);
         // Window reserve: mark for compaction but never compact inside the turn. The alarm runs seconds later so a burst of turns settles into one compaction.
         if (maybeMarkForCompaction(sql, sid)) await this.state.storage.setAlarm(Date.now() + 2000);
         else if (compactionPending(sql, sid)) await this.state.storage.setAlarm(Date.now() + 2000);
@@ -1051,6 +1051,7 @@ export class WorkspaceDO implements DurableObject {
             toolCalls: turn.toolCalls,
             runtime: runtimeOut,
             usage: turn.usage,
+            ...(turn.halt ? { halt: turn.halt } : {}),
             fence: rotated.fence,
             revision: rotated.revision,
           });
@@ -1060,6 +1061,7 @@ export class WorkspaceDO implements DurableObject {
           toolCalls: turn.toolCalls,
           runtime: runtimeOut,
           usage: turn.usage,
+          ...(turn.halt ? { halt: turn.halt } : {}),
         });
       } catch (e) {
         // The open now commits with the turn, so a failed turn re-opens here
