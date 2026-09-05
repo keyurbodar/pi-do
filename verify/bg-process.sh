@@ -13,7 +13,6 @@ OUT="artifacts/${RUN_ID}/bg-process"
 mkdir -p "${OUT}"
 
 post() {
-  # post <path> <json-body> <outfile>
   node -e "
 fetch(process.argv[1], { method: 'POST', headers: { 'content-type': 'application/json' }, body: process.argv[2] })
   .then(async (r) => ({ status: r.status, body: await r.text() }))
@@ -23,7 +22,6 @@ fetch(process.argv[1], { method: 'POST', headers: { 'content-type': 'application
 }
 
 get() {
-  # get <path> <outfile>
   node -e "
 fetch(process.argv[1])
   .then(async (r) => ({ status: r.status, body: await r.text() }))
