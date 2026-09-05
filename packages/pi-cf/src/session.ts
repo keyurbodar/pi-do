@@ -16,6 +16,8 @@ import {
   type ShellLike,
 } from "./env.ts";
 import { bashTool, editTool, listTool, readTool, removeTool, textOf, writeTool, type ToolContext } from "./tools.ts";
+import { findTool, grepTool } from "./search-tools.ts";
+import { diagnosticsTool, pmTool, testTool } from "./dev-tools.ts";
 import { planStubTurn } from "./stub-plan.ts";
 import type { AgentHarnessTool } from "@earendil-works/pi-agent-core";
 import { buildSessionContext, capSessionContext, estimateTokens, type ContextMessage, type EntryReader } from "./context.ts";
@@ -27,6 +29,11 @@ export const sessionTools = {
   list: listTool,
   remove: removeTool,
   bash: bashTool,
+  find: findTool,
+  grep: grepTool,
+  diagnostics: diagnosticsTool,
+  test: testTool,
+  pm: pmTool,
 };
 
 export type SessionTools = typeof sessionTools;
