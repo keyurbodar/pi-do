@@ -5,7 +5,7 @@ import { enforceFence } from "../../packages/pi-cf/src/fence";
 import { acceptStream, readAttachment, socketClosed, socketMessage, wrapSocket, type StreamHost } from "./stream";
 import { createAgentSession } from "../../packages/pi-cf/src/session";
 import { normalizeWorkspacePath } from "../../packages/pi-cf/src/tools";
-import { buildRuntime, clampThinkingLevel, keyedProviders, resolveCatalogModel, resolveKeyedModel, resolveKeyedModelLive, resolveProviderKey, supportedThinkingLevels, THINKING_LEVELS, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
+import { buildRuntime, clampThinkingLevel, defaultTurnModel, keyedProviders, resolveCatalogModel, resolveKeyedModel, resolveKeyedModelLive, resolveProviderKey, supportedThinkingLevels, THINKING_LEVELS, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
 import { createWorkspaceFs, hasGitDir } from "./git-fs";
 import { gateArgv, notARepoBody, NotARepoError, runGitRead, runGitWrite, WRITE_SUBCOMMANDS } from "./git-reads";
 interface ShellWorkerBinding {
@@ -632,6 +632,15 @@ export class WorkspaceDO implements DurableObject {
       const from = this.readTriple(sid);
       runInSyncTx(sql, () => {
         sql.exec("UPDATE sessions SET modelProvider = ?, modelId = ? WHERE sid = ?", provider, id, sid);
+        // Model choice becomes the workspace default so future sessions
+        // inherit it; thinking level preserved from existing settings.
+        sql.exec(
+          "INSERT OR REPLACE INTO workspace_settings(ws, modelProvider, modelId, thinkingLevel) VALUES (?, ?, ?, ?)",
+          ws,
+          provider,
+          id,
+          this.readSettings(ws).thinking,
+        );
         appendEntry(sql, sid, "model_change", {
           from: { provider: from?.provider ?? null, id: from?.id ?? null },
           to: { provider, id },
@@ -1064,9 +1073,11 @@ export class WorkspaceDO implements DurableObject {
             }
           }
         } else {
-          const runtime = buildRuntime(this.env as unknown as RuntimeEnv);
-          turnModel = runtime.model;
-          respProvider = runtime.model.provider;
+          // No session triple and no one-shot override: deterministic stub,
+          // even when provider keys exist. Shared defaultTurnModel keeps the
+          // run and stream paths in lockstep.
+          turnModel = defaultTurnModel();
+          respProvider = "stub";
         }
         const session = createAgentSession({
           files: this.files,

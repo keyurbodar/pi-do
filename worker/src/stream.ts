@@ -16,7 +16,7 @@
 import { appendEntry, closeRun, getEntry, openRun, sessionLeaf, type EntriesSql } from "../../packages/pi-cf/src/entries";
 import { enforceFence } from "../../packages/pi-cf/src/fence";
 import type { FileStore } from "../../packages/pi-cf/src/vfs-dofs";
-import { buildRuntime, clampThinkingLevel, keyedProviders, resolveCatalogModel, resolveKeyedModel, resolveProviderKey, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
+import { buildRuntime, clampThinkingLevel, defaultTurnModel, keyedProviders, resolveCatalogModel, resolveKeyedModel, resolveProviderKey, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
 import { createAgentSession } from "../../packages/pi-cf/src/session";
 export interface StreamShell {
   exec(input: {
@@ -272,11 +272,10 @@ async function startTurn(
     let stub: boolean;
     let like: RuntimeModel | Record<string, never>;
     if (catalog === null) {
-      const runtime = buildRuntime(host.runtimeEnv);
-      turnModel = runtime.model;
-      respProvider = runtime.model.provider;
-      stub = runtime.stub;
-      like = runtime.stub ? {} : runtime.model;
+      turnModel = defaultTurnModel();
+      respProvider = turnModel.provider as string;
+      stub = true;
+      like = {};
     } else {
       const keyed = keyedProviders(host.runtimeEnv);
       const keyedModel = keyed.length === 0 ? null : resolveKeyedModel(host.runtimeEnv, catalog.provider, catalog.id);

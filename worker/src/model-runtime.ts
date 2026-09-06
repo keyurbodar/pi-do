@@ -517,23 +517,31 @@ function availableList(keyed: KeyedProvider[]): string {
   return ids.sort().join(", ");
 }
 
+// Single null-triple default for run and stream turns alike. One object so
+// the two turn paths cannot drift; spread at use, never mutate.
+const STUB_TURN_MODEL: RuntimeModel = {
+  id: STUB_MODEL_ID,
+  name: STUB_MODEL_ID,
+  api: "stub",
+  provider: "stub",
+  baseUrl: "",
+  contextWindow: 0,
+  maxTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+};
+
 function stubRuntime(): ModelRuntime {
   // DEV-ONLY fallback: no provider keys in env, so the keyless stub stands
   // in. Production callers must supply keys; this branch exists for local
   // verify without credentials.
-  return {
-    model: {
-      id: STUB_MODEL_ID,
-      name: STUB_MODEL_ID,
-      api: "stub",
-      provider: "stub",
-      baseUrl: "",
-      contextWindow: 0,
-      maxTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    },
-    stub: true,
-  };
+  return { model: { ...STUB_TURN_MODEL }, stub: true };
+}
+
+// Null-triple default: deterministic stub even when provider keys exist.
+// Keyed runs require an explicit triple, so a rate-limited key can never
+// brick fresh sessions.
+export function defaultTurnModel(): RuntimeModel {
+  return { ...STUB_TURN_MODEL };
 }
 
 // Full merged catalog (built-ins plus models.json customs), independent of
