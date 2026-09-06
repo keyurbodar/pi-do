@@ -2,7 +2,7 @@
 // workspace bytes. Seeds come from the real server over HTTP (files get),
 // the store mimics the DO files table, the shell is the same just-bash
 // interpreter the worker runs, and every tool is the exact module workerd
-// executes. Usage: node verify/tools-harness.mjs BASE WS OUT search|ready [NEEDLE]
+// executes. Usage: node verify/tools-harness.mjs BASE WS OUT search|ready|ts [NEEDLE]
 // Exit nonzero on the first gap, PASS lines on stdout per check.
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -16,8 +16,8 @@ const { findTool, grepTool } = await import("../packages/pi-cf/src/search-tools.
 const { diagnosticsTool, testTool, pmTool } = await import("../packages/pi-cf/src/dev-tools.ts");
 const { editTool } = await import("../packages/pi-cf/src/tools.ts");
 const [BASE, WS, OUT, SUITE, NEEDLE] = process.argv.slice(2);
-if (!BASE || !WS || !OUT || (SUITE !== "search" && SUITE !== "ready")) {
-  console.error("usage: node verify/tools-harness.mjs BASE WS OUT search|ready [NEEDLE]");
+if (!BASE || !WS || !OUT || (SUITE !== "search" && SUITE !== "ready" && SUITE !== "ts")) {
+  console.error("usage: node verify/tools-harness.mjs BASE WS OUT search|ready|ts [NEEDLE]");
   process.exit(2);
 }
 
@@ -116,7 +116,7 @@ if (SUITE === "search") {
   if (trav.ok) fail("grep-traversal", "throw", trav.out);
   has("grep-traversal", trav.out, "path escapes workspace");
   console.log("PASS search-grep-traversal-closed");
-} else {
+} else if (SUITE === "ready") {
   const env = new ComputerExecutionEnv(
     liveStore(["verify-ready/app.ts", "verify-ready/fail.sh", "package.json", "package-lock.json"]),
     WS,
@@ -149,5 +149,47 @@ if (SUITE === "search") {
   if (unknown.ok) fail("pm-unknown", "throw", unknown.out);
   has("pm-unknown", unknown.out, "unknown script: nope");
   console.log("PASS ready-pm-unknown-script-closed");
+} else {
+  const { diagnosticsCompilerTool, definitionTool, referencesTool } = await import("../packages/pi-cf/src/ts-tools.ts");
+  const env = new ComputerExecutionEnv(
+    liveStore(["verify-ts/clean.ts", "verify-ts/spot.ts", "verify-ts/util.ts", "verify-ts/main.ts", "verify-ts/notes.txt"]),
+    WS,
+  );
+  const t0 = Date.now();
+  const clean = await run(diagnosticsCompilerTool, env, { path: "verify-ts/clean.ts" });
+  const t1 = Date.now();
+  eq("ts-clean", clean.out, "(no issues in 1 file)");
+  console.log("PASS ts-diagnostics-clean");
+  const spot = await run(diagnosticsCompilerTool, env, { path: "verify-ts/spot.ts" });
+  if (!spot.ok) fail("ts-spot", "success", spot.out);
+  has("ts-spot", spot.out, "verify-ts/spot.ts:1:14: TS2322: Type 'string' is not assignable to type 'number'.");
+  console.log("PASS ts-diagnostics-error-code");
+  const mainText = readFileSync(join(OUT, "blob-verify-ts_main.ts"), "utf8");
+  const at = mainText.indexOf("helper(who)");
+  const def = await run(definitionTool, env, { path: "verify-ts/main.ts", offset: at });
+  eq("ts-def", def.out, "verify-ts/util.ts:1:17");
+  console.log("PASS ts-definition-cross-file");
+  const refs = await run(referencesTool, env, { path: "verify-ts/main.ts", offset: at });
+  eq("ts-refs", refs.out, "verify-ts/main.ts:1:10\nverify-ts/main.ts:4:10\nverify-ts/util.ts:1:17");
+  console.log("PASS ts-references-all-sites");
+  const broke = await run(editTool, env, {
+    path: "verify-ts/clean.ts",
+    edits: [{ oldText: "  return (Object.keys({ a }) as string[]).length + (seen.get(\"key\") as number);\n}", newText: "  return (Object.keys({ a }) as string[]).length + (seen.get(\"key\") as number);" }],
+  });
+  if (!broke.ok) fail("ts-edit", "success", broke.out);
+  const t2 = Date.now();
+  const after = await run(diagnosticsCompilerTool, env, { path: "verify-ts/clean.ts" });
+  const t3 = Date.now();
+  if (!after.ok) fail("ts-broken", "success", after.out);
+  has("ts-broken", after.out, "verify-ts/clean.ts:9:80: TS1005: '}' expected.");
+  console.log("PASS ts-edit-break-caught");
+  const closedOffset = await run(definitionTool, env, { path: "verify-ts/main.ts", offset: 999999 });
+  if (closedOffset.ok) fail("ts-closed-offset", "throw", closedOffset.out);
+  has("ts-closed-offset", closedOffset.out, "bad offset");
+  const closedTs = await run(referencesTool, env, { path: "verify-ts/notes.txt", offset: 0 });
+  if (closedTs.ok) fail("ts-closed-nonts", "throw", closedTs.out);
+  has("ts-closed-nonts", closedTs.out, "bad path");
+  console.log("PASS ts-fail-closed");
+  console.log(`TIMING ts-first-ms=${t1 - t0} ts-followup-ms=${t3 - t2}`);
 }
 console.log(`PASS harness-${SUITE}`);

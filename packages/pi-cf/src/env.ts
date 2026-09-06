@@ -64,6 +64,9 @@ export class ComputerExecutionEnv {
     this.ws = ws;
     this.shell = shell;
   }
+  get workspaceId(): string {
+    return this.ws;
+  }
 
   readFile(path: string): Uint8Array {
     const body = this.store.get(this.ws, path);

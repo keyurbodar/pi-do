@@ -5,10 +5,12 @@
   "version": "0.0.0",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "verify": "node verify-env.mjs"
+    "verify": "node verify-env.mjs",
+    "bundle-ts-libs": "node scripts/bundle-ts-libs.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.84.4",
-    "diff": "8.0.4"
+    "diff": "8.0.4",
+    "typescript": "5.9.3"
   }
 }
