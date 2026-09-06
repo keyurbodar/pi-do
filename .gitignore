@@ -4,5 +4,7 @@ worker/.wrangler/
 artifacts/
 .DS_Store
 refs/
+frontend/refs/
+frontend/dist/
 .worktrees/
 worker/.dev.vars
