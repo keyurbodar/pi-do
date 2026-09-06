@@ -116,16 +116,17 @@ echo "### 10 persisted storage: index present, plans hit indexes"
 SQLITE=""
 for f in $(find worker/.wrangler .wrangler -name "*.sqlite" 2>/dev/null); do
   if sqlite3 "${f}" "SELECT name FROM sqlite_master WHERE type='table' AND name='pi_entries';" | grep -q pi_entries; then
-    SQLITE="${f}"
-    break
+    if sqlite3 "${f}" "SELECT 1 FROM files WHERE ws = '${WS}' LIMIT 1;" 2>/dev/null | grep -q 1; then
+      SQLITE="${f}"
+      break
+    fi
   fi
 done
 if [ -z "${SQLITE}" ]; then
-  echo "no persisted DO sqlite file holding pi_entries under worker/.wrangler or .wrangler"
+  echo "no persisted DO sqlite file holding this run's workspace under worker/.wrangler or .wrangler"
   echo "start the worker with persisted storage, then rerun"
   exit 1
 fi
-echo "SQLITE=${SQLITE}"
 sqlite3 "${SQLITE}" "SELECT name, tbl_name, sql FROM sqlite_master WHERE type='index';" > "${OUT}/indexes.txt"
 if ! grep -q "pi_entries_sid_id" "${OUT}/indexes.txt"; then
   echo "missing index pi_entries_sid_id"

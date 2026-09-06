@@ -165,13 +165,17 @@ start_dev
 else
 echo "reusing BASE; the caller must have given that server the secret"
 fi
-echo "### 3 keyed gate: a triple-less run must leave the stub"
+echo "### 3 keyed gate: an explicitly switched run must leave the stub"
 WSG_JSON="$(${CLI} workspace create --base "${BASE}" --json)" || exit 1
 WSG="$(node -p "JSON.parse(process.argv[1]).workspaceId" "${WSG_JSON}")"
 printf '%s' "${WSG_JSON}" > "${OUT}/gate-workspace.json"
 printf '%s' "${SEED_BODY}" | ${CLI} files put --ws "${WSG}" --path "${SEED_PATH}" --base "${BASE}" --json || exit 1
 SESSG_JSON="$(${CLI} session create --ws "${WSG}" --base "${BASE}" --json)" || exit 1
 SIDG="$(node -p "JSON.parse(process.argv[1]).sessionId" "${SESSG_JSON}")"
+${CLI} models --provider "${KEYED_PROVIDER}" --base "${BASE}" --json > "${OUT}/gate-models.json" || exit 1
+GATE_SLUG="$(node -p "const b=JSON.parse(require('fs').readFileSync('${OUT}/gate-models.json','utf8'));const ids=(b.models||[]).map((m)=>m.id);(ids.filter((id)=>String(id).includes('mimo-v2.5')).sort()[0]||ids.filter((id)=>String(id).includes('mimo')).sort()[0]||ids.sort()[0]||'')")" || exit 1
+if [ -z "${GATE_SLUG}" ]; then echo "gate failed: empty models slice"; exit 1; fi
+${CLI} model --ws "${WSG}" --sid "${SIDG}" --model "${KEYED_PROVIDER}/${GATE_SLUG}" --base "${BASE}" --json > "${OUT}/gate-switch.json" || exit 1
 CODE=0
 ${CLI} run --ws "${WSG}" --sid "${SIDG}" --prompt "Read ${SEED_PATH} and reply with its exact contents." --base "${BASE}" --json > "${OUT}/gate-run.json" 2> "${OUT}/gate-run.stderr" || CODE=$?
 cat "${OUT}/gate-run.json"
@@ -182,7 +186,7 @@ else
 if [ "${CODE}" != "0" ]; then echo "keyed gate failed on code"; cat "${OUT}/gate-run.stderr"; exit 1; fi
 GATE_MODEL="$(node -p "JSON.parse(require('node:fs').readFileSync('${OUT}/gate-run.json','utf8')).runtime.model")" || exit 1
 if [ "${GATE_MODEL}" = "stub" ]; then
-note_stop "missing-secret plumbing: triple-less run stayed on the stub, the Worker never saw the key."
+note_stop "missing-secret plumbing: switched run stayed on the stub, the Worker never saw the key."
 S1="blocked"; S2="blocked"; S3="blocked"; S4="blocked"; S5="blocked"; S6="blocked"; S7="blocked"
 else
 node -e "
