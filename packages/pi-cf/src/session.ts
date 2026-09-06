@@ -16,13 +16,13 @@ import {
   type ShellLike,
 } from "./env.ts";
 import { bashTool, editTool, listTool, readTool, removeTool, textOf, writeTool, type ToolContext } from "./tools.ts";
-import { diagnosticsTool, pmTool, testTool } from "./dev-tools.ts";
+import { pmTool, testTool } from "./dev-tools.ts";
+import { definitionTool, diagnosticsCompilerTool, referencesTool } from "./ts-tools.ts";
 import { bgTool } from "./bg-tools.ts";
 import { findTool, grepTool } from "./search-tools.ts";
 import { planStubTurn } from "./stub-plan.ts";
 import type { AgentHarnessTool } from "@earendil-works/pi-agent-core";
 import { buildSessionContext, capSessionContext, estimateTokens, type ContextMessage, type EntryReader } from "./context.ts";
-
 export const sessionTools = {
   read: readTool,
   write: writeTool,
@@ -32,7 +32,9 @@ export const sessionTools = {
   bash: bashTool,
   find: findTool,
   grep: grepTool,
-  diagnostics: diagnosticsTool,
+  diagnostics: diagnosticsCompilerTool,
+  definition: definitionTool,
+  references: referencesTool,
   test: testTool,
   pm: pmTool,
   bg: bgTool,
