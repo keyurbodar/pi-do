@@ -595,13 +595,32 @@ export class WorkspaceDO implements DurableObject {
         id = undefined;
       }
       if (typeof provider !== "string" || provider.length === 0 || typeof id !== "string" || id.length === 0) {
-        return json(
-          {
-            error: "missing model",
-            hint: 'retry as POST /workspaces/:id/sessions/:sid/model with JSON {"provider": "anthropic", "id": "claude-opus-4-6"}',
-          },
-          400,
-        );
+        // No explicit triple: resolve the keyed default (MODEL_ID override or
+        // first keyed provider) so fresh sessions run keyed without the client
+        // duplicating precedence. No keys → explicit error, never the stub.
+        try {
+          const runtime = buildRuntime(this.env as unknown as RuntimeEnv);
+          if (runtime.stub) {
+            return json(
+              {
+                error: "no model key",
+                hint: "set a provider key as a Worker secret, then retry",
+              },
+              400,
+            );
+          }
+          provider = runtime.model.provider;
+          id = runtime.model.id;
+        } catch (e) {
+          if (e !== null && typeof e === "object" && "error" in e && typeof e.error === "string") {
+            const hint = "hint" in e && typeof e.hint === "string" ? e.hint : "retry with a catalog model";
+            return json({ error: e.error, hint }, 400);
+          }
+          return json({ error: "unknown model", hint: "retry with a catalog model" }, 400);
+        }
+      }
+      if (typeof provider !== "string" || provider.length === 0 || typeof id !== "string" || id.length === 0) {
+        return json({ error: "unknown model", hint: "retry with a catalog model" }, 400);
       }
       try {
         resolveCatalogModel(provider, id);

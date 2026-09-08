@@ -155,6 +155,21 @@ export function acceptStream(request: Request, host: StreamHost, state: DurableO
     sock.close(CLOSE_FENCED, hint);
     return new Response(null, { status: 101, webSocket: client });
   }
+  // Orphan heal: a dead incarnation left runs open that can never complete.
+  // This incarnation holds no live turn for the sid, so flip them
+  // interrupted with entries — otherwise every reconnect replays a turn
+  // stuck streaming forever. A genuinely running turn (live witness set)
+  // is never touched.
+  if (host.live.get(host.sid) === undefined) {
+    for (;;) {
+      const orphan = openRunId(host.sql, host.sid);
+      if (orphan === null) break;
+      host.sql.exec("UPDATE runs SET status = ? WHERE sid = ? AND runId = ?", "interrupted", host.sid, orphan);
+      const cursor = appendEntry(host.sql, host.sid, "interrupted", { runId: orphan });
+      const row = getEntry(host.sql, host.sid, cursor);
+      if (row !== null) sock.send({ entry: row });
+    }
+  }
 
   return new Response(null, { status: 101, webSocket: client });
 }
@@ -301,8 +316,12 @@ async function startTurn(
       onUpdate: (event) => {
         if (event.kind === "toolCall") {
           emitAppend("toolCall", { runId: turnId, id: event.id, tool: event.tool, args: event.args });
-        } else {
+        } else if (event.kind === "toolResult") {
           emitAppend("toolResult", { runId: turnId, id: event.id, tool: event.tool, output: event.output });
+        } else if (event.kind === "text") {
+          emitAppend("text", { runId: turnId, delta: event.delta });
+        } else {
+          emitAppend("thinking", { runId: turnId, delta: event.delta });
         }
       },
     });

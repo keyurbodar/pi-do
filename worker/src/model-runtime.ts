@@ -59,6 +59,7 @@ export interface RuntimeModel {
   cost: Model<Api>["cost"];
   reasoning?: boolean;
   thinkingLevelMap?: Record<string, string | null>;
+  headers?: Record<string, string>;
 }
 
 export interface ModelRuntime {
@@ -207,7 +208,7 @@ const BUILTINS: BuiltinEntry[] = [
 // schema (refs/pi packages/coding-agent src/core/model-config.ts
 // ProviderConfigSchema): name, baseUrl, apiKey, api, oauth, headers, compat,
 // authHeader, models, modelOverrides. Resolution honors api, baseUrl,
-// models, and modelOverrides; name is display-only; headers/compat/
+// models, modelOverrides, and headers; name is display-only; compat/
 // authHeader/samplingParams shape request assembly, which this runtime never
 // does, so they are accepted and ignored. apiKey and oauth are rejected:
 // keys arrive only as Worker secrets, and there are no OAuth code paths.
@@ -263,11 +264,11 @@ export interface ModelsJsonProviderConfig {
 export interface ModelsJsonDoc {
   providers?: Record<string, ModelsJsonProviderConfig>;
 }
-
 interface CustomProvider {
   id: string;
   api: string;
   baseUrl?: string;
+  headers?: Record<string, string>;
   models: ModelsJsonModelDef[];
   overrides: Record<string, ModelsJsonModelOverride>;
 }
@@ -306,6 +307,28 @@ function optionalNumber(
       `set ${field} to a finite number >= 0 in worker/models.json`,
     );
   return value;
+}
+function optionalHeaders(
+  owner: string,
+  field: string,
+  value: unknown,
+): Record<string, string> | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value))
+    fail(
+      `invalid models.json ${owner}: ${field}`,
+      `set ${field} to a { <name>: <value> } string map in worker/models.json`,
+    );
+  const out: Record<string, string> = {};
+  for (const [name, header] of Object.entries(value)) {
+    if (name.length === 0 || typeof header !== "string" || header.length === 0)
+      fail(
+        `invalid models.json ${owner}: ${field}`,
+        `set ${field} to a { <name>: <value> } string map with non-empty names and values in worker/models.json`,
+      );
+    out[name] = header;
+  }
+  return out;
 }
 
 function requiredCost(
@@ -404,11 +427,21 @@ export function loadCustomProviders(doc: unknown): Map<string, CustomProvider> {
       id,
       api,
       baseUrl,
+      headers: optionalHeaders(`provider "${id}"`, "headers", provider.headers),
       models,
       overrides: provider.modelOverrides ?? {},
     });
   }
   return out;
+}
+function mergeHeaders(
+  ...sources: Array<Record<string, string> | undefined>
+): Record<string, string> | undefined {
+  const out: Record<string, string> = {};
+  for (const source of sources) {
+    if (source !== undefined) Object.assign(out, source);
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function toRuntime(provider: string, entry: Model<Api>): RuntimeModel {
@@ -423,6 +456,7 @@ function toRuntime(provider: string, entry: Model<Api>): RuntimeModel {
     cost: entry.cost,
     reasoning: entry.reasoning,
     thinkingLevelMap: entry.thinkingLevelMap,
+    headers: entry.headers,
   };
 }
 
@@ -443,6 +477,9 @@ function mergedCatalog(
   if (custom.baseUrl !== undefined)
     for (const [id, entry] of out)
       out.set(id, { ...entry, baseUrl: custom.baseUrl });
+  if (custom.headers !== undefined)
+    for (const [id, entry] of out)
+      out.set(id, { ...entry, headers: { ...entry.headers, ...custom.headers } });
   for (const def of custom.models) {
     const baseEntry = out.get(def.id);
     const owner = `provider "${providerId}" model "${def.id}"`;
@@ -473,6 +510,7 @@ function mergedCatalog(
       cost: requiredCost(owner, def.cost, baseEntry?.cost),
       reasoning: def.reasoning ?? baseEntry?.reasoning ?? false,
       thinkingLevelMap: def.thinkingLevelMap ?? baseEntry?.thinkingLevelMap,
+      headers: mergeHeaders(baseEntry?.headers, optionalHeaders(owner, "headers", def.headers)),
     });
   }
   for (const [modelId, override] of Object.entries(custom.overrides)) {
@@ -495,6 +533,7 @@ function mergedCatalog(
       cost: requiredCost(owner, override.cost, entry.cost),
       reasoning: override.reasoning ?? entry.reasoning ?? false,
       thinkingLevelMap: override.thinkingLevelMap ?? entry.thinkingLevelMap,
+      headers: mergeHeaders(entry.headers, optionalHeaders(owner, "headers", override.headers)),
     });
   }
   return out;
@@ -705,10 +744,12 @@ export async function resolveKeyedModelLive(
   if (!ids) {
     let live: Set<string> | undefined;
     try {
+      const liveHeaders: Record<string, string> = { Authorization: `Bearer ${key}` };
+      if (pinned?.headers !== undefined) Object.assign(liveHeaders, pinned.headers);
       const response = await (fetchImpl ?? globalThis.fetch)(
         `${baseUrl.replace(/\/+$/, "")}/models`,
         {
-          headers: { Authorization: `Bearer ${key}` },
+          headers: liveHeaders,
           signal: AbortSignal.timeout(10_000),
         },
       );

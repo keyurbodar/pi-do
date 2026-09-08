@@ -1,4 +1,4 @@
-import { completeSimple } from "@earendil-works/pi-ai/compat";
+import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type {
   Api,
   AssistantMessage,
@@ -48,6 +48,7 @@ export interface SessionModel {
   api?: string;
   provider?: string;
   baseUrl?: string;
+  headers?: Record<string, string>;
   contextWindow?: number;
   maxTokens?: number;
 }
@@ -104,13 +105,11 @@ export interface SessionRunBudgets {
 }
 
 
-export interface SessionToolEvent {
-  kind: "toolCall" | "toolResult";
-  id: string;
-  tool: string;
-  args: Record<string, unknown>;
-  output?: string;
-}
+export type SessionToolEvent =
+  | { kind: "toolCall"; id: string; tool: string; args: Record<string, unknown>; output?: string }
+  | { kind: "toolResult"; id: string; tool: string; args: Record<string, unknown>; output?: string }
+  | { kind: "text"; delta: string }
+  | { kind: "thinking"; delta: string };
 
 export interface SessionRunOptions {
   signal?: AbortSignal;
@@ -138,7 +137,7 @@ function abortablePause(signal: AbortSignal | undefined): Promise<void> {
   return promise;
 }
 // Model-called loop state. The stub path below owns no pi-ai import at
-// runtime: keyless turns never reach completeSimple, so behavior there is
+// runtime: keyless turns never reach streamSimple, so behavior there is
 // byte-identical to the planStubTurn harness it replaces.
 const MAX_MODEL_STEPS = 10;
 // Suppressed under this the rate is nonsense (cached/instant responses yield
@@ -195,6 +194,7 @@ function toPiModel(model: SessionModel): PiModel<Api> {
     api: (source.api ?? "openai-completions") as Api,
     provider: source.provider ?? "stub",
     baseUrl: source.baseUrl ?? "",
+    headers: source.headers,
     reasoning: source.reasoning ?? false,
     thinkingLevelMap: source.thinkingLevelMap,
     input: source.input ?? ["text"],
@@ -218,6 +218,95 @@ function errorText(value: unknown): string {
     return `${value.error}${hint}`;
   }
   return String(value ?? "tool failed");
+}
+
+// Silence longer than this between provider events ends the turn as an
+// error instead of hanging the per-session queue forever. Tool execution
+// happens outside the stream, so in-step silence only means a stalled
+// provider stream. Generous on purpose: reasoning models legitimately pause.
+const STREAM_IDLE_TIMEOUT_MS = 120_000;
+
+function idleReject(ms: number, error: unknown): { promise: Promise<never>; cancel: () => void } {
+  // Workers timers are numeric handles; the cast keeps Node-typed toolchains honest.
+  let handle = 0;
+  const promise = new Promise<never>((_, reject) => {
+    handle = setTimeout(() => reject(error), ms) as unknown as number;
+  });
+  return { promise, cancel: () => clearTimeout(handle) };
+}
+
+async function streamModelStep(
+  piModel: PiModel<Api>,
+  piContext: PiContext,
+  request: SimpleStreamOptions,
+  signal: AbortSignal | undefined,
+  onUpdate: ((event: SessionToolEvent) => void) | undefined,
+): Promise<AssistantMessage> {
+  const stream = streamSimple(piModel, piContext, request);
+  let final: AssistantMessage | null = null;
+  // Reasoning models (DeepSeek R1 family) demarcate thinking with literal
+  // <think>...</think> spans, sometimes inside text deltas. Route the
+  // enclosed spans to the thinking channel and drop the bare markers so
+  // tags never leak into rendered text. State persists across deltas
+  // because a span can open in one delta and close many later.
+  let inThink = false;
+  const emitTextDelta = (delta: string): void => {
+    let rest = delta;
+    for (;;) {
+      const open = rest.indexOf("<think>");
+      const close = rest.indexOf("</think>");
+      if (!inThink && open === -1 && close === -1) {
+        if (rest.length > 0) onUpdate?.({ kind: "text", delta: rest });
+        return;
+      }
+      if (!inThink && close !== -1 && (open === -1 || close < open)) {
+        // Stray closer with no opener: drop the marker, keep the text.
+        rest = rest.slice(0, close) + rest.slice(close + "</think>".length);
+        continue;
+      }
+      if (!inThink) {
+        if (open > 0) onUpdate?.({ kind: "text", delta: rest.slice(0, open) });
+        rest = rest.slice(open + "<think>".length);
+        inThink = true;
+        continue;
+      }
+      if (close === -1) {
+        if (rest.length > 0) onUpdate?.({ kind: "thinking", delta: rest });
+        return;
+      }
+      if (close > 0) onUpdate?.({ kind: "thinking", delta: rest.slice(0, close) });
+      rest = rest.slice(close + "</think>".length);
+      inThink = false;
+    }
+  };
+  const iterator = stream[Symbol.asyncIterator]();
+  for (;;) {
+    signal?.throwIfAborted();
+    const wait = idleReject(STREAM_IDLE_TIMEOUT_MS, {
+      error: "model stream stalled",
+      hint: "the provider stopped sending data mid-turn; retry the prompt",
+    });
+    let next;
+    try {
+      next = await Promise.race([iterator.next(), wait.promise]);
+    } finally {
+      wait.cancel();
+    }
+    if (next.done) break;
+    const event = next.value;
+    if (event.type === "text_delta") {
+      if (event.delta.length > 0) emitTextDelta(event.delta);
+    } else if (event.type === "thinking_delta") {
+      if (event.delta.length > 0) onUpdate?.({ kind: "thinking", delta: event.delta });
+    } else if (event.type === "done") {
+      final = event.message;
+    } else if (event.type === "error") {
+      final = event.error;
+    }
+  }
+  signal?.throwIfAborted();
+  if (final === null) throw { error: "model turn failed", hint: "retry the prompt with a simpler request" };
+  return final;
 }
 
 export function createAgentSession(options: CreateAgentSessionOptions): {
@@ -297,9 +386,11 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
     };
   }
 
-  // Keyed loop: send messages plus tool schemas, execute our tools, append
-  // results, repeat until the model stops calling tools or the step cap
-  // hits. Same SessionTurn shape, same onUpdate events, same abort signal.
+  // Keyed loop: stream each step via streamSimple, forwarding text and
+  // thinking deltas through onUpdate as they arrive, then execute our
+  // tools, append results, and repeat until the model stops calling tools
+  // or the step cap hits. Same SessionTurn shape, same abort signal; tool
+  // batching, halt budgets, and tool-failure handling are unchanged.
   async function runModelTurn(
     prompt: string,
     apiKey: string,
@@ -374,7 +465,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
         };
       }
       const piContext: PiContext = { systemPrompt: SYSTEM_PROMPT, messages, tools: piTools };
-      const answer = await completeSimple(piModel, piContext, request);
+      const answer = await streamModelStep(piModel, piContext, request, signal, onUpdate);
       inTokens += answer.usage.input + answer.usage.cacheWrite;
       outTokens += answer.usage.output;
       cacheRead += answer.usage.cacheRead;
