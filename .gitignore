@@ -8,3 +8,5 @@ frontend/refs/
 frontend/dist/
 .worktrees/
 worker/.dev.vars
+frontend/web/dist/
+.cursor/

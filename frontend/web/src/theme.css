@@ -1,0 +1,182 @@
+/* frontend/web/src/theme.css — interior.dev material system
+   (refs/interior/app/globals.css): bezel/panel/well surfaces, hairline rings
+   instead of borders, ink scale, mono metadata. Shadcn-preset var names are
+   kept as aliases so existing module CSS keeps working. Dark is locked at
+   the document (index.html). */
+:root {
+  /* interior surfaces */
+  --bezel: #141312;
+  --panel: #1d1d1a;
+  --well: #252522;
+  --sub: #1a1a17;
+  --hairline: rgba(255, 255, 255, 0.16);
+  --hairline-strong: rgba(255, 255, 255, 0.28);
+  --ink: #f8f8f4;
+  --ink-2: #c2c2ba;
+  --ink-3: #93938b;
+  --accent: rgba(147, 176, 255, 0.14);
+  --accent-soft: rgba(147, 176, 255, 0.14);
+  --accent-ink: #93b0ff;
+  --moss: #5bd79c;
+  --moss-tint: rgba(91, 215, 156, 0.12);
+  --flag: #f5897f;
+  --flag-tint: rgba(245, 137, 127, 0.12);
+  --orange: #d99a62;
+  --hover: rgba(255, 255, 255, 0.06);
+  --hover-2: rgba(255, 255, 255, 0.1);
+
+  /* interior shadows: borders are hairline rings, not lines */
+  --shadow-float: 0 28px 56px -24px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --shadow-lift: 0 1px 2px rgba(0, 0, 0, 0.2), 0 0 0 1px var(--hairline);
+  --shadow-well: inset 0 1px 2px rgba(0, 0, 0, 0.2), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --shadow-row: inset 0 0 0 1px rgba(255, 255, 255, 0.07), 0 1px 2px rgba(0, 0, 0, 0.12);
+
+  /* interior radii + motion */
+  --radius-chip: 6px;
+  --radius-control: 8px;
+  --radius-card: 10px;
+  --ease-out-strong: cubic-bezier(0.23, 1, 0.32, 1);
+
+  /* shadcn-preset aliases (b1D0dxmC slot, values now interior) */
+  --background: var(--bezel);
+  --foreground: var(--ink);
+  --card: var(--panel);
+  --card-foreground: var(--ink);
+  --popover: var(--panel);
+  --popover-foreground: var(--ink);
+  --primary: var(--ink);
+  --primary-foreground: var(--bezel);
+  --secondary: var(--well);
+  --secondary-foreground: var(--ink);
+  --muted: var(--well);
+  --muted-foreground: var(--ink-3);
+  --accent-foreground: var(--accent-ink);
+  --destructive: var(--flag);
+  --border: var(--hairline);
+  --input: var(--hairline);
+  --ring: var(--accent-ink);
+  --radius: var(--radius-card);
+  --font-sans: "Geist", "Inter", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    /* interior light */
+    --bezel: #ffffff;
+    --panel: #ffffff;
+    --well: #fafafa;
+    --sub: #fafafa;
+    --hairline: rgba(0, 0, 0, 0.14);
+    --hairline-strong: rgba(0, 0, 0, 0.26);
+    --ink: #131313;
+    --ink-2: #454545;
+    --ink-3: #6e6e6e;
+    --accent: #edf1ff;
+    --accent-soft: #edf1ff;
+    --accent-ink: #4568ff;
+    --moss: #3d7a4e;
+    --moss-tint: rgba(61, 122, 78, 0.1);
+    --flag: #c0442f;
+    --flag-tint: rgba(192, 68, 47, 0.08);
+    --orange: #b3702f;
+    --hover: rgba(0, 0, 0, 0.04);
+    --hover-2: rgba(0, 0, 0, 0.07);
+    --shadow-float: 0 28px 56px -24px rgba(0, 0, 0, 0.22), 0 0 0 1px rgba(0, 0, 0, 0.06);
+    --shadow-lift: 0 1px 2px rgba(0, 0, 0, 0.04), 0 0 0 1px var(--hairline);
+    --shadow-well: inset 0 1px 2px rgba(0, 0, 0, 0.05), inset 0 0 0 1px rgba(0, 0, 0, 0.1);
+    --shadow-row: inset 0 0 0 1px rgba(0, 0, 0, 0.07), 0 1px 2px rgba(0, 0, 0, 0.05);
+    --background: var(--bezel);
+    --foreground: var(--ink);
+    --card: var(--panel);
+    --primary: var(--ink);
+    --primary-foreground: #ffffff;
+    --muted: var(--well);
+    --muted-foreground: var(--ink-3);
+    --destructive: var(--flag);
+    --border: var(--hairline);
+  }
+}
+
+*,
+*::before,
+*::after {
+  border-color: var(--border);
+}
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  letter-spacing: -0.01em;
+  line-height: 1.5;
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+/* Minimal scrollbar (interior): 3px, quiet thumb. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--ink) 12%, transparent) transparent;
+}
+*::-webkit-scrollbar {
+  width: 3px;
+  height: 3px;
+}
+*::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--ink) 12%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+.main {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  overflow: hidden;
+}
+.thread {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.thread > p {
+  margin: auto;
+  padding: 24px;
+  text-align: center;
+}
+.composer-footer {
+  padding: 16px 24px 32px;
+}
+.composer {
+  width: 100%;
+  max-width: 880px;
+  margin: 0 auto;
+}

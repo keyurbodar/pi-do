@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "ES2024.Promise"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "allowImportingTsExtensions": true,
+    "types": ["react", "react-dom", "@cloudflare/workers-types"],
+    "noEmit": true
+  },
+  "include": ["src", "rsbuild.config.ts"]
+}

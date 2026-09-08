@@ -1,0 +1,191 @@
+/* Synara-pattern tool trace, interior materials. Rows run the full turn
+   column; the settled group folds to a verbal summary line. */
+
+.tools {
+  width: 100%;
+  max-width: 100%;
+}
+
+.head {
+  margin: 0 -6px;
+  width: fit-content;
+  max-width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: var(--radius-control, 8px);
+  padding: 4px 6px;
+  background: transparent;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: background-color 100ms;
+}
+
+.head:hover {
+  background: var(--hover-2);
+}
+
+.spark {
+  color: var(--ink-3);
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.headLabel {
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chevron {
+  color: var(--ink-3);
+  transition: transform 200ms var(--ease-out-strong);
+  transform: rotate(-90deg);
+  flex: none;
+}
+
+.chevronOpen {
+  color: var(--ink-3);
+  transition: transform 200ms var(--ease-out-strong);
+  flex: none;
+}
+
+.collapsible {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition: grid-template-rows 300ms var(--ease-out-strong), opacity 300ms var(--ease-out-strong);
+}
+
+.collapsibleClosed {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.collapsibleInner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.rows {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 5px;
+  position: relative;
+}
+
+.rowWrap {
+  animation: fade-up 320ms var(--ease-out-strong) both;
+  min-width: 0;
+}
+
+.row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  border: 0;
+  border-radius: 8px;
+  padding: 4px 6px;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  transition: background-color 100ms;
+}
+
+.row:hover {
+  background: var(--hover-2);
+}
+
+.iconSlot {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-3);
+}
+
+.rowLabel {
+  flex: none;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.rowTarget {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowDone {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--moss);
+}
+
+.rowSpinner {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border-radius: 999px;
+  border: 1.5px solid var(--hairline-strong);
+  border-top-color: var(--ink-2);
+  animation: spin 700ms linear infinite;
+}
+
+.detail {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition: grid-template-rows 300ms var(--ease-out-strong), opacity 300ms var(--ease-out-strong);
+}
+
+.detailClosed {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.detailInner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.detailBody {
+  margin: 2px 0 4px 29px;
+  max-height: 440px;
+  overflow-y: auto;
+  border-left: 1px solid var(--hairline);
+  padding: 2px 0 2px 14px;
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}

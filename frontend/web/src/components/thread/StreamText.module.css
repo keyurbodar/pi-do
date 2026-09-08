@@ -1,0 +1,35 @@
+/* StreamText caret — beautiful .stream-caret pattern, themed to the preset
+   (b1D0dxmC dark vars in theme.css): solid 2px bar while streaming, blinks
+   once the text settles. */
+
+.stream-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1.05em;
+  margin-left: 1.5px;
+  translate: 0 -0.5px;
+  border-radius: 1px;
+  background: var(--foreground);
+  vertical-align: text-bottom;
+  animation: caret-blink 1s step-end infinite;
+}
+
+.stream-caret.is-streaming {
+  animation: none;
+}
+
+@keyframes caret-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stream-caret {
+    animation: none;
+  }
+}
