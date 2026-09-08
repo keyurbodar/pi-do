@@ -31,3 +31,4 @@ pr	title	branch	worktree	complexity	time_min	depends_on	parallel_group	scope	com
 31	keyed-runtime	pr/31-keyed-runtime	.worktrees/pr-31	1	10	25	W9	key path proof no inference keyed resolution plus thinking off plus redaction	100%	✅ merged (battery-only, no code gap, keyed+keyless green)
 32	agent-loop	pr/32-agent-loop	.worktrees/pr-32	3	18	31	W9	keyed model-called turn loop plus thinking passthrough	100%	✅ merged (completeSimple loop, stub unchanged keyless, keyed turn proven once, quota dry after)
 33	usage-footer	pr/33-usage-footer	.worktrees/pr-33	2	12	32	W9	per-turn usage row plus session rates	100%	✅ merged (OMP row rules, keyed sums proven, zeros keyless)
+34	backend-lean-drive	main	.	5	300	33	W13	Backend 10400 to 7503 LOC via upstream absorption plus unification, wire shapes frozen	100%	✅ committed 69061ab (19 batteries green, step 13 needs funded key)
