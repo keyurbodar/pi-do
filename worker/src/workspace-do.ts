@@ -1,21 +1,28 @@
+import * as v from "valibot";
 import { createDofsVfs, type FileStore } from "../../packages/pi-cf/src/vfs-dofs";
 import { appendEntry, ensureEntriesSchema, entryHead, listEntries, openRun, recordTurnWithOpen, runInSyncTx, sumResultUsage, type SessionUsageMeta } from "../../packages/pi-cf/src/entries";
+import { ensureWorkspaceSchema } from "../../packages/pi-cf/src/sql-util";
 import type { SessionUsage } from "../../packages/pi-cf/src/session";
 import { archiveMeta, compactionPending, ensureCompactionSchema, pendingSessions, readArchivePage, runCompaction } from "./compaction";
 import { acceptStream, checkedRotate, executeTurn, readAttachment, socketClosed, socketMessage, wrapSocket, type StreamHost, type TurnSink } from "./stream";
 import { normalizeWorkspacePath } from "../../packages/pi-cf/src/tools";
-import { buildRuntime, clampThinkingLevel, keyedProviders, resolveCatalogModel, resolveKeyedModelLive, supportedThinkingLevels, THINKING_LEVELS, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
+import { buildRuntime, clampThinkingLevel, keyedProviders, listCatalogModels, resolveCatalogModel, resolveKeyedModelLive, supportedThinkingLevels, THINKING_LEVELS, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
 import { createWorkspaceFs, gateArgv, hasGitDir, notARepoBody, NotARepoError, runGitRead, runGitWrite, WRITE_SUBCOMMANDS } from "./git";
+import { bgSchema, execSchema, handleSchema, hintFor, sidSchema, type ValidatorRoute } from "./schemas";
+import { EXEC_TIMEOUT_MS } from "./shell-exec";
 
 interface ShellWorkerBinding {
   exec(input: {
     command: string;
     cwd?: string;
-    env?: Record<string, string>;
+    env?: unknown;
     sid?: string;
   }): Promise<{ stdout: string; stderr: string; exit: number; timedOut: boolean; killed: boolean }>;
   kill(input: { sid: string }): Promise<{ killed: boolean }>;
-  dispose(input: { sid: string }): Promise<{ disposed: true }>;
+  dispose(input: { sid: string }): Promise<{ disposed: true; stdoutBytes: number; stderrBytes: number }>;
+  bgStart(input: { command: string; cwd?: string; env?: unknown }): Promise<{ handle: string }>;
+  bgRead(input: { handle: string }): Promise<{ done: boolean; stdout?: string; stderr?: string; exit?: number; timedOut?: boolean; killed?: boolean }>;
+  bgKill(input: { handle: string }): Promise<{ killed: boolean }>;
 }
 
 interface Env {
@@ -37,6 +44,88 @@ function json(data: unknown, status = 200): Response {
 
 function err(error: string, hint: string, status: number): Response {
   return json({ error, hint }, status);
+}
+export interface ForwardRequest {
+  method: string;
+  url: string;
+  header(name: string): string | undefined;
+  arrayBuffer(): Promise<ArrayBuffer>;
+}
+
+export interface ForwardEnv {
+  WORKSPACE_DO: DurableObjectNamespace;
+}
+
+function workspaceStub(env: ForwardEnv, workspaceId: string): DurableObjectStub {
+  return env.WORKSPACE_DO.get(env.WORKSPACE_DO.idFromName(workspaceId));
+}
+
+export async function forwardToWorkspace(env: ForwardEnv, workspaceId: string, path: string, req: ForwardRequest, query: Record<string, string | undefined> = {}): Promise<Response> {
+  const inner = new URL(path, "http://do");
+  inner.searchParams.set("ws", workspaceId);
+  for (const [key, value] of Object.entries(query)) if (value !== undefined) inner.searchParams.set(key, value);
+  const stub = workspaceStub(env, workspaceId);
+  if (req.method !== "POST" && req.method !== "PUT") return stub.fetch(inner.toString(), { method: req.method });
+  const body = await req.arrayBuffer();
+  const headers: Record<string, string> = {};
+  const contentType = req.header("content-type");
+  if (contentType !== undefined) headers["content-type"] = contentType;
+  return stub.fetch(inner.toString(), { method: req.method, headers, body });
+}
+
+export function createWorkspace(env: ForwardEnv): Promise<Response> {
+  const workspaceId = crypto.randomUUID();
+  return workspaceStub(env, workspaceId).fetch("http://do/create", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ workspaceId }) });
+}
+
+export function forwardStream(env: ForwardEnv, workspaceId: string, sessionId: string, req: { url: string; raw: Request }): Promise<Response> {
+  const inner = new URL("http://do/stream");
+  inner.searchParams.set("ws", workspaceId);
+  inner.searchParams.set("sid", sessionId);
+  const raw = new URL(req.url);
+  for (const key of ["fence", "expected"]) {
+    const value = raw.searchParams.get(key);
+    if (value !== null) inner.searchParams.set(key, value);
+  }
+  return workspaceStub(env, workspaceId).fetch(new Request(inner.toString(), { method: "GET", headers: req.raw.headers }));
+}
+
+const JSON_CT = /^application\/([a-z-.]+\+)?json(;\s*[a-zA-Z0-9-]+=([^;]+))*$/i;
+
+function issueKey(issues: unknown): string | null {
+  if (!Array.isArray(issues) || issues.length === 0) return null;
+  const first = issues[0];
+  if (first === null || typeof first !== "object" || !("path" in first)) return null;
+  const path = first.path;
+  if (!Array.isArray(path)) return null;
+  for (const segment of path) {
+    if (segment !== null && typeof segment === "object" && "key" in segment && typeof segment.key === "string") return segment.key;
+  }
+  return null;
+}
+
+type Validated<T> = { ok: true; value: T } | { ok: false; response: Response };
+
+async function readValidated<T extends v.GenericSchema | v.GenericSchemaAsync>(request: Request, route: ValidatorRoute, schema: T): Promise<Validated<v.InferOutput<T>>> {
+  const contentType = request.headers.get("content-type");
+  if (contentType === null || !JSON_CT.test(contentType)) {
+    const spec = hintFor[route].default;
+    return { ok: false, response: err(spec.error, spec.hint, 400) };
+  }
+  let value: unknown;
+  try {
+    value = await request.json();
+  } catch {
+    return { ok: false, response: new Response("Malformed JSON in request body", { status: 400 }) };
+  }
+  const parsed = await v.safeParseAsync(schema, value);
+  if (!parsed.success) {
+    const table = hintFor[route];
+    const key = issueKey(parsed.issues);
+    const spec = (key !== null ? table[key] : undefined) ?? table.default;
+    return { ok: false, response: err(spec.error, spec.hint, 400) };
+  }
+  return { ok: true, value: parsed.output };
 }
 
 type UsageRow = { inTokens: number; outTokens: number; cacheRead: number; costTotal: number; elapsedMs: number; tokensPerSec: number | null };
@@ -102,31 +191,11 @@ export class WorkspaceDO implements DurableObject {
 
   private ensureSchema(): void {
     const sql = this.state.storage.sql;
-    sql.exec(
-      "CREATE TABLE IF NOT EXISTS workspaces(id TEXT PRIMARY KEY, created_at TEXT)",
-    );
+    ensureWorkspaceSchema(sql);
     this.files.ensureSchema();
     ensureEntriesSchema(sql);
     ensureCompactionSchema(sql);
     sql.exec("DROP TABLE IF EXISTS pi_owners");
-    sql.exec(
-      "CREATE TABLE IF NOT EXISTS sessions(sid TEXT PRIMARY KEY, ws TEXT, created_at TEXT, ownerFence TEXT, revision INTEGER NOT NULL DEFAULT 0)",
-    );
-    const cols = [
-      ...sql.exec("PRAGMA table_info(sessions)"),
-    ] as Array<{ name?: unknown }>;
-    const names = new Set(cols.map((c) => c.name));
-    if (!names.has("ownerFence")) sql.exec("ALTER TABLE sessions ADD COLUMN ownerFence TEXT");
-    if (!names.has("revision"))
-      sql.exec("ALTER TABLE sessions ADD COLUMN revision INTEGER NOT NULL DEFAULT 0");
-    if (!names.has("modelProvider")) sql.exec("ALTER TABLE sessions ADD COLUMN modelProvider TEXT");
-    if (!names.has("modelId")) sql.exec("ALTER TABLE sessions ADD COLUMN modelId TEXT");
-    if (!names.has("thinkingLevel")) sql.exec("ALTER TABLE sessions ADD COLUMN thinkingLevel TEXT");
-    if (!names.has("cacheRetention")) sql.exec("ALTER TABLE sessions ADD COLUMN cacheRetention TEXT");
-    if (!names.has("leaf")) sql.exec("ALTER TABLE sessions ADD COLUMN leaf INTEGER NOT NULL DEFAULT 0");
-    sql.exec(
-      "CREATE TABLE IF NOT EXISTS workspace_settings(ws TEXT PRIMARY KEY, modelProvider TEXT, modelId TEXT, thinkingLevel TEXT)",
-    );
   }
 
   private readFence(sid: string): { fence: string | null; revision: number } | null {
@@ -796,6 +865,134 @@ export class WorkspaceDO implements DurableObject {
       }
       const sql = this.state.storage.sql;
       return json({ sid, ...readArchivePage(sql, sid, page) });
+    }
+    if (request.method === "POST" && url.pathname === "/exec") {
+      const ws = url.searchParams.get("ws") ?? "";
+      const parsed = await readValidated(request, "exec", execSchema);
+      if (!parsed.ok) return parsed.response;
+      const body = parsed.value;
+      const bad = this.requireSession(ws, null, "call POST /workspaces/:id/exec on the Worker instead", "create one with POST /workspaces first");
+      if (bad) return bad;
+      let result;
+      try {
+        result = await this.env.SHELL_WORKER.exec({ command: body.command, cwd: body.cwd, env: body.env, sid: body.sid });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        if (message.startsWith("exec busy")) {
+          return err(message, "wait for the run to settle, or stop it via POST /workspaces/:id/exec/kill", 409);
+        }
+        if (message.startsWith("exec sessions full")) {
+          return err(message, "drop an idle session via POST /workspaces/:id/exec/dispose, then retry", 429);
+        }
+        if (message.startsWith("exec cwd escapes")) {
+          return err(message, 'stay under /workspace, e.g. {"command": "pwd", "cwd": "/workspace"}', 400);
+        }
+        throw e;
+      }
+      if (result.killed) {
+        return err("exec killed by kill request", "retry the command, or drop the session via POST /workspaces/:id/exec/dispose", 408);
+      }
+      if (result.timedOut) {
+        return err(`exec timed out after ${EXEC_TIMEOUT_MS}ms`, "retry with a shorter command, or stop a live run via POST /workspaces/:id/exec/kill", 408);
+      }
+      return json({ stdout: result.stdout, stderr: result.stderr, exit: result.exit });
+    }
+
+    if (request.method === "POST" && url.pathname === "/exec/kill") {
+      const ws = url.searchParams.get("ws") ?? "";
+      const parsed = await readValidated(request, "execKill", sidSchema);
+      if (!parsed.ok) return parsed.response;
+      const bad = this.requireSession(ws, null, "call POST /workspaces/:id/exec on the Worker instead", "create one with POST /workspaces first");
+      if (bad) return bad;
+      try {
+        const outcome = await this.env.SHELL_WORKER.kill({ sid: parsed.value.sid });
+        return json({ killed: outcome.killed });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        if (message.startsWith("no such exec session")) {
+          return err(message, "run one command with that sid first to create the session", 404);
+        }
+        throw e;
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/exec/dispose") {
+      const ws = url.searchParams.get("ws") ?? "";
+      const parsed = await readValidated(request, "execDispose", sidSchema);
+      if (!parsed.ok) return parsed.response;
+      const bad = this.requireSession(ws, null, "call POST /workspaces/:id/exec on the Worker instead", "create one with POST /workspaces first");
+      if (bad) return bad;
+      const outcome = await this.env.SHELL_WORKER.dispose({ sid: parsed.value.sid });
+      return json({ disposed: outcome.disposed, stdoutBytes: outcome.stdoutBytes, stderrBytes: outcome.stderrBytes });
+    }
+
+    if (request.method === "POST" && url.pathname === "/bg") {
+      const ws = url.searchParams.get("ws") ?? "";
+      const parsed = await readValidated(request, "bg", bgSchema);
+      if (!parsed.ok) return parsed.response;
+      const body = parsed.value;
+      const bad = this.requireSession(ws, null, "call POST /workspaces/:id/exec on the Worker instead", "create one with POST /workspaces first");
+      if (bad) return bad;
+      try {
+        const outcome = await this.env.SHELL_WORKER.bgStart({ command: body.command, cwd: body.cwd, env: body.env });
+        return json({ handle: outcome.handle });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        if (message.startsWith("exec cwd escapes")) {
+          return err(message, 'stay under /workspace, e.g. {"command": "pwd", "cwd": "/workspace"}', 400);
+        }
+        if (message.startsWith("bg processes full")) {
+          return err(message, "kill a running process via POST /workspaces/:id/bg/kill, then retry", 429);
+        }
+        throw e;
+      }
+    }
+
+    if (request.method === "GET" && url.pathname === "/bg") {
+      const ws = url.searchParams.get("ws") ?? "";
+      const bad = this.requireSession(ws, null, "call GET /workspaces/:id/bg on the Worker instead", "create one with POST /workspaces first");
+      if (bad) return bad;
+      const handle = url.searchParams.get("handle");
+      if (handle === null || handle.length === 0) {
+        return err("missing handle", "retry as GET /workspaces/:id/bg?handle=H with the handle from POST /workspaces/:id/bg", 400);
+      }
+      try {
+        return json(await this.env.SHELL_WORKER.bgRead({ handle }));
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        if (message.startsWith("no such bg process")) {
+          return err(message, "start one with POST /workspaces/:id/bg first, or it was killed", 404);
+        }
+        throw e;
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/bg/kill") {
+      const ws = url.searchParams.get("ws") ?? "";
+      const parsed = await readValidated(request, "bgKill", handleSchema);
+      if (!parsed.ok) return parsed.response;
+      const bad = this.requireSession(ws, null, "call POST /workspaces/:id/exec on the Worker instead", "create one with POST /workspaces first");
+      if (bad) return bad;
+      try {
+        const outcome = await this.env.SHELL_WORKER.bgKill({ handle: parsed.value.handle });
+        return json({ killed: outcome.killed });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        if (message.startsWith("no such bg process")) {
+          return err(message, "start one with POST /workspaces/:id/bg first, or it was killed", 404);
+        }
+        throw e;
+      }
+    }
+
+    if (request.method === "GET" && url.pathname === "/models") {
+      const only = url.searchParams.get("provider");
+      const models = listCatalogModels().filter((m) => only === null || m.provider === only);
+      if (only !== null && models.length === 0) {
+        return err(`unknown provider: ${only}`, "retry GET /models without ?provider to list the catalog", 404);
+      }
+      const keyed = keyedProviders(this.env as unknown as RuntimeEnv).map((provider) => provider.id);
+      return json({ models, keyed });
     }
 
     return err("not found", "use POST /workspaces, /workspaces/:id/sessions, or /workspaces/:id/files", 404);

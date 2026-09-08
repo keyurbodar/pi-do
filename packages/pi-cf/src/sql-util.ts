@@ -98,6 +98,12 @@ export interface Migration {
 
 export const MIGRATIONS: readonly Migration[] = [
   { table: "pi_entries", column: "parent", ddl: "ALTER TABLE pi_entries ADD COLUMN parent INTEGER NOT NULL DEFAULT 0" },
+  { table: "sessions", column: "ownerFence", ddl: "ALTER TABLE sessions ADD COLUMN ownerFence TEXT" },
+  { table: "sessions", column: "revision", ddl: "ALTER TABLE sessions ADD COLUMN revision INTEGER NOT NULL DEFAULT 0" },
+  { table: "sessions", column: "modelProvider", ddl: "ALTER TABLE sessions ADD COLUMN modelProvider TEXT" },
+  { table: "sessions", column: "modelId", ddl: "ALTER TABLE sessions ADD COLUMN modelId TEXT" },
+  { table: "sessions", column: "thinkingLevel", ddl: "ALTER TABLE sessions ADD COLUMN thinkingLevel TEXT" },
+  { table: "sessions", column: "cacheRetention", ddl: "ALTER TABLE sessions ADD COLUMN cacheRetention TEXT" },
   { table: "sessions", column: "leaf", ddl: "ALTER TABLE sessions ADD COLUMN leaf INTEGER NOT NULL DEFAULT 0" },
 ];
 
@@ -109,6 +115,9 @@ export function migrate(sql: Sql, migrations: readonly Migration[] = MIGRATIONS)
 }
 
 export const CREATE_TABLES = {
+  workspaces: "CREATE TABLE IF NOT EXISTS workspaces(id TEXT PRIMARY KEY, created_at TEXT)",
+  sessions: "CREATE TABLE IF NOT EXISTS sessions(sid TEXT PRIMARY KEY, ws TEXT, created_at TEXT, ownerFence TEXT, revision INTEGER NOT NULL DEFAULT 0)",
+  workspaceSettings: "CREATE TABLE IF NOT EXISTS workspace_settings(ws TEXT PRIMARY KEY, modelProvider TEXT, modelId TEXT, thinkingLevel TEXT)",
   piEntries: "CREATE TABLE IF NOT EXISTS pi_entries (id INTEGER PRIMARY KEY AUTOINCREMENT, ws TEXT, sid TEXT, cursor INTEGER, parent INTEGER NOT NULL DEFAULT 0, type TEXT, body TEXT)",
   runs: "CREATE TABLE IF NOT EXISTS runs (sid TEXT, runId TEXT PRIMARY KEY, status TEXT)",
   piEntriesSidId: "CREATE INDEX IF NOT EXISTS pi_entries_sid_id ON pi_entries(sid, id)",
@@ -120,6 +129,10 @@ export const CREATE_TABLES = {
 export function ensureTables(sql: Sql, tables: readonly string[] = Object.values(CREATE_TABLES)): void {
   for (const ddl of tables) sql.exec(ddl);
   migrate(sql);
+}
+
+export function ensureWorkspaceSchema(sql: Sql): void {
+  ensureTables(sql, [CREATE_TABLES.workspaces, CREATE_TABLES.sessions, CREATE_TABLES.workspaceSettings]);
 }
 
 export const FILES_QUERIES = {

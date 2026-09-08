@@ -11,6 +11,7 @@ import {
   withSessionRates,
   type EntriesSql,
 } from "./entries.ts";
+import { ensureWorkspaceSchema } from "./sql-util.ts";
 import { enforceFence } from "./fence.ts";
 import {
   createAgentSession,
@@ -76,16 +77,9 @@ export function createPiCf(options: CreatePiCfOptions = {}): new (
 
     private ensureSchema(): void {
       const sql = this.state.storage.sql;
-      sql.exec("CREATE TABLE IF NOT EXISTS workspaces(id TEXT PRIMARY KEY, created_at TEXT)");
+      ensureWorkspaceSchema(sql);
       this.files.ensureSchema();
       ensureEntriesSchema(sql);
-      sql.exec(
-        "CREATE TABLE IF NOT EXISTS sessions(sid TEXT PRIMARY KEY, ws TEXT, created_at TEXT, ownerFence TEXT, revision INTEGER NOT NULL DEFAULT 0)",
-      );
-      const cols = [...sql.exec("PRAGMA table_info(sessions)")] as Array<{ name?: unknown }>;
-      if (cols.length > 0 && !cols.some((c) => c.name === "leaf")) {
-        sql.exec("ALTER TABLE sessions ADD COLUMN leaf INTEGER NOT NULL DEFAULT 0");
-      }
     }
 
     private enqueueSessionTurn<T>(sid: string, fn: () => Promise<T>): Promise<T> {
