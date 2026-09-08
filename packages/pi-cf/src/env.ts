@@ -1,5 +1,3 @@
-// env.ts — ComputerExecutionEnv: pi filesystem seam over a FileStore-shaped object.
-// Misses throw { error, hint } objects, never raw strings.
 
 export interface FileStoreLike {
   put(ws: string, path: string, body: Uint8Array, updatedAt: string): number;
@@ -113,52 +111,32 @@ export class ComputerExecutionEnv {
     return { stdout: result.stdout, stderr: result.stderr, exit: result.exit };
   }
 
-  async bgStart(input: BgStartInput): Promise<{ handle: string }> {
+  private bgShell(): ShellLike & Required<Pick<ShellLike, "bgStart" | "bgRead" | "bgKill">> {
     if (!this.shell) {
       throw {
         error: "shell unavailable",
         hint: "construct ComputerExecutionEnv with a shell binding to run commands",
       };
     }
-    if (!this.shell.bgStart) {
+    if (!this.shell.bgStart || !this.shell.bgRead || !this.shell.bgKill) {
       throw {
         error: "bg unsupported",
         hint: "use a shell binding with bgStart/bgRead/bgKill",
       };
     }
-    return this.shell.bgStart(input);
+    return this.shell as ShellLike & Required<Pick<ShellLike, "bgStart" | "bgRead" | "bgKill">>;
+  }
+
+  async bgStart(input: BgStartInput): Promise<{ handle: string }> {
+    return this.bgShell().bgStart(input);
   }
 
   async bgRead(input: { handle: string }): Promise<BgReadResult> {
-    if (!this.shell) {
-      throw {
-        error: "shell unavailable",
-        hint: "construct ComputerExecutionEnv with a shell binding to run commands",
-      };
-    }
-    if (!this.shell.bgRead) {
-      throw {
-        error: "bg unsupported",
-        hint: "use a shell binding with bgStart/bgRead/bgKill",
-      };
-    }
-    return this.shell.bgRead(input);
+    return this.bgShell().bgRead(input);
   }
 
   async bgKill(input: { handle: string }): Promise<{ killed: boolean }> {
-    if (!this.shell) {
-      throw {
-        error: "shell unavailable",
-        hint: "construct ComputerExecutionEnv with a shell binding to run commands",
-      };
-    }
-    if (!this.shell.bgKill) {
-      throw {
-        error: "bg unsupported",
-        hint: "use a shell binding with bgStart/bgRead/bgKill",
-      };
-    }
-    return this.shell.bgKill(input);
+    return this.bgShell().bgKill(input);
   }
 
   rm(path: string): { path: string } {

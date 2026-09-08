@@ -71,7 +71,7 @@ function createFakeStore(putOrder) {
 const ctx = { env: new ComputerExecutionEnv(createFakeStore(), "ws1") };
 const textOf = (r) => r.content.map((c) => (c.type === "text" ? c.text : "")).join("");
 
-eq("session-tools", Object.keys(sessionTools).sort(), ["bash", "edit", "list", "read", "remove", "write"]);
+eq("session-tools", Object.keys(sessionTools).sort(), ["bash", "bg", "definition", "diagnostics", "edit", "find", "grep", "list", "pm", "read", "references", "remove", "test", "write"]);
 
 eq("write", textOf(await writeTool.execute("t1", { path: "a.txt", content: "hello" }, undefined, undefined, ctx)), "Successfully wrote to a.txt");
 eq("read-back", textOf(await readTool.execute("t2", { path: "a.txt" }, undefined, undefined, ctx)), "hello");

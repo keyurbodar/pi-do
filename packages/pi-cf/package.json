@@ -9,8 +9,10 @@
     "bundle-ts-libs": "node scripts/bundle-ts-libs.mjs"
   },
   "dependencies": {
+    "@earendil-works/pi-agent-core": "0.84.4",
     "@earendil-works/pi-ai": "0.84.4",
     "diff": "8.0.4",
+    "minimatch": "10.2.6",
     "typescript": "5.9.3"
   }
 }

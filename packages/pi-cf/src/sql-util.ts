@@ -1,0 +1,150 @@
+export interface Sql {
+  exec(query: string, ...bindings: unknown[]): Iterable<unknown>;
+}
+
+export interface EntryRow {
+  cursor: number;
+  parent: number;
+  type: string;
+  body: string;
+}
+
+export function parseJsonObject(body: string): Record<string, unknown> | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  return parsed as Record<string, unknown>;
+}
+
+export function strField(obj: Record<string, unknown>, key: string): string | null {
+  const value = obj[key];
+  return typeof value === "string" ? value : null;
+}
+
+export function numField(obj: Record<string, unknown>, key: string): number {
+  const value = obj[key];
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+export function readSingleRow(sql: Sql, query: string, ...bindings: unknown[]): Record<string, unknown> | null {
+  for (const row of sql.exec(query, ...bindings)) {
+    if (row !== null && typeof row === "object") return row as Record<string, unknown>;
+  }
+  return null;
+}
+
+export function readScalar<T>(sql: Sql, query: string, ...bindings: unknown[]): T | undefined {
+  const row = readSingleRow(sql, query, ...bindings);
+  if (row === null) return undefined;
+  const values = Object.values(row);
+  return (values.length > 0 ? values[0] : undefined) as T | undefined;
+}
+
+export function toEntryRow(row: unknown): EntryRow | null {
+  if (row === null || typeof row !== "object") return null;
+  if (!("cursor" in row && "type" in row && "body" in row)) return null;
+  if (typeof row.cursor !== "number" || typeof row.type !== "string" || typeof row.body !== "string") return null;
+  return { cursor: row.cursor, type: row.type, body: row.body, parent: "parent" in row && typeof row.parent === "number" ? row.parent : 0 };
+}
+
+export function mapEntryRows(rows: Iterable<unknown>): EntryRow[] {
+  const out: EntryRow[] = [];
+  for (const row of rows) {
+    const entry = toEntryRow(row);
+    if (entry !== null) out.push(entry);
+  }
+  return out;
+}
+
+export function existsBy(sql: Sql, query: string, ...bindings: unknown[]): boolean {
+  for (const row of sql.exec(query, ...bindings)) {
+    void row;
+    return true;
+  }
+  return false;
+}
+
+export function drainPages<T extends { cursor: number }>(fetchPage: (after: number) => T[]): T[] {
+  const out: T[] = [];
+  let after = 0;
+  for (;;) {
+    const page = fetchPage(after);
+    if (page.length === 0) return out;
+    out.push(...page);
+    after = page[page.length - 1].cursor;
+    if (page.length < 1000) return out;
+  }
+}
+
+function tableColumns(sql: Sql, table: string): Set<string> {
+  const names = new Set<string>();
+  for (const row of sql.exec(`PRAGMA table_info(${table})`)) {
+    if (row !== null && typeof row === "object" && "name" in row && typeof row.name === "string") {
+      names.add(row.name);
+    }
+  }
+  return names;
+}
+
+export interface Migration {
+  table: string;
+  column: string;
+  ddl: string;
+}
+
+export const MIGRATIONS: readonly Migration[] = [
+  { table: "pi_entries", column: "parent", ddl: "ALTER TABLE pi_entries ADD COLUMN parent INTEGER NOT NULL DEFAULT 0" },
+  { table: "sessions", column: "leaf", ddl: "ALTER TABLE sessions ADD COLUMN leaf INTEGER NOT NULL DEFAULT 0" },
+];
+
+export function migrate(sql: Sql, migrations: readonly Migration[] = MIGRATIONS): void {
+  for (const m of migrations) {
+    const cols = tableColumns(sql, m.table);
+    if (cols.size > 0 && !cols.has(m.column)) sql.exec(m.ddl);
+  }
+}
+
+export const CREATE_TABLES = {
+  piEntries: "CREATE TABLE IF NOT EXISTS pi_entries (id INTEGER PRIMARY KEY AUTOINCREMENT, ws TEXT, sid TEXT, cursor INTEGER, parent INTEGER NOT NULL DEFAULT 0, type TEXT, body TEXT)",
+  runs: "CREATE TABLE IF NOT EXISTS runs (sid TEXT, runId TEXT PRIMARY KEY, status TEXT)",
+  piEntriesSidId: "CREATE INDEX IF NOT EXISTS pi_entries_sid_id ON pi_entries(sid, id)",
+  files: "CREATE TABLE IF NOT EXISTS files(ws TEXT, path TEXT, body BLOB, updated_at TEXT, PRIMARY KEY(ws, path))",
+  compactionMarks: "CREATE TABLE IF NOT EXISTS compaction_marks(sid TEXT PRIMARY KEY, pending INTEGER NOT NULL DEFAULT 0)",
+  piArchive: "CREATE TABLE IF NOT EXISTS pi_archive(sid TEXT, page INTEGER, entries TEXT, PRIMARY KEY(sid, page))",
+} as const;
+
+export function ensureTables(sql: Sql, tables: readonly string[] = Object.values(CREATE_TABLES)): void {
+  for (const ddl of tables) sql.exec(ddl);
+  migrate(sql);
+}
+
+export const FILES_QUERIES = {
+  put: "INSERT OR REPLACE INTO files(ws, path, body, updated_at) VALUES (?, ?, ?, ?)",
+  get: "SELECT body FROM files WHERE ws = ? AND path = ?",
+  list: "SELECT path, length(body) AS bytes FROM files WHERE ws = ? AND path LIKE (? || '%') ORDER BY path",
+  exists: "SELECT 1 FROM files WHERE ws = ? AND path = ? LIMIT 1",
+  remove: "DELETE FROM files WHERE ws = ? AND path = ?",
+  listPaths: "SELECT path FROM files WHERE ws = ? AND path LIKE (? || '%') ORDER BY path",
+  deleteByPrefix: "DELETE FROM files WHERE ws = ? AND path LIKE (? || '%')",
+} as const;
+
+export interface EntryProjection {
+  field: string;
+  role: string;
+  withArgs?: boolean;
+}
+
+export const ENTRY_PROJECTION: Record<string, EntryProjection> = {
+  prompt: { field: "prompt", role: "user" },
+  result: { field: "result", role: "assistant" },
+  toolCall: { field: "tool", role: "toolCall", withArgs: true },
+  toolResult: { field: "output", role: "toolResult" },
+  compaction: { field: "summary", role: "compactionSummary" },
+  steer: { field: "text", role: "user" },
+};
+
+export const SUMMARY_FIELDS: readonly string[] = ["prompt", "result", "summary"];

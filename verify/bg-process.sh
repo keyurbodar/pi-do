@@ -1,10 +1,4 @@
 #!/bin/sh
-# bg-process.sh — proves background processes: start returns a handle, an
-# immediate read shows done:false, kill stops it with {killed:true}, a
-# post-kill read is 404 (fail closed), cwd escape is 400, the 64-live cap
-# answers 429 with a hint, and bg runs never touch VFS rows.
-# Usage: sh verify/bg-process.sh [BASE]
-# Exit 0 on pass, 1 otherwise. Writes artifacts/RUN_ID/bg-process/.
 set -u
 BASE="${1:-http://127.0.0.1:8787}"
 RUN_ID="verify-$(date +%s)"
@@ -69,14 +63,22 @@ if (JSON.parse(o.body).killed !== true) throw new Error('expected {killed:true},
 console.log('kill ok');
 " "${OUT}/kill.json" || exit 1
 
-echo "### 5 post-kill read is 404 (fail closed)"
+echo "### 5 post-kill read lands the killed result, then consumes it"
+get "${BG}?handle=${H}" read-killed.json || exit 1
+node -e "
+const o = JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'));
+if (o.status !== 200) throw new Error('expected 200, got ' + o.status + ' ' + o.body);
+const b = JSON.parse(o.body);
+if (b.done !== true || b.killed !== true) throw new Error('expected { done:true, killed:true }, got ' + o.body);
+console.log('killed result ok');
+" "${OUT}/read-killed.json" || exit 1
 get "${BG}?handle=${H}" read-gone.json || exit 1
 node -e "
 const o = JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'));
 if (o.status !== 404) throw new Error('expected 404, got ' + o.status + ' ' + o.body);
 const b = JSON.parse(o.body);
 if (typeof b.error !== 'string' || typeof b.hint !== 'string') throw new Error('need { error, hint }');
-console.log('fail closed ok: ' + b.error);
+console.log('consumed ok: ' + b.error);
 " "${OUT}/read-gone.json" || exit 1
 
 echo "### 6 cwd escape is 400 with a hint"

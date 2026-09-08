@@ -1,15 +1,6 @@
 import { streamSimple } from "@earendil-works/pi-ai/compat";
-import type {
-  Api,
-  AssistantMessage,
-  Context as PiContext,
-  Message as PiMessage,
-  Model as PiModel,
-  SimpleStreamOptions,
-  ThinkingLevel,
-  Tool as PiTool,
-  ToolCall as PiToolCall,
-} from "@earendil-works/pi-ai";
+import type { Api, Model as PiModel, ThinkingLevel } from "@earendil-works/pi-ai";
+import { Agent, type AgentEvent, type AgentHarnessTool, type AgentMessage, type AgentTool, type AgentToolResult, type StreamFn } from "@earendil-works/pi-agent-core";
 import {
   ComputerExecutionEnv,
   type FileStoreLike,
@@ -21,74 +12,38 @@ import { definitionTool, diagnosticsCompilerTool, referencesTool } from "./ts-to
 import { bgTool } from "./bg-tools.ts";
 import { findTool, grepTool } from "./search-tools.ts";
 import { planStubTurn } from "./stub-plan.ts";
-import type { AgentHarnessTool } from "@earendil-works/pi-agent-core";
 import { buildSessionContext, capSessionContext, estimateTokens, type ContextMessage, type EntryReader } from "./context.ts";
 export const sessionTools = {
-  read: readTool,
-  write: writeTool,
-  edit: editTool,
-  list: listTool,
-  remove: removeTool,
-  bash: bashTool,
-  find: findTool,
-  grep: grepTool,
-  diagnostics: diagnosticsCompilerTool,
-  definition: definitionTool,
-  references: referencesTool,
-  test: testTool,
-  pm: pmTool,
-  bg: bgTool,
+  read: readTool, write: writeTool, edit: editTool, list: listTool, remove: removeTool, bash: bashTool,
+  find: findTool, grep: grepTool, diagnostics: diagnosticsCompilerTool,
+  definition: definitionTool, references: referencesTool, test: testTool, pm: pmTool, bg: bgTool,
 };
 
 export type SessionTools = typeof sessionTools;
 
 export interface SessionModel {
-  id: string;
-  name?: string;
-  api?: string;
-  provider?: string;
-  baseUrl?: string;
-  headers?: Record<string, string>;
-  contextWindow?: number;
-  maxTokens?: number;
+  id: string; name?: string; api?: string; provider?: string;
+  baseUrl?: string; headers?: Record<string, string>; contextWindow?: number; maxTokens?: number;
 }
 
 export interface CreateAgentSessionOptions {
-  files: FileStoreLike;
-  ws: string;
-  shell: ShellLike;
-  model: SessionModel;
-  tools?: Partial<SessionTools>;
-  apiKey?: string;
-  history?: { leaf: number; readEntry: EntryReader };
-  sessionId?: string;
-  cacheRetention?: "short" | "long";
+  files: FileStoreLike; ws: string; shell: ShellLike; model: SessionModel; tools?: Partial<SessionTools>;
+  apiKey?: string; history?: { leaf: number; readEntry: EntryReader };
+  sessionId?: string; cacheRetention?: "short" | "long";
 }
 
 export interface SessionToolCall {
-  id: string;
-  tool: string;
-  args: Record<string, unknown>;
-  output: string;
+  id: string; tool: string; args: Record<string, unknown>; output: string;
 }
 
 export interface SessionUsage {
-  inTokens: number;
-  outTokens: number;
-  cacheRead: number;
-  costTotal: number;
-  elapsedMs: number;
-  tokensPerSec: number | null;
-  retention?: "short" | "long";
+  inTokens: number; outTokens: number; cacheRead: number;
+  costTotal: number; elapsedMs: number; tokensPerSec: number | null; retention?: "short" | "long";
 }
 
 export interface SessionTurn {
-  result: string;
-  toolCalls: SessionToolCall[];
-  via: "createAgentSession";
-  model: string;
-  usage: SessionUsage;
-  halt?: SessionHalt;
+  result: string; toolCalls: SessionToolCall[]; via: "createAgentSession";
+  model: string; usage: SessionUsage; halt?: SessionHalt;
 }
 
 export type HaltReason = "turns" | "tool-calls" | "duration" | "cost";
@@ -98,10 +53,7 @@ export interface SessionHalt {
 }
 
 export interface SessionRunBudgets {
-  maxTurns?: number;
-  maxToolCalls?: number;
-  maxDurationMs?: number;
-  maxCost?: number;
+  maxTurns?: number; maxToolCalls?: number; maxDurationMs?: number; maxCost?: number;
 }
 
 
@@ -112,15 +64,10 @@ export type SessionToolEvent =
   | { kind: "thinking"; delta: string };
 
 export interface SessionRunOptions {
-  signal?: AbortSignal;
-  onUpdate?: (event: SessionToolEvent) => void;
-  thinking?: string | null;
-  budgets?: SessionRunBudgets;
+  signal?: AbortSignal; onUpdate?: (event: SessionToolEvent) => void;
+  thinking?: string | null; budgets?: SessionRunBudgets;
 }
 
-// Abortable pause between steps. Only the streaming path passes a signal,
-// so the one-shot /run path keeps its timing; the pause opens an abort
-// window so a live {abort} frame lands mid-turn instead of after {done}.
 function abortablePause(signal: AbortSignal | undefined): Promise<void> {
   if (signal === undefined) return Promise.resolve();
   if (signal.aborted) return Promise.reject(signal.reason ?? new Error("aborted"));
@@ -136,177 +83,81 @@ function abortablePause(signal: AbortSignal | undefined): Promise<void> {
   signal.addEventListener("abort", onAbort, { once: true });
   return promise;
 }
-// Model-called loop state. The stub path below owns no pi-ai import at
-// runtime: keyless turns never reach streamSimple, so behavior there is
-// byte-identical to the planStubTurn harness it replaces.
 const MAX_MODEL_STEPS = 10;
-// Suppressed under this the rate is nonsense (cached/instant responses yield
-// absurd tok/s). Same 100ms floor as OMP calculateTokensPerSecond.
 const MIN_TURN_MS = 100;
 const TOOL_BATCH_CONCURRENCY = 4;
 
-const DEFAULT_RUN_BUDGETS = {
-  maxTurns: MAX_MODEL_STEPS,
-  maxToolCalls: 32,
-  maxDurationMs: 120000,
-  maxCost: 0.5,
-};
-
-type ResolvedRunBudgets = {
-  maxTurns: number;
-  maxToolCalls: number;
-  maxDurationMs: number;
-  maxCost: number;
-};
-
-function validBudget(value: number | undefined, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback;
-}
-
-function resolveRunBudgets(budgets: SessionRunBudgets | undefined): ResolvedRunBudgets {
-  return {
-    maxTurns: validBudget(budgets?.maxTurns, DEFAULT_RUN_BUDGETS.maxTurns),
-    maxToolCalls: validBudget(budgets?.maxToolCalls, DEFAULT_RUN_BUDGETS.maxToolCalls),
-    maxDurationMs: validBudget(budgets?.maxDurationMs, DEFAULT_RUN_BUDGETS.maxDurationMs),
-    maxCost: validBudget(budgets?.maxCost, DEFAULT_RUN_BUDGETS.maxCost),
-  };
-}
-
-type BatchSlot = {
-  id: string;
-  call: PiToolCall;
-  args: Record<string, unknown>;
-  output: string;
-  isError: boolean;
-  settled: boolean;
-};
-
+const DEFAULT_RUN_BUDGETS = { maxTurns: MAX_MODEL_STEPS, maxToolCalls: 32, maxDurationMs: 120000, maxCost: 0.5 };
 const SYSTEM_PROMPT =
   'You are a coding assistant inside a Cloudflare Worker workspace. File paths are workspace-relative ("" is the workspace root). Use the tools to inspect and change files, then answer with a short summary of what you did.';
 
-// SessionModel is the pi-cf subset; the worker passes its full RuntimeModel
-// here, so extras ride through instead of being retyped per provider.
-function toPiModel(model: SessionModel): PiModel<Api> {
-  const source = model as SessionModel & Partial<PiModel<Api>>;
-  return {
-    id: source.id,
-    name: source.name ?? source.id,
-    api: (source.api ?? "openai-completions") as Api,
-    provider: source.provider ?? "stub",
-    baseUrl: source.baseUrl ?? "",
-    headers: source.headers,
-    reasoning: source.reasoning ?? false,
-    thinkingLevelMap: source.thinkingLevelMap,
-    input: source.input ?? ["text"],
-    cost: source.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: source.contextWindow ?? 0,
-    maxTokens: source.maxTokens ?? 0,
-  };
-}
-
-function assistantText(message: AssistantMessage): string {
-  return message.content
-    .filter((block) => block.type === "text")
-    .map((block) => block.text)
-    .join("\n");
-}
-
-function errorText(value: unknown): string {
-  if (value instanceof Error) return value.message;
-  if (value !== null && typeof value === "object" && "error" in value && typeof value.error === "string") {
-    const hint = "hint" in value && typeof value.hint === "string" ? ` (${value.hint})` : "";
-    return `${value.error}${hint}`;
-  }
-  return String(value ?? "tool failed");
-}
-
-// Silence longer than this between provider events ends the turn as an
-// error instead of hanging the per-session queue forever. Tool execution
-// happens outside the stream, so in-step silence only means a stalled
-// provider stream. Generous on purpose: reasoning models legitimately pause.
 const STREAM_IDLE_TIMEOUT_MS = 120_000;
 
-function idleReject(ms: number, error: unknown): { promise: Promise<never>; cancel: () => void } {
-  // Workers timers are numeric handles; the cast keeps Node-typed toolchains honest.
-  let handle = 0;
-  const promise = new Promise<never>((_, reject) => {
-    handle = setTimeout(() => reject(error), ms) as unknown as number;
-  });
-  return { promise, cancel: () => clearTimeout(handle) };
+function createThinkSplitter(
+  onText: (delta: string) => void,
+  onThinking: (delta: string) => void,
+): { reset: () => void; push: (delta: string) => void } {
+  let inThink = false;
+  return {
+    reset: () => { inThink = false; },
+    push: (delta: string) => {
+      let rest = delta;
+      for (;;) {
+        const open = rest.indexOf("<think>");
+        const close = rest.indexOf("</think>");
+        if (!inThink && open === -1 && close === -1) {
+          if (rest.length > 0) onText(rest);
+          return;
+        }
+        if (!inThink && close !== -1 && (open === -1 || close < open)) {
+          rest = rest.slice(0, close) + rest.slice(close + "</think>".length);
+          continue;
+        }
+        if (!inThink) {
+          if (open > 0) onText(rest.slice(0, open));
+          rest = rest.slice(open + "<think>".length);
+          inThink = true;
+          continue;
+        }
+        if (close === -1) {
+          if (rest.length > 0) onThinking(rest);
+          return;
+        }
+        if (close > 0) onThinking(rest.slice(0, close));
+        rest = rest.slice(close + "</think>".length);
+        inThink = false;
+      }
+    },
+  };
 }
 
-async function streamModelStep(
-  piModel: PiModel<Api>,
-  piContext: PiContext,
-  request: SimpleStreamOptions,
-  signal: AbortSignal | undefined,
-  onUpdate: ((event: SessionToolEvent) => void) | undefined,
-): Promise<AssistantMessage> {
-  const stream = streamSimple(piModel, piContext, request);
-  let final: AssistantMessage | null = null;
-  // Reasoning models (DeepSeek R1 family) demarcate thinking with literal
-  // <think>...</think> spans, sometimes inside text deltas. Route the
-  // enclosed spans to the thinking channel and drop the bare markers so
-  // tags never leak into rendered text. State persists across deltas
-  // because a span can open in one delta and close many later.
-  let inThink = false;
-  const emitTextDelta = (delta: string): void => {
-    let rest = delta;
-    for (;;) {
-      const open = rest.indexOf("<think>");
-      const close = rest.indexOf("</think>");
-      if (!inThink && open === -1 && close === -1) {
-        if (rest.length > 0) onUpdate?.({ kind: "text", delta: rest });
-        return;
-      }
-      if (!inThink && close !== -1 && (open === -1 || close < open)) {
-        // Stray closer with no opener: drop the marker, keep the text.
-        rest = rest.slice(0, close) + rest.slice(close + "</think>".length);
-        continue;
-      }
-      if (!inThink) {
-        if (open > 0) onUpdate?.({ kind: "text", delta: rest.slice(0, open) });
-        rest = rest.slice(open + "<think>".length);
-        inThink = true;
-        continue;
-      }
-      if (close === -1) {
-        if (rest.length > 0) onUpdate?.({ kind: "thinking", delta: rest });
-        return;
-      }
-      if (close > 0) onUpdate?.({ kind: "thinking", delta: rest.slice(0, close) });
-      rest = rest.slice(close + "</think>".length);
-      inThink = false;
+function resultText(result: { content?: Array<{ type?: unknown; text?: unknown }> } | null | undefined): string {
+  if (!Array.isArray(result?.content)) return "";
+  return result.content.map((block) => (block?.type === "text" && typeof block.text === "string" ? block.text : "")).join("");
+}
+
+function failureText(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (error !== null && typeof error === "object" && "error" in error && typeof error.error === "string") {
+    const hint = "hint" in error && typeof error.hint === "string" ? ` (${error.hint})` : "";
+    return `${error.error}${hint}`;
+  }
+  return String(error ?? "tool failed");
+}
+
+function createPool(width: number): { run: <T>(fn: () => Promise<T>) => Promise<T> } {
+  const running = new Set<Promise<unknown>>();
+  const run = async <T>(fn: () => Promise<T>): Promise<T> => {
+    while (running.size >= width) await Promise.race([...running].map((task) => task.then(() => null, () => null)));
+    const task = fn();
+    running.add(task);
+    try {
+      return await task;
+    } finally {
+      running.delete(task);
     }
   };
-  const iterator = stream[Symbol.asyncIterator]();
-  for (;;) {
-    signal?.throwIfAborted();
-    const wait = idleReject(STREAM_IDLE_TIMEOUT_MS, {
-      error: "model stream stalled",
-      hint: "the provider stopped sending data mid-turn; retry the prompt",
-    });
-    let next;
-    try {
-      next = await Promise.race([iterator.next(), wait.promise]);
-    } finally {
-      wait.cancel();
-    }
-    if (next.done) break;
-    const event = next.value;
-    if (event.type === "text_delta") {
-      if (event.delta.length > 0) emitTextDelta(event.delta);
-    } else if (event.type === "thinking_delta") {
-      if (event.delta.length > 0) onUpdate?.({ kind: "thinking", delta: event.delta });
-    } else if (event.type === "done") {
-      final = event.message;
-    } else if (event.type === "error") {
-      final = event.error;
-    }
-  }
-  signal?.throwIfAborted();
-  if (final === null) throw { error: "model turn failed", hint: "retry the prompt with a simpler request" };
-  return final;
+  return { run };
 }
 
 export function createAgentSession(options: CreateAgentSessionOptions): {
@@ -350,11 +201,8 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
   }
 
   async function runStubTurn(
-    prompt: string,
-    signal: AbortSignal | undefined,
-    onUpdate: ((event: SessionToolEvent) => void) | undefined,
-    tools: Record<string, AgentHarnessTool<ToolContext, any, any>>,
-    retention: "short" | "long",
+    prompt: string, signal: AbortSignal | undefined, onUpdate: ((event: SessionToolEvent) => void) | undefined,
+    tools: Record<string, AgentHarnessTool<ToolContext, any, any>>, retention: "short" | "long",
   ): Promise<SessionTurn> {
     const modelId = model.id;
     const readFn = tools.read;
@@ -378,49 +226,47 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
       onUpdate?.({ kind: "toolResult", id, tool, args, output });
     }
     return {
-      result: outputs.join("\n"),
-      toolCalls,
-      via: "createAgentSession",
-      model: modelId,
+      result: outputs.join("\n"), toolCalls, via: "createAgentSession", model: modelId,
       usage: { inTokens: 0, outTokens: 0, cacheRead: 0, costTotal: 0, elapsedMs: 0, tokensPerSec: null, retention },
     };
   }
 
-  // Keyed loop: stream each step via streamSimple, forwarding text and
-  // thinking deltas through onUpdate as they arrive, then execute our
-  // tools, append results, and repeat until the model stops calling tools
-  // or the step cap hits. Same SessionTurn shape, same abort signal; tool
-  // batching, halt budgets, and tool-failure handling are unchanged.
   async function runModelTurn(
-    prompt: string,
-    apiKey: string,
-    signal: AbortSignal | undefined,
-    onUpdate: ((event: SessionToolEvent) => void) | undefined,
-    thinking: string | null,
-    tools: Record<string, AgentHarnessTool<ToolContext, any, any>>,
-    history: ContextMessage[],
-    budgets: SessionRunBudgets | undefined,
-    retention: "short" | "long",
+    prompt: string, apiKey: string, signal: AbortSignal | undefined,
+    onUpdate: ((event: SessionToolEvent) => void) | undefined, thinking: string | null,
+    tools: Record<string, AgentHarnessTool<ToolContext, any, any>>, history: ContextMessage[],
+    budgets: SessionRunBudgets | undefined, retention: "short" | "long",
   ): Promise<SessionTurn> {
+    const openedAt = Date.now();
     const modelId = model.id;
-    const piModel = toPiModel(model);
-    const piTools: PiTool[] = Object.values(tools).map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.parameters,
+    const source = model as SessionModel & Partial<PiModel<Api>>;
+    const piModel: PiModel<Api> = {
+      id: source.id, name: source.name ?? source.id, api: (source.api ?? "openai-completions") as Api,
+      provider: source.provider ?? "stub", baseUrl: source.baseUrl ?? "", headers: source.headers,
+      reasoning: source.reasoning ?? false, thinkingLevelMap: source.thinkingLevelMap, input: source.input ?? ["text"],
+      cost: source.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: source.contextWindow ?? 0, maxTokens: source.maxTokens ?? 0,
+    };
+    const pool = createPool(TOOL_BATCH_CONCURRENCY);
+    const agentTools: Array<AgentTool<any>> = Object.values(tools).map((tool) => ({
+      ...tool,
+      ...(tool.name === "bash" ? { executionMode: "sequential" as const } : {}),
+      execute: async (id: string, params: any, innerSignal: AbortSignal | undefined): Promise<AgentToolResult<any>> => {
+        try {
+          return await pool.run(() => tool.execute(id, params, innerSignal, undefined, context));
+        } catch (error) {
+          if (innerSignal?.aborted === true) throw error;
+          throw new Error(failureText(error));
+        }
+      },
     }));
-    const messages: PiMessage[] = [];
+    const messages: AgentMessage[] = [];
     for (const item of history) {
       if (item.role === "assistant") {
         messages.push({
-          role: "assistant",
-          content: [{ type: "text", text: item.text }],
-          api: piModel.api,
-          provider: piModel.provider,
-          model: piModel.id,
+          role: "assistant", content: [{ type: "text", text: item.text }], api: piModel.api, provider: piModel.provider, model: piModel.id,
           usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-          stopReason: "stop",
-          timestamp: Date.now(),
+          stopReason: "stop", timestamp: Date.now(),
         });
       } else if (item.role === "compactionSummary") {
         messages.push({ role: "user", content: `Session summary:\n${item.text}`, timestamp: Date.now() });
@@ -428,136 +274,139 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
         messages.push({ role: "user", content: item.text, timestamp: Date.now() });
       }
     }
-    messages.push({ role: "user", content: prompt, timestamp: Date.now() });
-    const request: SimpleStreamOptions = { signal };
-    const sessionId = options.sessionId;
-    if (sessionId !== undefined && sessionId.length > 0) request.sessionId = sessionId;
-    if (thinking !== null && thinking !== "" && thinking !== "off") request.reasoning = thinking as ThinkingLevel;
-    request.apiKey = apiKey;
-    request.cacheRetention = retention;
-    const toolCalls: SessionToolCall[] = [];
-    let n = 0;
     let result = "";
-    const openedAt = Date.now();
+    const toolCalls: SessionToolCall[] = [];
+    const pending = new Map<string, { id: string; args: Record<string, unknown> }>();
+    let pendingTools = 0;
+    let n = 0;
+    let turns = 0;
     let inTokens = 0;
     let outTokens = 0;
     let cacheRead = 0;
     let costTotal = 0;
-    const limits = resolveRunBudgets(budgets);
-    for (let step = 0; ; step += 1) {
-      signal?.throwIfAborted();
-      await abortablePause(signal);
-      let halt: SessionHalt | undefined = undefined;
-      if (step >= limits.maxTurns) halt = { reason: "turns" };
-      else if (toolCalls.length >= limits.maxToolCalls) halt = { reason: "tool-calls" };
-      else if (Date.now() - openedAt >= limits.maxDurationMs) halt = { reason: "duration" };
-      else if (costTotal >= limits.maxCost) halt = { reason: "cost" };
-      if (halt !== undefined) {
-        const haltElapsedMs = Date.now() - openedAt;
-        const haltTokensPerSec = haltElapsedMs < MIN_TURN_MS || outTokens <= 0 ? null : (outTokens * 1000) / haltElapsedMs;
-        return {
-          result,
-          toolCalls,
-          via: "createAgentSession",
-          model: modelId,
-          usage: { inTokens, outTokens, cacheRead, costTotal, elapsedMs: haltElapsedMs, tokensPerSec: haltTokensPerSec },
-          halt,
-        };
-      }
-      const piContext: PiContext = { systemPrompt: SYSTEM_PROMPT, messages, tools: piTools };
-      const answer = await streamModelStep(piModel, piContext, request, signal, onUpdate);
-      inTokens += answer.usage.input + answer.usage.cacheWrite;
-      outTokens += answer.usage.output;
-      cacheRead += answer.usage.cacheRead;
-      costTotal += answer.usage.cost.total;
-      if (answer.stopReason === "error" || answer.stopReason === "aborted") {
-        signal?.throwIfAborted();
-        // {error, hint} shape so both callers stay hinted: /run returns it
-        // as-is, the stream formats it below. Never carries key material —
-        // pi-ai errors hold status text only.
-        throw {
-          error: (answer.errorMessage ?? "model turn failed").slice(0, 300),
-          hint: "retry the prompt; repeated auth/billing errors mean the provider key or quota needs attention",
-        };
-      }
-      result = assistantText(answer);
-      const calls = answer.content.filter((block): block is PiToolCall => block.type === "toolCall");
-      if (answer.stopReason !== "toolUse" || calls.length === 0) break;
-      messages.push(answer);
-      const slots: BatchSlot[] = [];
-      const thunks: Array<() => Promise<void>> = [];
-      for (const call of calls) {
-        signal?.throwIfAborted();
-        n += 1;
-        const id = call.id.length > 0 ? call.id : `session-${n}`;
-        const args = call.arguments ?? {};
-        onUpdate?.({ kind: "toolCall", id, tool: call.name, args });
-        const toolFn = tools[call.name];
-        if (toolFn === undefined) {
-          const output = `unknown tool: ${call.name} (available: ${Object.keys(tools).join(", ")})`;
-          slots.push({ id, call, args, output, isError: true, settled: true });
-          onUpdate?.({ kind: "toolResult", id, tool: call.name, args, output });
-        } else {
-          const slot: BatchSlot = { id, call, args, output: "", isError: false, settled: false };
-          slots.push(slot);
-          const fn = toolFn;
-          thunks.push(async () => {
-            try {
-              slot.output = textOf(await fn.execute(id, args, signal, undefined, context));
-            } catch (e) {
-              slot.output = errorText(e);
-              slot.isError = true;
-            }
-            slot.settled = true;
-            onUpdate?.({ kind: "toolResult", id, tool: call.name, args, output: slot.output });
-          });
-        }
-      }
-      if (thunks.length === 1) {
-        signal?.throwIfAborted();
-        await thunks[0]();
-      } else if (thunks.length > 1 && calls.some((call) => call.name === "bash")) {
-        for (const thunk of thunks) {
-          signal?.throwIfAborted();
-          await thunk();
-        }
-      } else if (thunks.length > 1) {
-        let next = 0;
-        const worker = async (): Promise<void> => {
-          while (next < thunks.length) {
-            const thunk = thunks[next];
-            next += 1;
-            signal?.throwIfAborted();
-            await thunk();
-          }
-        };
-        const width = Math.min(TOOL_BATCH_CONCURRENCY, thunks.length);
-        const runners: Array<Promise<void>> = [];
-        for (let w = 0; w < width; w += 1) runners.push(worker());
-        await Promise.all(runners);
-      }
-      signal?.throwIfAborted();
-      for (const slot of slots) {
-        toolCalls.push({ id: slot.id, tool: slot.call.name, args: slot.args, output: slot.output });
-        messages.push({
-          role: "toolResult",
-          toolCallId: slot.call.id,
-          toolName: slot.call.name,
-          content: [{ type: "text", text: slot.output }],
-          isError: slot.isError,
-          timestamp: Date.now(),
-        });
-      }
-    }
-    const elapsedMs = Date.now() - openedAt;
-    const tokensPerSec = elapsedMs < MIN_TURN_MS || outTokens <= 0 ? null : (outTokens * 1000) / elapsedMs;
-    return {
-      result,
-      toolCalls,
-      via: "createAgentSession",
-      model: modelId,
-      usage: { inTokens, outTokens, cacheRead, costTotal, elapsedMs, tokensPerSec, retention },
+    let halted: HaltReason | undefined;
+    const failures: Array<{ errorMessage?: string }> = [];
+    const finish = (halt: HaltReason | undefined): SessionTurn => {
+      const elapsedMs = Date.now() - openedAt;
+      const tokensPerSec = elapsedMs < MIN_TURN_MS || outTokens <= 0 ? null : (outTokens * 1000) / elapsedMs;
+      const usage = halt === undefined
+        ? { inTokens, outTokens, cacheRead, costTotal, elapsedMs, tokensPerSec, retention }
+        : { inTokens, outTokens, cacheRead, costTotal, elapsedMs, tokensPerSec };
+      return halt === undefined
+        ? { result, toolCalls, via: "createAgentSession", model: modelId, usage }
+        : { result, toolCalls, via: "createAgentSession", model: modelId, usage, halt: { reason: halt } };
     };
+    const valid = (value: number | undefined, fallback: number): number =>
+      typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback;
+    const limits = {
+      maxTurns: valid(budgets?.maxTurns, DEFAULT_RUN_BUDGETS.maxTurns),
+      maxToolCalls: valid(budgets?.maxToolCalls, DEFAULT_RUN_BUDGETS.maxToolCalls),
+      maxDurationMs: valid(budgets?.maxDurationMs, DEFAULT_RUN_BUDGETS.maxDurationMs),
+      maxCost: valid(budgets?.maxCost, DEFAULT_RUN_BUDGETS.maxCost),
+    };
+    if (limits.maxTurns <= 0) return finish("turns");
+    if (limits.maxToolCalls <= 0) return finish("tool-calls");
+    if (limits.maxDurationMs <= 0) return finish("duration");
+    if (limits.maxCost <= 0) return finish("cost");
+    const think = createThinkSplitter(
+      (delta) => onUpdate?.({ kind: "text", delta }),
+      (delta) => onUpdate?.({ kind: "thinking", delta }),
+    );
+    const takeId = (raw: string): string => {
+      if (raw.length > 0) return raw;
+      n += 1;
+      return `session-${n}`;
+    };
+    const streamFn: StreamFn = (target, ctx, options) =>
+      streamSimple(target, ctx, { ...options, apiKey: options?.apiKey ?? apiKey, cacheRetention: retention });
+    const agent = new Agent({
+      initialState: {
+        systemPrompt: SYSTEM_PROMPT, model: piModel,
+        messages, tools: agentTools,
+      },
+      streamFn,
+      sessionId: options.sessionId !== undefined && options.sessionId.length > 0 ? options.sessionId : undefined,
+      toolExecution: "parallel",
+      shouldStopAfterTurn: () => {
+        if (turns >= limits.maxTurns) halted = "turns";
+        else if (toolCalls.length >= limits.maxToolCalls) halted = "tool-calls";
+        else if (Date.now() - openedAt >= limits.maxDurationMs) halted = "duration";
+        else if (costTotal >= limits.maxCost) halted = "cost";
+        return halted !== undefined;
+      },
+    });
+    let settled = false;
+    let stalled = false;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const onIdle = (): void => {
+      if (!settled && pendingTools === 0) {
+        stalled = true;
+        agent.abort();
+      } else pokeIdle();
+    };
+    const pokeIdle = (): void => {
+      clearTimeout(idleTimer);
+      if (!settled) idleTimer = setTimeout(onIdle, STREAM_IDLE_TIMEOUT_MS);
+    };
+    const off = agent.subscribe((event: AgentEvent) => {
+      pokeIdle();
+      if (event.type === "message_start") think.reset();
+      else if (event.type === "message_update") {
+        const inner = event.assistantMessageEvent;
+        if (inner.type === "text_delta") { if (inner.delta.length > 0) think.push(inner.delta); }
+        else if (inner.type === "thinking_delta" && inner.delta.length > 0) onUpdate?.({ kind: "thinking", delta: inner.delta });
+      } else if (event.type === "tool_execution_start") {
+        const args = (event.args ?? {}) as Record<string, unknown>;
+        const id = takeId(event.toolCallId);
+        pending.set(event.toolCallId, { id, args });
+        pendingTools += 1;
+        onUpdate?.({ kind: "toolCall", id, tool: event.toolName, args });
+      } else if (event.type === "tool_execution_end") {
+        const prior = pending.get(event.toolCallId);
+        pendingTools -= 1;
+        const id = prior?.id ?? takeId(event.toolCallId);
+        const args = prior?.args ?? {};
+        const output = resultText(event.result);
+        onUpdate?.({ kind: "toolResult", id, tool: event.toolName, args, output });
+      } else if (event.type === "turn_end" && event.message.role === "assistant") {
+        const message = event.message;
+        if (message.stopReason === "error" || message.stopReason === "aborted") failures.push(message);
+        else {
+          turns += 1;
+          inTokens += message.usage.input + message.usage.cacheWrite;
+          outTokens += message.usage.output;
+          cacheRead += message.usage.cacheRead;
+          costTotal += message.usage.cost.total;
+          result = message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+          for (const item of event.toolResults) {
+            const prior = pending.get(item.toolCallId);
+            toolCalls.push({ id: prior?.id ?? item.toolCallId, tool: item.toolName, args: prior?.args ?? {}, output: resultText(item) });
+          }
+        }
+      }
+    });
+    signal?.throwIfAborted();
+    const onAbort = (): void => { agent.abort(); };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    pokeIdle();
+    try {
+      await agent.prompt({ role: "user", content: prompt, timestamp: Date.now() });
+    } finally {
+      settled = true;
+      clearTimeout(idleTimer);
+      signal?.removeEventListener("abort", onAbort);
+      off();
+    }
+    signal?.throwIfAborted();
+    if (stalled) throw { error: "model stream stalled", hint: "the provider stopped sending data mid-turn; retry the prompt" };
+    if (failures.length > 0) {
+      const failure = failures[failures.length - 1];
+      throw {
+        error: (failure.errorMessage ?? "model turn failed").slice(0, 300),
+        hint: "retry the prompt; repeated auth/billing errors mean the provider key or quota needs attention",
+      };
+    }
+    return finish(halted);
   }
 
   return { run };

@@ -1,16 +1,10 @@
-(globalThis as unknown as Record<string, string>).__filename = "";
-(globalThis as unknown as Record<string, string>).__dirname = "";
-
 import type {
   AgentHarnessTool,
   AgentToolResult,
 } from "@earendil-works/pi-agent-core";
+import { normalizeWorkspacePath, type ToolContext } from "./tools.ts";
 import { ComputerExecutionEnv } from "./env.ts";
-import {
-  normalizeWorkspacePath,
-  type ToolContext,
-} from "./tools.ts";
-import { diagnosticsTool } from "./dev-tools.ts";
+import { CAPS, cappedLimit, checkedTextOffset, decodeUtf8, failKey, readTextOrNull, resolveScope } from "./validate.ts";
 import {
   TS_LIB_FILE_NAMES,
   TS_LIB_TEXTS,
@@ -33,48 +27,19 @@ interface WorkspaceSession {
 let compilerPromise: Promise<TypeScript> | undefined;
 const sessions = new Map<string, WorkspaceSession>();
 
-function fail(error: string, hint: string): never {
-  throw { error, hint };
-}
-
 function loadCompiler(): Promise<TypeScript> {
   if (!compilerPromise) compilerPromise = import("typescript");
   return compilerPromise;
-}
-
-function checkedLimit(limit: unknown): number {
-  if (limit === undefined) return 200;
-  if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1) {
-    fail("bad limit", "retry with limit as a positive integer");
-  }
-  return limit as number;
-}
-
-function scopeRoot(path: unknown): string {
-  if (path === undefined || path === "") return "";
-  return normalizeWorkspacePath(path);
 }
 
 function isTs(path: string): boolean {
   return path.endsWith(".ts") || path.endsWith(".tsx");
 }
 
-function decode(bytes: Uint8Array): string | undefined {
-  try {
-    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-  } catch {
-    return undefined;
-  }
-}
-
 function readLive(env: ComputerExecutionEnv, name: string): string | undefined {
   const lib = TS_LIB_TEXTS[name];
   if (lib !== undefined) return lib;
-  try {
-    return decode(env.readFile(name));
-  } catch {
-    return undefined;
-  }
+  return readTextOrNull(env, name) ?? undefined;
 }
 
 function workspaceTsFiles(env: ComputerExecutionEnv): { files: string[]; skipped: string[] } {
@@ -83,13 +48,7 @@ function workspaceTsFiles(env: ComputerExecutionEnv): { files: string[]; skipped
   for (const entry of env.readdir("")) {
     const path = entry.path;
     if (!isTs(path) || path === "node_modules" || path.startsWith("node_modules/")) continue;
-    let text: string | undefined;
-    try {
-      text = decode(env.readFile(path));
-    } catch {
-      continue;
-    }
-    if (text === undefined) skipped.push(path);
+    if (readTextOrNull(env, path) === null) skipped.push(path);
     else files.push(path);
   }
   files.sort();
@@ -97,25 +56,19 @@ function workspaceTsFiles(env: ComputerExecutionEnv): { files: string[]; skipped
   return { files, skipped };
 }
 
-function resolveScope(env: ComputerExecutionEnv, root: string, files: string[], skipped: string[]): string[] {
-  if (root === "") return files;
-  if (files.includes(root) || skipped.includes(root)) return [root];
-  let exists = false;
-  try {
-    env.readFile(root);
-    exists = true;
-  } catch {
-    exists = false;
+function scopedTsFiles(env: ComputerExecutionEnv, path: unknown): { files: string[]; scoped: string[]; skipped: string[] } {
+  const { files, skipped } = workspaceTsFiles(env);
+  const scope = resolveScope(env, path);
+  if (scope.root === "") return { files, scoped: files, skipped };
+  if (files.includes(scope.root) || skipped.includes(scope.root)) return { files, scoped: [scope.root], skipped };
+  if (scope.isFile) {
+    failKey("badScanPath");
   }
-  if (exists) {
-    fail("bad path", "diagnostics scans .ts and .tsx files; retry with one or a directory");
-  }
-  const prefix = `${root}/`;
-  const under = [...files, ...skipped].filter((f) => f.startsWith(prefix)).sort();
+  const under = [...files, ...skipped].filter((f) => f.startsWith(scope.prefix)).sort();
   if (under.length === 0) {
-    fail(`no such file: ${root}`, "check the path with list or find first, then retry");
+    failKey("noSuchFile", { path: scope.root });
   }
-  return under;
+  return { files, scoped: under, skipped };
 }
 
 function childDirs(env: ComputerExecutionEnv, dir: string): string[] {
@@ -212,7 +165,7 @@ function siteOf(
 
 function checkedTsPath(env: ComputerExecutionEnv, path: unknown, tool: string): string {
   if (typeof path !== "string" || path === "") {
-    fail("missing path", `retry with a workspace-relative .ts or .tsx path for ${tool}`);
+    failKey("missingTsPath", { tool });
   }
   const file = normalizeWorkspacePath(path);
   let exists = false;
@@ -223,39 +176,23 @@ function checkedTsPath(env: ComputerExecutionEnv, path: unknown, tool: string): 
     exists = false;
   }
   if (!exists) {
-    fail(`no such file: ${file}`, "check the path with list or find first, then retry");
+    failKey("noSuchFile", { path: file });
   }
   if (!isTs(file)) {
-    fail("bad path", `${tool} reads .ts and .tsx files; retry with one`);
+    failKey("badTsKind", { tool });
   }
   return file;
 }
 
 function readText(env: ComputerExecutionEnv, file: string): string {
-  let text: string | undefined;
-  try {
-    text = decode(env.readFile(file));
-  } catch {
-    text = undefined;
-  }
-  if (text === undefined) {
-    fail(`unreadable file: ${file}`, "the file is not UTF-8 text; retry with a text file");
+  const text = decodeUtf8(env.readFile(file));
+  if (text === null) {
+    failKey("unreadableFile", { file });
   }
   return text as string;
 }
 
-function checkedOffset(offset: unknown, text: string, file: string): number {
-  if (typeof offset !== "number" || !Number.isInteger(offset) || offset < 0 || offset > text.length) {
-    fail("bad offset", `retry with offset as a UTF-16 code-unit index from 0 to ${text.length} for ${file}`);
-  }
-  return offset as number;
-}
-
-export const diagnosticsCompilerTool: AgentHarnessTool<
-  ToolContext,
-  any,
-  { files: number; errors: number; fallback?: boolean }
-> = {
+export const diagnosticsCompilerTool: AgentHarnessTool<ToolContext, any, { files: number; errors: number }> = {
   name: "diagnostics",
   label: "Diagnostics",
   description:
@@ -269,25 +206,20 @@ export const diagnosticsCompilerTool: AgentHarnessTool<
     required: [],
   },
   async execute(
-    id,
+    _id,
     params: { path?: string; limit?: number },
-    signal,
-    onUpdate,
+    _signal,
+    _onUpdate,
     context,
-  ): Promise<AgentToolResult<{ files: number; errors: number; fallback?: boolean }>> {
-    const root = scopeRoot(params.path);
-    const limit = checkedLimit(params.limit);
-    const { files, skipped } = workspaceTsFiles(context.env);
-    const scoped = resolveScope(context.env, root, files, skipped);
+  ): Promise<AgentToolResult<{ files: number; errors: number }>> {
+    void _id;
+    const limit = cappedLimit(params.limit, CAPS.diagDefault, Number.MAX_SAFE_INTEGER);
+    const { files, scoped, skipped } = scopedTsFiles(context.env, params.path);
     let session: WorkspaceSession;
     try {
       session = serviceFor(context.env, await loadCompiler(), files);
     } catch {
-      const fallback = await diagnosticsTool.execute(id, params, signal, onUpdate, context);
-      return {
-        content: fallback.content,
-        details: { ...fallback.details, fallback: true },
-      };
+      failKey("diagDown");
     }
     const compiler = session.compiler;
     const program = session.service.getProgram();
@@ -351,9 +283,10 @@ export const definitionTool: AgentHarnessTool<
   ): Promise<
     AgentToolResult<{ count: number; sites: Array<{ file: string; line: number; column: number }> }>
   > {
+    void _id;
     const file = checkedTsPath(context.env, params.path, "definition");
     const text = readText(context.env, file);
-    const offset = checkedOffset(params.offset, text, file);
+    const offset = checkedTextOffset(params.offset, text, file);
     const { files } = workspaceTsFiles(context.env);
     const session = serviceFor(context.env, await loadCompiler(), files);
     const program = session.service.getProgram();
@@ -400,9 +333,10 @@ export const referencesTool: AgentHarnessTool<
   ): Promise<
     AgentToolResult<{ count: number; sites: Array<{ file: string; line: number; column: number }> }>
   > {
+    void _id;
     const file = checkedTsPath(context.env, params.path, "references");
     const text = readText(context.env, file);
-    const offset = checkedOffset(params.offset, text, file);
+    const offset = checkedTextOffset(params.offset, text, file);
     const { files } = workspaceTsFiles(context.env);
     const session = serviceFor(context.env, await loadCompiler(), files);
     const program = session.service.getProgram();

@@ -1,29 +1,17 @@
-// stream.ts — hibernation WS handlers for GET /workspaces/:id/sessions/:sid/stream.
-// Live turns over a socket: {prompt, fence, expected} in, {entry} frames out.
-// Optional {fence, expected} enforces exactly like a prompt.
-// Every entry frame is re-read from storage by cursor before emit; the socket
-// is a view, pi_entries is the truth. Unknown sessions and failed fences get
-// an {error, hint} frame followed by a close frame — never a bare drop.
-//
-// Hibernation shape: the DO accepts sockets via state.acceptWebSocket and the
-// runtime wakes it per message into webSocketMessage/webSocketClose/
-// webSocketError. Nothing turn-related lives here across messages — fence,
-// revision, entries, and open runs are re-read from SQLite on every wake, so an
-// eviction eats no correctness state. The host hands one ephemeral sid ->
-// AbortController map per DO incarnation as the abort witness, plus the
-// session turn queue shared with POST /run; dropping both on eviction is safe
-// because the next openRun flips the orphaned run to interrupted.
 import { appendEntry, closeRun, getEntry, openRun, sessionLeaf, type EntriesSql } from "../../packages/pi-cf/src/entries";
 import { enforceFence } from "../../packages/pi-cf/src/fence";
 import type { FileStore } from "../../packages/pi-cf/src/vfs-dofs";
-import { buildRuntime, clampThinkingLevel, defaultTurnModel, keyedProviders, resolveCatalogModel, resolveKeyedModel, resolveProviderKey, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
-import { createAgentSession } from "../../packages/pi-cf/src/session";
+import { clampThinkingLevel, defaultTurnModel, keyedProviders, resolveCatalogModel, resolveKeyedModel, resolveProviderKey, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
+import { createAgentSession, type SessionTurn } from "../../packages/pi-cf/src/session";
+import { compactionPending, maybeMarkForCompaction } from "./compaction";
+
 export interface StreamShell {
   exec(input: {
     command: string;
     cwd?: string;
   }): Promise<{ stdout: string; stderr: string; exit: number; timedOut: boolean }>;
 }
+
 export interface StreamHost {
   sql: EntriesSql;
   ws: string;
@@ -40,6 +28,7 @@ export interface StreamHost {
   casRotateFence(oldFence: string, oldRevision: number, next: { fence: string; revision: number }): boolean;
   live: Map<string, AbortController>;
   enqueue: <T>(fn: () => Promise<T>) => Promise<T>;
+  scheduleAlarm(): Promise<void>;
 }
 
 export interface StreamAttachment {
@@ -50,6 +39,48 @@ export interface StreamAttachment {
 export interface StreamSocket {
   send(frame: unknown): void;
   close(code: number, reason: string): void;
+}
+
+export type CheckedFence =
+  | { status: number; body: { error: string; hint: string; revision?: number } }
+  | { fence: string; revision: number }
+  | null;
+
+export interface TurnModel {
+  model: { id: string; name?: string; api?: string; provider?: string; baseUrl?: string };
+  provider: string;
+  stub: boolean;
+  like: RuntimeModel | Record<string, never>;
+}
+
+export function checkedRotate(
+  current: { fence: string | null; revision: number } | null,
+  body: unknown,
+  missingHint: string,
+  write: ((next: { fence: string; revision: number }) => void) | null,
+): CheckedFence {
+  const rec = body !== null && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : null;
+  if (rec === null || (!("fence" in rec) && !("expected" in rec))) return null;
+  const fence = rec["fence"];
+  const expected = rec["expected"];
+  if (typeof fence !== "string" || fence.length === 0 || !Number.isInteger(expected)) {
+    return { status: 400, body: { error: "missing fence", hint: missingHint } };
+  }
+  const checked = enforceFence(current, fence, expected);
+  if ("status" in checked) return { status: checked.status, body: checked.body };
+  if (write !== null) write(checked);
+  return checked;
+}
+
+export function resolveTurnModel(env: RuntimeEnv, catalog: RuntimeModel | null): TurnModel {
+  if (catalog === null) {
+    const d = defaultTurnModel();
+    return { model: d, provider: d.provider, stub: true, like: {} };
+  }
+  const keyed = keyedProviders(env);
+  if (keyed.length === 0) return { model: { id: catalog.id }, provider: catalog.provider, stub: true, like: catalog };
+  const m = resolveKeyedModel(env, catalog.provider, catalog.id);
+  return { model: m, provider: m.provider, stub: false, like: catalog };
 }
 
 const CLOSE_UNKNOWN = 4404;
@@ -66,17 +97,21 @@ export function wrapSocket(ws: WebSocket): StreamSocket {
       try {
         ws.send(JSON.stringify(frame));
       } catch {
-        // Gone mid-send; the error frame already went out.
       }
     },
     close(code: number, reason: string): void {
       try {
         ws.close(code, shortReason(reason));
       } catch {
-        // Gone mid-close; the error frame already went out.
       }
     },
   };
+}
+
+function emitEntry(host: StreamHost, sock: StreamSocket, type: string, body: unknown): void {
+  const cursor = appendEntry(host.sql, host.sid, type, body);
+  const row = getEntry(host.sql, host.sid, cursor);
+  if (row !== null) sock.send({ entry: row });
 }
 
 export function readAttachment(ws: WebSocket): StreamAttachment | null {
@@ -134,18 +169,13 @@ export function acceptStream(request: Request, host: StreamHost, state: DurableO
   try {
     const query = new URL(request.url).searchParams;
     if (query.has("fence") || query.has("expected")) {
-      const fence = query.get("fence");
-      const expected = Number(query.get("expected"));
-      if (typeof fence !== "string" || fence.length === 0 || !Number.isInteger(expected)) {
-        const hint = "retry the stream with both ?fence=F&expected=N from the live session row";
-        sock.send({ error: "missing fence", hint });
-        sock.close(CLOSE_FENCED, hint);
-        return new Response(null, { status: 101, webSocket: client });
-      }
-      const checked = enforceFence(host.readFence(), fence, expected);
-      if ("status" in checked) {
-        sock.send(checked.body);
-        sock.close(checked.status === 403 ? CLOSE_FENCED : CLOSE_CONFLICT, checked.body.hint);
+      const fenceBody: Record<string, unknown> = {};
+      if (query.has("fence")) fenceBody["fence"] = query.get("fence");
+      if (query.has("expected")) fenceBody["expected"] = Number(query.get("expected"));
+      const rot = checkedRotate(host.readFence(), fenceBody, "retry the stream with both ?fence=F&expected=N from the live session row", null);
+      if (rot !== null && "status" in rot) {
+        sock.send(rot.body);
+        sock.close(rot.status === 409 ? CLOSE_CONFLICT : CLOSE_FENCED, rot.body.hint);
         return new Response(null, { status: 101, webSocket: client });
       }
     }
@@ -155,19 +185,12 @@ export function acceptStream(request: Request, host: StreamHost, state: DurableO
     sock.close(CLOSE_FENCED, hint);
     return new Response(null, { status: 101, webSocket: client });
   }
-  // Orphan heal: a dead incarnation left runs open that can never complete.
-  // This incarnation holds no live turn for the sid, so flip them
-  // interrupted with entries — otherwise every reconnect replays a turn
-  // stuck streaming forever. A genuinely running turn (live witness set)
-  // is never touched.
   if (host.live.get(host.sid) === undefined) {
-    for (;;) {
+    for (let n = 0; n < 32; n++) {
       const orphan = openRunId(host.sql, host.sid);
       if (orphan === null) break;
       host.sql.exec("UPDATE runs SET status = ? WHERE sid = ? AND runId = ?", "interrupted", host.sid, orphan);
-      const cursor = appendEntry(host.sql, host.sid, "interrupted", { runId: orphan });
-      const row = getEntry(host.sql, host.sid, cursor);
-      if (row !== null) sock.send({ entry: row });
+      emitEntry(host, sock, "interrupted", { runId: orphan });
     }
   }
 
@@ -175,9 +198,6 @@ export function acceptStream(request: Request, host: StreamHost, state: DurableO
 }
 
 export function socketClosed(host: StreamHost): void {
-  // Socket dropped mid-turn: abort the live turn (if this incarnation holds
-  // one) so the run row ends interrupted instead of orphaned open. After an
-  // eviction there is no live turn here; the next openRun heals the orphan.
   host.live.get(host.sid)?.abort();
 }
 
@@ -223,9 +243,7 @@ export async function socketMessage(
       sock.send({ error: "no turn in flight", hint: "send {prompt} first; steer only appends mid-turn" });
       return;
     }
-    const cursor = appendEntry(host.sql, host.sid, "steer", { runId, text });
-    const row = getEntry(host.sql, host.sid, cursor);
-    if (row !== null) sock.send({ entry: row });
+    emitEntry(host, sock, "steer", { runId, text });
     return;
   }
   if (promptValue !== undefined) {
@@ -240,6 +258,70 @@ export async function socketMessage(
   sock.send({ error: "unknown frame", hint: "send {prompt, fence, expected}, {abort}, or {steer, text}" });
 }
 
+export interface TurnInput {
+  prompt: string;
+  catalog: RuntimeModel | null;
+  thinking: string | null;
+  runId: string;
+  signal?: AbortSignal;
+}
+
+export interface TurnSink {
+  push(type: string, body: unknown): void;
+  done(runId: string, turn: SessionTurn, runtime: { via: string; model: string; provider: string; thinking: string | null }): void;
+  fail(runId: string, error: string, hint: string, status: number, opened: boolean): void;
+  aborted(runId: string): void;
+}
+
+function shaped(e: unknown, fallbackError: string, fallbackHint: string): { error: string; hint: string } {
+  const rec = e !== null && typeof e === "object" ? (e as { error?: unknown; hint?: unknown }) : null;
+  const error = typeof rec?.error === "string" ? rec.error : (e instanceof Error ? e.message : fallbackError);
+  return { error: error.slice(0, 300), hint: typeof rec?.hint === "string" ? rec.hint : fallbackHint };
+}
+
+export async function executeTurn(host: StreamHost, input: TurnInput, sink: TurnSink): Promise<void> {
+  let resolved: TurnModel;
+  try {
+    resolved = resolveTurnModel(host.runtimeEnv, input.catalog);
+  } catch (e) {
+    const out = shaped(e, "unknown model", "retry with a catalog model");
+    sink.fail(input.runId, out.error, out.hint, 404, false);
+    return;
+  }
+  const session = createAgentSession({
+    files: host.files,
+    ws: host.ws,
+    shell: host.shell,
+    model: resolved.model,
+    apiKey: resolved.stub ? undefined : resolveProviderKey(host.runtimeEnv, resolved.provider),
+    history: { leaf: sessionLeaf(host.sql, host.sid), readEntry: (cursor) => getEntry(host.sql, host.sid, cursor) },
+    sessionId: host.sid,
+    cacheRetention: host.retention,
+  });
+  try {
+    const turn = await session.run(input.prompt, {
+      signal: input.signal,
+      thinking: input.thinking,
+      onUpdate: (event) => {
+        if (event.kind === "toolCall") sink.push("toolCall", { runId: input.runId, id: event.id, tool: event.tool, args: event.args });
+        else if (event.kind === "toolResult") sink.push("toolResult", { runId: input.runId, id: event.id, tool: event.tool, output: event.output });
+        else if (event.kind === "text") sink.push("text", { runId: input.runId, delta: event.delta });
+        else sink.push("thinking", { runId: input.runId, delta: event.delta });
+      },
+    });
+    sink.done(input.runId, turn, { via: turn.via, model: turn.model, provider: resolved.provider, thinking: input.thinking });
+    if (maybeMarkForCompaction(host.sql, host.sid)) await host.scheduleAlarm();
+    else if (compactionPending(host.sql, host.sid)) await host.scheduleAlarm();
+  } catch (e) {
+    if (input.signal?.aborted) {
+      sink.aborted(input.runId);
+      return;
+    }
+    const out = shaped(e, "run failed", "retry the prompt with a simpler request");
+    sink.fail(input.runId, out.error, out.hint, 500, true);
+  }
+}
+
 async function startTurn(
   host: StreamHost,
   sock: StreamSocket,
@@ -248,119 +330,66 @@ async function startTurn(
   expected: unknown,
   hasFence: boolean,
 ): Promise<void> {
-  // One prompt per session at a time across POST /run and WS: the queue
-  // holds this turn until earlier turns on the sid settle. The live map is
-  // only the abort witness; an eviction resets it and the next openRun
-  // flips the orphaned run to interrupted, so resume heals.
   await host.enqueue(async () => {
-  let held: { fence: string; revision: number } | null = null;
-  if (hasFence) {
-    if (typeof fence !== "string" || fence.length === 0 || !Number.isInteger(expected) || typeof expected !== "number") {
-      sock.send({ error: "missing fence", hint: "retry the turn with both {fence, expected}, or omit both" });
-      return;
-    }
-    const checked = enforceFence(host.readFence(), fence, expected);
-    if ("status" in checked) {
-      sock.send(checked.body);
-      sock.close(checked.status === 403 ? CLOSE_FENCED : CLOSE_CONFLICT, checked.body.hint);
-      return;
-    }
-    held = { fence, revision: expected };
-  }
-  const turnId = crypto.randomUUID();
-  const turnController = new AbortController();
-  host.live.set(host.sid, turnController);
-  const send = (frame: unknown): void => sock.send(frame);
-  const closeSocket = (code: number, reason: string): void => sock.close(code, reason);
-  const emitAppend = (type: string, body: unknown): void => {
-    const cursor = appendEntry(host.sql, host.sid, type, body);
-    const row = getEntry(host.sql, host.sid, cursor);
-    if (row !== null) send({ entry: row });
-  };
-  try {
-    const historyLeaf = sessionLeaf(host.sql, host.sid);
-    openRun(host.sql, host.sid, turnId);
-    emitAppend("prompt", { runId: turnId, prompt });
-    const catalog = host.model === null ? null : resolveCatalogModel(host.model.provider, host.model.id);
-    let turnModel: { id: string; name?: string; api?: string; provider?: string; baseUrl?: string };
-    let respProvider: string;
-    let stub: boolean;
-    let like: RuntimeModel | Record<string, never>;
-    if (catalog === null) {
-      turnModel = defaultTurnModel();
-      respProvider = turnModel.provider as string;
-      stub = true;
-      like = {};
-    } else {
-      const keyed = keyedProviders(host.runtimeEnv);
-      const keyedModel = keyed.length === 0 ? null : resolveKeyedModel(host.runtimeEnv, catalog.provider, catalog.id);
-      turnModel = keyedModel ?? { id: catalog.id };
-      respProvider = keyedModel?.provider ?? catalog.provider;
-      stub = keyedModel === null;
-      like = catalog;
-    }
-    const effThinking = host.thinking === null ? null : clampThinkingLevel(like, host.thinking);
-    const session = createAgentSession({
-      files: host.files,
-      ws: host.ws,
-      shell: host.shell,
-      model: turnModel,
-      apiKey: stub ? undefined : resolveProviderKey(host.runtimeEnv, respProvider),
-      history: { leaf: historyLeaf, readEntry: (cursor) => getEntry(host.sql, host.sid, cursor) },
-      sessionId: host.sid,
-      cacheRetention: host.retention,
-    });
-    const turn = await session.run(prompt, {
-      signal: turnController.signal,
-      thinking: effThinking,
-      onUpdate: (event) => {
-        if (event.kind === "toolCall") {
-          emitAppend("toolCall", { runId: turnId, id: event.id, tool: event.tool, args: event.args });
-        } else if (event.kind === "toolResult") {
-          emitAppend("toolResult", { runId: turnId, id: event.id, tool: event.tool, output: event.output });
-        } else if (event.kind === "text") {
-          emitAppend("text", { runId: turnId, delta: event.delta });
-        } else {
-          emitAppend("thinking", { runId: turnId, delta: event.delta });
-        }
-      },
-    });
-    emitAppend("result", turn.halt ? { runId: turnId, result: turn.result, usage: turn.usage, halt: turn.halt } : { runId: turnId, result: turn.result, usage: turn.usage });
-    const runtimeOut = { via: turn.via, model: turn.model, provider: respProvider, thinking: effThinking };
-    closeRun(host.sql, host.sid, turnId);
-    if (held !== null) {
-      const next = { fence: crypto.randomUUID(), revision: held.revision + 1 };
-      if (!host.casRotateFence(held.fence, held.revision, next)) {
-        const cur = host.readFence();
-        send({ error: "revision conflict", hint: "a concurrent holder rotated mid-turn; re-claim and retry", revision: cur?.revision ?? 0 });
-        closeSocket(CLOSE_CONFLICT, "concurrent rotation mid-turn");
+    const rot = checkedRotate(host.readFence(), hasFence ? { fence, expected } : undefined, "retry the turn with both {fence, expected}, or omit both", null);
+    if (rot !== null && "status" in rot) {
+      if (rot.status === 400) {
+        sock.send(rot.body);
         return;
       }
-      send({ done: true, fence: next.fence, revision: next.revision, result: turn.result, runtime: runtimeOut, usage: turn.usage, ...(turn.halt ? { halt: turn.halt } : {}) });
-    } else send({ done: true, result: turn.result, runtime: runtimeOut, usage: turn.usage, ...(turn.halt ? { halt: turn.halt } : {}) });
-  } catch (e) {
-    if (turnController.signal.aborted) {
-      host.sql.exec(
-        "UPDATE runs SET status = ? WHERE sid = ? AND runId = ?",
-        "interrupted",
-        host.sid,
-        turnId,
-      );
-      emitAppend("interrupted", { runId: turnId });
-      send({ aborted: true, runId: turnId });
-    } else {
-      const shaped: { error?: unknown; hint?: unknown } | null =
-        e !== null && typeof e === "object" ? (e as { error?: unknown; hint?: unknown }) : null;
-      const message = e instanceof Error
-        ? e.message
-        : (typeof shaped?.error === "string" ? shaped.error : String(e ?? "run failed"));
-      const hint = typeof shaped?.hint === "string" ? shaped.hint : "retry the prompt with a simpler request";
-      emitAppend("error", { runId: turnId, error: message });
-      closeRun(host.sql, host.sid, turnId);
-      send({ error: message.slice(0, 300), hint });
+      sock.send(rot.body);
+      sock.close(rot.status === 403 ? CLOSE_FENCED : CLOSE_CONFLICT, rot.body.hint);
+      return;
     }
-  } finally {
-    if (host.live.get(host.sid) === turnController) host.live.delete(host.sid);
-  }
+    const held: { fence: string; revision: number } | null = rot === null
+      ? null
+      : { fence: fence as string, revision: expected as number };
+    const runId = crypto.randomUUID();
+    const turnController = new AbortController();
+    host.live.set(host.sid, turnController);
+    const emit = (type: string, body: unknown): void => emitEntry(host, sock, type, body);
+    const sink: TurnSink = {
+      push: emit,
+      done: (doneId, turn, runtime) => {
+        emit("result", turn.halt ? { runId: doneId, result: turn.result, usage: turn.usage, halt: turn.halt } : { runId: doneId, result: turn.result, usage: turn.usage });
+        closeRun(host.sql, host.sid, doneId);
+        if (held !== null) {
+          const next = { fence: crypto.randomUUID(), revision: held.revision + 1 };
+          if (!host.casRotateFence(held.fence, held.revision, next)) {
+            const cur = host.readFence();
+            sock.send({ error: "revision conflict", hint: "a concurrent holder rotated mid-turn; re-claim and retry", revision: cur?.revision ?? 0 });
+            sock.close(CLOSE_CONFLICT, "concurrent rotation mid-turn");
+            return;
+          }
+          sock.send({ done: true, fence: next.fence, revision: next.revision, result: turn.result, runtime, usage: turn.usage, ...(turn.halt ? { halt: turn.halt } : {}) });
+        } else sock.send({ done: true, result: turn.result, runtime, usage: turn.usage, ...(turn.halt ? { halt: turn.halt } : {}) });
+      },
+      fail: (failId, error, hint) => {
+        emit("error", { runId: failId, error });
+        closeRun(host.sql, host.sid, failId);
+        sock.send({ error, hint });
+      },
+      aborted: (abortId) => {
+        host.sql.exec("UPDATE runs SET status = ? WHERE sid = ? AND runId = ?", "interrupted", host.sid, abortId);
+        emit("interrupted", { runId: abortId });
+        sock.send({ aborted: true, runId: abortId });
+      },
+    };
+    try {
+      openRun(host.sql, host.sid, runId);
+      emit("prompt", { runId, prompt });
+      let catalog: RuntimeModel | null;
+      try {
+        catalog = host.model === null ? null : resolveCatalogModel(host.model.provider, host.model.id);
+      } catch (e) {
+        const out = shaped(e, "run failed", "retry the prompt with a simpler request");
+        sink.fail(runId, out.error, out.hint, 404, true);
+        return;
+      }
+      const effThinking = host.thinking === null ? null : clampThinkingLevel(catalog ?? {}, host.thinking);
+      await executeTurn(host, { prompt, catalog, thinking: effThinking, runId, signal: turnController.signal }, sink);
+    } finally {
+      if (host.live.get(host.sid) === turnController) host.live.delete(host.sid);
+    }
   });
 }

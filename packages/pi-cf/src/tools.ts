@@ -1,24 +1,32 @@
 import type {
   AgentHarnessTool,
   AgentToolResult,
+  ExecutionEnv,
+  FileInfo,
+  ShellExecOptions,
+} from "@earendil-works/pi-agent-core";
+import {
+  ExecutionError,
+  FileError,
+  createBashTool,
+  createEditTool,
+  createReadTool,
+  createWriteTool,
+  err,
+  ok,
 } from "@earendil-works/pi-agent-core";
 import { ComputerExecutionEnv } from "./env.ts";
+import type { Edit } from "./edit-diff.ts";
 import {
-  applyEditsToNormalizedContent,
-  detectLineEnding,
-  generateDiffString,
-  generateUnifiedPatch,
-  normalizeToLF,
-  restoreLineEndings,
-  type Edit,
-} from "./edit-diff.ts";
-
-// Schemas follow pi packages/coding-agent src/core/tools (read/write/edit/ls)
-// and camelAI workers/main/src/pi-container-tools.ts (MIT, qaml-ai/camelAI)
-// PI_READ/WRITE/EDIT/LS_PARAMETERS descriptions plus normalizeTextEditArguments
-// validation; every execution shell below is rewritten against
-// ComputerExecutionEnv. Diff math is imported from ./edit-diff, never retyped.
-// Read/list caps (2000 lines, 50KB, 500 entries) match pi truncate.ts and ls.ts.
+  CAPS,
+  cappedLimit,
+  checkedLimit,
+  checkedOffset,
+  decodeUtf8,
+  failKey,
+  normalizeWorkspacePath,
+} from "./validate.ts";
+export { normalizeWorkspacePath };
 
 export interface ToolContext {
   env: ComputerExecutionEnv;
@@ -30,182 +38,271 @@ export function textOf(result: AgentToolResult<unknown>): string {
     .join("");
 }
 
-export const MAX_READ_LINES = 2000;
-export const MAX_READ_BYTES = 50 * 1024;
-export const LIST_DEFAULT_MAX_ENTRIES = 500;
-export const LIST_HARD_MAX_ENTRIES = 10000;
+export const MAX_READ_LINES = CAPS.readLines;
+export const MAX_READ_BYTES = CAPS.readBytes;
+export const LIST_DEFAULT_MAX_ENTRIES = CAPS.listDefault;
+export const LIST_HARD_MAX_ENTRIES = CAPS.listHard;
 
-function fail(error: string, hint: string): never {
-  throw { error, hint };
-}
-
-// Posix-only workspace paths. Rejects NUL and backslashes outright; resolves
-// . and .. lexically and fails closed when .. escapes the workspace root.
-// "" is the workspace root (list only; remove refuses it).
-export function normalizeWorkspacePath(input: unknown): string {
-  if (typeof input !== "string" || input.length === 0) {
-    fail("missing path", 'retry with a workspace-relative path like "notes/hi.txt"');
+class CfEnv implements ExecutionEnv {
+  cwd = "";
+  lastFailure: { error: string; hint: string } | undefined;
+  private inner: ComputerExecutionEnv;
+  private temps = new Map<string, string>();
+  private tempSeq = 0;
+  constructor(inner: ComputerExecutionEnv) {
+    this.inner = inner;
   }
-  const raw = input as string;
-  if (raw.includes("\0")) fail("bad path", "paths cannot contain NUL; retry with a plain relative path");
-  if (raw.includes("\\")) fail("bad path", "use posix separators (/), never backslashes");
-  const out: string[] = [];
-  for (const part of raw.split("/")) {
-    if (part === "" || part === ".") continue;
-    if (part === "..") {
-      if (out.length === 0) {
-        fail("path escapes workspace", "retry with a path inside the workspace (no leading ..)");
-      }
-      out.pop();
-      continue;
+
+  private toFileError(e: unknown, path: string): FileError {
+    if (e !== null && typeof e === "object" && "error" in e && typeof (e as { error: unknown }).error === "string") {
+      const message = String((e as { error: unknown }).error);
+      return new FileError(message.includes("no such file") ? "not_found" : "unknown", message, path);
     }
-    out.push(part);
+    return new FileError("unknown", e instanceof Error ? e.message : String(e), path);
   }
-  return out.join("/");
+
+  private baseOf(path: string): string {
+    const slash = path.lastIndexOf("/");
+    return slash === -1 ? path : path.slice(slash + 1);
+  }
+
+  async absolutePath(path: string, _signal?: AbortSignal) {
+    try {
+      return ok<string, FileError>(normalizeWorkspacePath(path));
+    } catch (e) {
+      const message =
+        e !== null && typeof e === "object" && "error" in e ? String((e as { error: unknown }).error) : "bad path";
+      return err<string, FileError>(new FileError("invalid", message, path));
+    }
+  }
+
+  async joinPath(parts: string[], _signal?: AbortSignal) {
+    return ok<string, FileError>(parts.filter((p) => p !== "").join("/"));
+  }
+
+  async readBinaryFile(path: string, _signal?: AbortSignal) {
+    try {
+      return ok<Uint8Array, FileError>(this.inner.readFile(path));
+    } catch (e) {
+      return err<Uint8Array, FileError>(this.toFileError(e, path));
+    }
+  }
+
+  async readTextFile(path: string, signal?: AbortSignal) {
+    const bin = await this.readBinaryFile(path, signal);
+    if (!bin.ok) return err<string, FileError>(bin.error);
+    const text = decodeUtf8(bin.value);
+    if (text === null) return err<string, FileError>(new FileError("invalid", `unreadable file: ${path}`, path));
+    return ok<string, FileError>(text);
+  }
+
+  async readTextLines(path: string, options?: { maxLines?: number; abortSignal?: AbortSignal }) {
+    const text = await this.readTextFile(path, options?.abortSignal);
+    if (!text.ok) return err<string[], FileError>(text.error);
+    const lines = text.value.split("\n");
+    return ok<string[], FileError>(options?.maxLines === undefined ? lines : lines.slice(0, options.maxLines));
+  }
+
+  async writeFile(path: string, content: string | Uint8Array, _signal?: AbortSignal) {
+    try {
+      this.inner.writeFile(path, content);
+      return ok<void, FileError>(undefined);
+    } catch (e) {
+      return err<void, FileError>(this.toFileError(e, path));
+    }
+  }
+
+  async appendFile(path: string, content: string | Uint8Array, signal?: AbortSignal) {
+    const chunk = typeof content === "string" ? content : new TextDecoder().decode(content);
+    if (this.temps.has(path)) {
+      this.temps.set(path, (this.temps.get(path) ?? "") + chunk);
+      return ok<void, FileError>(undefined);
+    }
+    const cur = await this.readBinaryFile(path, signal);
+    if (!cur.ok) {
+      if (cur.error.code === "not_found") return this.writeFile(path, chunk, signal);
+      return err<void, FileError>(cur.error);
+    }
+    const encoded = new TextEncoder().encode(chunk);
+    const next = new Uint8Array(cur.value.byteLength + encoded.byteLength);
+    next.set(cur.value, 0);
+    next.set(encoded, cur.value.byteLength);
+    return this.writeFile(path, next, signal);
+  }
+
+  async renameFile(sourcePath: string, _destination: string, _signal?: AbortSignal) {
+    return err<void, FileError>(new FileError("not_supported", `rename unsupported: ${sourcePath}`, sourcePath));
+  }
+
+  async fileInfo(path: string, _signal?: AbortSignal) {
+    const clean = path.replace(/\/+$/, "");
+    const info = (kind: FileInfo["kind"], size: number): FileInfo => ({
+      name: clean === "" ? "" : this.baseOf(clean),
+      path: clean,
+      kind,
+      size,
+      mtimeMs: Date.now(),
+    });
+    try {
+      const bytes = this.inner.readFile(clean);
+      return ok<FileInfo, FileError>(info("file", bytes.byteLength));
+    } catch {
+      if (clean === "" || this.inner.readdir(`${clean}/`).length > 0) return ok<FileInfo, FileError>(info("directory", 0));
+      return err<FileInfo, FileError>(new FileError("not_found", `no such file: ${path}`, path));
+    }
+  }
+
+  async listDir(path: string, _signal?: AbortSignal) {
+    return err<FileInfo[], FileError>(new FileError("not_supported", `listing unsupported: ${path}`, path));
+  }
+
+  async canonicalPath(path: string, _signal?: AbortSignal) {
+    return err<string, FileError>(new FileError("not_supported", `canonical paths unsupported: ${path}`, path));
+  }
+
+  async exists(path: string, _signal?: AbortSignal) {
+    try {
+      this.inner.readFile(path);
+      return ok<boolean, FileError>(true);
+    } catch {
+      if (path === "") return ok<boolean, FileError>(true);
+      return ok<boolean, FileError>(this.inner.readdir(`${path.replace(/\/+$/, "")}/`).length > 0);
+    }
+  }
+
+  async createDir(_path: string, _options?: { recursive?: boolean; abortSignal?: AbortSignal }) {
+    return ok<void, FileError>(undefined);
+  }
+
+  async remove(path: string, _options?: { recursive?: boolean; force?: boolean; abortSignal?: AbortSignal }) {
+    return err<void, FileError>(new FileError("not_supported", `remove unsupported: ${path}`, path));
+  }
+
+  async createTempDir(prefix?: string, _signal?: AbortSignal) {
+    return ok<string, FileError>(`tmp/${prefix ?? "tmp-"}`);
+  }
+
+  async createTempFile(options?: { prefix?: string; suffix?: string; abortSignal?: AbortSignal }) {
+    this.tempSeq += 1;
+    const name = `tmp/${options?.prefix ?? "tmp-"}${Date.now().toString(36)}-${this.tempSeq}${options?.suffix ?? ""}`;
+    this.temps.set(name, "");
+    return ok<string, FileError>(name);
+  }
+
+  async cleanup(): Promise<void> {}
+
+  async exec(command: string, options?: ShellExecOptions) {
+    type ExecOut = { stdout: string; stderr: string; exitCode: number };
+    if (options?.abortSignal?.aborted) return err<ExecOut, ExecutionError>(new ExecutionError("aborted", "aborted"));
+    try {
+      const out = await this.inner.exec(command, options?.cwd);
+      options?.onStdout?.(out.stdout);
+      options?.onStderr?.(out.stderr);
+      return ok<ExecOut, ExecutionError>({ stdout: out.stdout, stderr: out.stderr, exitCode: out.exit });
+    } catch (e) {
+      if (e !== null && typeof e === "object" && "error" in e && typeof (e as { error: unknown }).error === "string") {
+        const error = String((e as { error: unknown }).error);
+        const hint =
+          "hint" in e && typeof (e as { hint: unknown }).hint === "string" ? String((e as { hint: unknown }).hint) : "";
+        this.lastFailure = { error, hint };
+        const code = error.includes("timed out")
+          ? "timeout"
+          : error.includes("shell unavailable")
+            ? "shell_unavailable"
+            : "unknown";
+        return err<ExecOut, ExecutionError>(new ExecutionError(code, hint ? `${error}: ${hint}` : error));
+      }
+      return err<ExecOut, ExecutionError>(new ExecutionError("unknown", e instanceof Error ? e.message : String(e)));
+    }
+  }
 }
 
-// Per-file mutation queue over normalized workspace paths. Overlapping
-// write/edit/remove calls on one path serialize; the last writer wins.
-// Rewritten for the VFS (exact-path keys) from pi file-mutation-queue.ts.
-const fileMutationQueues = new Map<string, Promise<void>>();
+const bridges = new WeakMap<ComputerExecutionEnv, CfEnv>();
 
-export function withFileMutationQueue<T>(path: string, fn: () => Promise<T>): Promise<T> {
-  const prev = fileMutationQueues.get(path) ?? Promise.resolve();
-  let release!: () => void;
-  const cur = new Promise<void>((resolve) => {
-    release = resolve;
+function bridgeFor(env: ComputerExecutionEnv): CfEnv {
+  let bridge = bridges.get(env);
+  if (bridge === undefined) {
+    bridge = new CfEnv(env);
+    bridges.set(env, bridge);
+  }
+  return bridge;
+}
+
+type MutationState = { queues: Map<string, Promise<void>>; registration: Promise<void> };
+const mutationStates = new WeakMap<object, MutationState>();
+
+export function withFileMutationQueue<T>(env: ComputerExecutionEnv, path: string, fn: () => Promise<T>): Promise<T> {
+  let state = mutationStates.get(env);
+  if (state === undefined) {
+    state = { queues: new Map(), registration: Promise.resolve() };
+    mutationStates.set(env, state);
+  }
+  const current = state;
+  const registration = current.registration.then(async () => {
+    const prev = current.queues.get(path) ?? Promise.resolve();
+    let release!: () => void;
+    const next = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const chained = prev.then(() => next);
+    current.queues.set(path, chained);
+    return { prev, chained, release };
   });
-  const tail = prev.then(() => cur);
-  fileMutationQueues.set(path, tail);
-  return prev.then(fn).finally(() => {
-    release();
-    if (fileMutationQueues.get(path) === tail) fileMutationQueues.delete(path);
-  });
+  current.registration = registration.then(
+    () => undefined,
+    () => undefined,
+  );
+  return registration.then(({ prev, chained, release }) =>
+    prev.then(fn).finally(() => {
+      release();
+      if (current.queues.get(path) === chained) current.queues.delete(path);
+    }),
+  );
 }
 
-function checkedOffset(offset: unknown): number | undefined {
-  if (offset === undefined) return undefined;
-  if (typeof offset !== "number" || !Number.isInteger(offset) || offset < 1) {
-    fail("bad offset", "offset is a 1-indexed line number; retry with offset >= 1");
+function toolFailure(e: unknown, path: string, env?: CfEnv): never {
+  if (e !== null && typeof e === "object" && "error" in e && typeof (e as { error: unknown }).error === "string") {
+    throw e;
   }
-  return offset as number;
-}
-
-function checkedLimit(limit: unknown, what: string): number | undefined {
-  if (limit === undefined) return undefined;
-  if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1) {
-    fail(`bad ${what}`, `retry with ${what} as a positive integer`);
+  if (e instanceof FileError) {
+    if (e.code === "not_found") failKey("noSuchFile", { path });
+    failKey("upstream", { message: e.message.slice(0, 300) });
   }
-  return limit as number;
+  if (e instanceof ExecutionError) {
+    const prior = env?.lastFailure;
+    if (prior !== undefined) throw prior;
+    failKey("upstream", { message: e.message.slice(0, 300) });
+  }
+  if (e instanceof Error) {
+    const offset = e.message.match(/^Offset (\d+) is beyond end of file \((\d+) lines total\)/);
+    if (offset !== null) failKey("offsetBeyond", { start: offset[1], total: offset[2] });
+    if (e.message.startsWith("Could not edit file:")) failKey("noSuchFile", { path });
+    failKey("upstream", { message: e.message.slice(0, 300) });
+  }
+  failKey("upstream", { message: String(e).slice(0, 300) });
 }
 
-function readLines(
+function keepReadFooter(
   text: string,
+  env: ComputerExecutionEnv,
+  path: string,
   offset: number | undefined,
   limit: number | undefined,
-): { out: string; start: number; end: number; total: number; capped: boolean } {
-  const lines = text.split("\n");
-  const total = lines.length;
-  const start = offset === undefined ? 1 : offset;
-  if (start > total) {
-    fail(`offset ${start} is beyond end of file`, `the file has ${total} lines; retry with offset <= ${total}`);
+): string {
+  const out = text.replace(/ \([0-9.]+[KMGT]?B limit\)\. Use offset=/, ". Use offset=");
+  const more = out.match(/\[(\d+) more lines in file\. Use offset=(\d+) to continue\.\]\s*$/);
+  if (more === null || (offset === undefined && limit === undefined)) return out;
+  let total = 0;
+  try {
+    total = new TextDecoder().decode(env.readFile(path)).split("\n").length;
+  } catch {
+    return out;
   }
-  let end = limit === undefined ? total : Math.min(start + limit - 1, total);
-  let selected = lines.slice(start - 1, end);
-  let capped = false;
-  if (selected.length > MAX_READ_LINES) {
-    selected = selected.slice(0, MAX_READ_LINES);
-    end = start + MAX_READ_LINES - 1;
-    capped = true;
-  }
-  let bytes = 0;
-  let cut = selected.length;
-  for (let i = 0; i < selected.length; i++) {
-    bytes += new TextEncoder().encode(selected[i]).byteLength + (i === 0 ? 0 : 1);
-    if (bytes > MAX_READ_BYTES) {
-      cut = i;
-      capped = true;
-      break;
-    }
-  }
-  if (cut < selected.length) {
-    selected = selected.slice(0, cut);
-    end = start + cut - 1;
-  }
-  return { out: selected.join("\n"), start, end, total, capped };
+  const body = out.slice(0, more.index ?? out.length).replace(/\s+$/, "");
+  const start = offset ?? 1;
+  const end = start + body.split("\n").length - 1;
+  return `${body}\n\n[Showing lines ${start}-${end} of ${total}. Use offset=${more[2]} to continue.]`;
 }
-
-export const readTool: AgentHarnessTool<ToolContext, any, { bytes: number }> = {
-  name: "read",
-  label: "Read",
-  description:
-    "Read a workspace file as UTF-8 text. Paths are workspace-relative. offset is a 1-indexed line offset for large files; limit caps the lines returned. Output is capped at 2000 lines or 50KB, whichever hits first.",
-  parameters: {
-    type: "object",
-    properties: {
-      path: { type: "string" },
-      offset: { type: "number" },
-      limit: { type: "number" },
-    },
-    required: ["path"],
-  },
-  async execute(
-    id,
-    params: { path: string; offset?: number; limit?: number },
-    _signal,
-    _onUpdate,
-    context,
-  ) {
-    const path = normalizeWorkspacePath(params.path);
-    const offset = checkedOffset(params.offset);
-    const limit = checkedLimit(params.limit, "limit");
-    const bytes = context.env.readFile(path);
-    const text = new TextDecoder().decode(bytes);
-    if (offset === undefined && limit === undefined) {
-      return {
-        content: [{ type: "text", text }],
-        details: { bytes: bytes.byteLength },
-      };
-    }
-    const slice = readLines(text, offset, limit);
-    let out = slice.out;
-    if (slice.capped || slice.end < slice.total) {
-      out += `\n\n[Showing lines ${slice.start}-${slice.end} of ${slice.total}. Use offset=${slice.end + 1} to continue.]`;
-    }
-    return {
-      content: [{ type: "text", text: out }],
-      details: { bytes: bytes.byteLength },
-    };
-  },
-};
-
-export const writeTool: AgentHarnessTool<ToolContext, any, { bytes: number }> = {
-  name: "write",
-  label: "Write",
-  description:
-    "Write content to a workspace file. Creates the file if it doesn't exist, overwrites if it does. Paths are workspace-relative; parent paths are virtual, no directories to create. Serialized per file: the last writer wins.",
-  parameters: {
-    type: "object",
-    properties: {
-      path: { type: "string" },
-      content: { type: "string" },
-    },
-    required: ["path", "content"],
-  },
-  async execute(id, params: { path: string; content: string }, _signal, _onUpdate, context) {
-    const path = normalizeWorkspacePath(params.path);
-    if (typeof params.content !== "string") {
-      fail("bad content", "retry with content as a string");
-    }
-    const stat = await withFileMutationQueue(path, async () =>
-      context.env.writeFile(path, params.content),
-    );
-    return {
-      content: [{ type: "text", text: `Successfully wrote to ${path}` }],
-      details: { bytes: stat.bytes },
-    };
-  },
-};
 
 function normalizeEdits(input: unknown): Edit[] {
   const record = (input ?? {}) as Record<string, unknown>;
@@ -215,95 +312,137 @@ function normalizeEdits(input: unknown): Edit[] {
       const parsed: unknown = JSON.parse(raw);
       if (Array.isArray(parsed)) raw = parsed;
     } catch {
-      fail("bad edits", "edits must be an array of {oldText, newText}");
+      failKey("badEdits");
     }
   }
   const edits: Edit[] = [];
   if (Array.isArray(raw)) {
     raw.forEach((entry, i) => {
-      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-        fail(`bad edits[${i}]`, `retry with edits[${i}] as {oldText, newText}`);
-      }
+      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) failKey("badEditAt", { i });
       const rec = entry as Record<string, unknown>;
-      if (typeof rec["oldText"] !== "string") {
-        fail(`bad edits[${i}].oldText`, `retry with edits[${i}].oldText as a string`);
-      }
-      if (typeof rec["newText"] !== "string") {
-        fail(`bad edits[${i}].newText`, `retry with edits[${i}].newText as a string`);
-      }
+      if (typeof rec["oldText"] !== "string") failKey("badEditOld", { i });
+      if (typeof rec["newText"] !== "string") failKey("badEditNew", { i });
       edits.push({ oldText: rec["oldText"] as string, newText: rec["newText"] as string });
     });
   }
   const oldText = record["oldText"];
   const newText = record["newText"];
   if (oldText !== undefined || newText !== undefined) {
-    if (typeof oldText !== "string") fail("bad oldText", "retry with oldText as a string");
-    if (typeof newText !== "string") fail("bad newText", "retry with newText as a string");
+    if (typeof oldText !== "string") failKey("badOldText");
+    if (typeof newText !== "string") failKey("badNewText");
     edits.push({ oldText: oldText as string, newText: newText as string });
   }
   if (edits.length === 0) {
-    fail("missing edits", "retry with edits as a non-empty array of {oldText, newText}");
+    failKey("missingEdits");
   }
   return edits;
 }
+
+const readInner = createReadTool();
+const writeInner = createWriteTool();
+const editInner = createEditTool();
+const bashInner = createBashTool();
+
+export const readTool: AgentHarnessTool<ToolContext, any, { bytes: number }> = {
+  name: readInner.name,
+  label: readInner.label,
+  description: readInner.description,
+  parameters: readInner.parameters,
+  async execute(
+    id,
+    params: { path: string; offset?: number; limit?: number },
+    signal,
+    _onUpdate,
+    context,
+  ) {
+    const path = normalizeWorkspacePath(params.path);
+    const offset = checkedOffset(params.offset);
+    const limit = checkedLimit(params.limit, "limit");
+    const env = bridgeFor(context.env);
+    let out: { content: Array<{ type: string; text?: string }> };
+    try {
+      out = (await readInner.execute(id, { path, offset, limit }, signal, undefined, { env })) as unknown as typeof out;
+    } catch (e) {
+      toolFailure(e, path, env);
+    }
+    const text = out.content.map((c) => (c.type === "text" ? (c.text ?? "") : "")).join("");
+    const kept = keepReadFooter(text, context.env, path, offset, limit);
+    const content: AgentToolResult<{ bytes: number }>["content"] =
+      kept === text ? (out.content as AgentToolResult<{ bytes: number }>["content"]) : [{ type: "text", text: kept }];
+    return { content, details: { bytes: context.env.stat(path).bytes } };
+  },
+};
+
+export const writeTool: AgentHarnessTool<ToolContext, any, { bytes: number }> = {
+  name: writeInner.name,
+  label: writeInner.label,
+  description: writeInner.description,
+  parameters: writeInner.parameters,
+  async execute(id, params: { path: string; content: string }, signal, _onUpdate, context) {
+    const path = normalizeWorkspacePath(params.path);
+    if (typeof params.content !== "string") {
+      failKey("badContent");
+    }
+    const env = bridgeFor(context.env);
+    type WriteExec = (
+      id: string,
+      params: unknown,
+      signal: AbortSignal | undefined,
+      onUpdate: undefined,
+      context: { env: CfEnv },
+    ) => Promise<unknown>;
+    try {
+      await withFileMutationQueue(context.env, path, () =>
+        (writeInner.execute as unknown as WriteExec)(id, { path, content: params.content }, signal, undefined, { env }),
+      );
+    } catch (e) {
+      toolFailure(e, path, env);
+    }
+    return {
+      content: [{ type: "text", text: `Successfully wrote to ${path}` }],
+      details: { bytes: new TextEncoder().encode(params.content).byteLength },
+    };
+  },
+};
 
 export const editTool: AgentHarnessTool<
   ToolContext,
   any,
   { diff: string; patch: string; firstChangedLine?: number }
 > = {
-  name: "edit",
-  label: "Edit",
-  description:
-    "Edit a workspace file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file; merge nearby changes into one edit. Returns a display diff plus a unified patch. Serialized per file: the last writer wins.",
-  parameters: {
-    type: "object",
-    properties: {
-      path: { type: "string" },
-      edits: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            oldText: { type: "string" },
-            newText: { type: "string" },
-          },
-          required: ["oldText", "newText"],
-        },
-      },
-    },
-    required: ["path", "edits"],
-  },
-  async execute(id, params: unknown, _signal, _onUpdate, context) {
+  name: editInner.name,
+  label: editInner.label,
+  description: editInner.description,
+  parameters: editInner.parameters,
+  async execute(id, params: unknown, signal, _onUpdate, context) {
     const record = (params ?? {}) as Record<string, unknown>;
     const path = normalizeWorkspacePath(record["path"]);
     const edits = normalizeEdits(params);
-    return withFileMutationQueue(path, async () => {
-      const bytes = context.env.readFile(path);
-      const raw = new TextDecoder().decode(bytes);
-      const bom = raw.startsWith("\uFEFF") ? "\uFEFF" : "";
-      const content = bom ? raw.slice(1) : raw;
-      const ending = detectLineEnding(content);
-      const normalized = normalizeToLF(content);
-      let applied: { baseContent: string; newContent: string };
-      try {
-        applied = applyEditsToNormalizedContent(normalized, edits, path);
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e ?? "edit failed");
-        fail(message, "keep oldText small but unique; merge overlapping edits into one");
-      }
-      const base = applied.baseContent;
-      const next = applied.newContent;
-      context.env.writeFile(path, bom + restoreLineEndings(next, ending));
-      const preview = generateDiffString(base, next);
-      const patch = generateUnifiedPatch(path, base, next);
-      const text =
-        `Successfully replaced ${edits.length} block(s) in ${path}.\n${preview.diff}`;
-      return {
-        content: [{ type: "text", text }],
-        details: { diff: preview.diff, patch, firstChangedLine: preview.firstChangedLine },
+    const env = bridgeFor(context.env);
+    try {
+      return (await withFileMutationQueue(context.env, path, () =>
+        (
+          editInner.execute as unknown as (
+            id: string,
+            params: unknown,
+            signal: AbortSignal | undefined,
+            onUpdate: undefined,
+            context: { env: CfEnv },
+          ) => Promise<{
+            content: Array<{ type: string; text?: string }>;
+            details: { diff: string; patch: string; firstChangedLine?: number };
+          }>
+        )(id, { path, edits }, signal, undefined, { env }),
+      )) as unknown as {
+        content: Array<{ type: "text"; text: string }>;
+        details: { diff: string; patch: string; firstChangedLine?: number };
       };
-    });
+    } catch (e) {
+      if (e instanceof Error && !e.message.startsWith("Could not edit file:")) {
+        failKey("editFailed", { message: e.message });
+      }
+      toolFailure(e, path, env);
+    }
   },
 };
 
@@ -328,13 +467,11 @@ export const listTool: AgentHarnessTool<ToolContext, any, { count: number }> = {
     _onUpdate,
     context,
   ) {
+    void id;
     const dir = params.path === undefined || params.path === "" ? "" : normalizeWorkspacePath(params.path);
     const recursive = params.recursive ?? false;
-    const maxEntries = checkedLimit(params.maxEntries, "maxEntries") ?? LIST_DEFAULT_MAX_ENTRIES;
-    if (maxEntries > LIST_HARD_MAX_ENTRIES) {
-      fail("maxEntries too large", `retry with maxEntries <= ${LIST_HARD_MAX_ENTRIES}`);
-    }
-    const prefix = dir === "" ? "" : dir.endsWith("/") ? dir : `${dir}/`;
+    const maxEntries = cappedLimit(params.maxEntries, LIST_DEFAULT_MAX_ENTRIES, LIST_HARD_MAX_ENTRIES, "maxEntries", "entriesLarge");
+    const prefix = dir === "" ? "" : `${dir}/`;
     const all = context.env.readdir(prefix);
     const names: string[] = [];
     const seenDirs = new Set<string>();
@@ -359,7 +496,7 @@ export const listTool: AgentHarnessTool<ToolContext, any, { count: number }> = {
     if (names.length === 0) {
       return { content: [{ type: "text", text: "(empty directory)" }], details: { count: 0 } };
     }
-    let out = names.slice(0, maxEntries);
+    const out = names.slice(0, maxEntries);
     let text = out.join("\n");
     if (names.length > maxEntries) {
       text += `\n\n[${maxEntries} entries limit reached. Use maxEntries=${maxEntries * 2} for more]`;
@@ -388,13 +525,14 @@ export const removeTool: AgentHarnessTool<ToolContext, any, { removed: string[] 
     _onUpdate,
     context,
   ) {
+    void id;
     const path = normalizeWorkspacePath(params.path);
     if (path === "") {
-      fail("bad path", "refusing to remove the workspace root; retry with a file or directory path");
+      failKey("removeRoot");
     }
     const recursive = params.recursive ?? false;
     const prefix = `${path}/`;
-    return withFileMutationQueue(path, async () => {
+    return withFileMutationQueue(context.env, path, async () => {
       let removed: string[] = [];
       try {
         context.env.readFile(path);
@@ -403,16 +541,13 @@ export const removeTool: AgentHarnessTool<ToolContext, any, { removed: string[] 
       } catch {
         const under = context.env.readdir(prefix).map((e) => e.path);
         if (under.length === 0) {
-          fail(`no such file: ${path}`, "check the path with list first, then retry");
+          failKey("noSuchFile", { path });
         }
         if (!recursive) {
-          fail(
-            `${path} is a directory`,
-            "retry with recursive true to delete the whole tree, or remove files one by one",
-          );
+          failKey("isDirectory", { path });
         }
         for (const p of under) {
-          await withFileMutationQueue(p, async () => context.env.rm(p));
+          await withFileMutationQueue(context.env, p, async () => context.env.rm(p));
         }
         removed = under;
       }
@@ -434,12 +569,32 @@ export const bashTool: AgentHarnessTool<ToolContext, any, { exit: number }> = {
     properties: { command: { type: "string" } },
     required: ["command"],
   },
-  async execute(id, params: { command: string }, _signal, _onUpdate, context) {
-    const out = await context.env.exec(params.command);
-    const text = out.stderr ? `${out.stdout}\n${out.stderr}` : out.stdout;
-    return {
-      content: [{ type: "text", text }],
-      details: { exit: out.exit },
-    };
+  async execute(id, params: { command: string; timeout?: number }, signal, _onUpdate, context) {
+    const env = bridgeFor(context.env);
+    type BashExec = (
+      id: string,
+      params: unknown,
+      signal: AbortSignal | undefined,
+      onUpdate: undefined,
+      context: { env: CfEnv },
+    ) => Promise<{ content: Array<{ type: "text"; text: string }> }>;
+    try {
+      const out = await (bashInner.execute as unknown as BashExec)(
+        id,
+        { command: params.command, timeout: params.timeout },
+        signal,
+        undefined,
+        { env },
+      );
+      return { content: out.content, details: { exit: 0 } };
+    } catch (e) {
+      if (e instanceof Error) {
+        const code = e.message.match(/Command exited with code (\d+)/);
+        if (code !== null) {
+          return { content: [{ type: "text", text: e.message }], details: { exit: Number(code[1]) } };
+        }
+      }
+      toolFailure(e, typeof params.command === "string" ? params.command : "", env);
+    }
   },
 };

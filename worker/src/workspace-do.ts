@@ -1,13 +1,12 @@
 import { createDofsVfs, type FileStore } from "../../packages/pi-cf/src/vfs-dofs";
-import { appendEntry, ensureEntriesSchema, entryHead, getEntry, listEntries, openRun, recordTurnWithOpen, runInSyncTx, sessionLeaf, sumResultUsage, withSessionRates } from "../../packages/pi-cf/src/entries";
-import { archiveMeta, compactionPending, ensureCompactionSchema, maybeMarkForCompaction, pendingSessions, readArchivePage, runCompaction } from "./compaction";
-import { enforceFence } from "../../packages/pi-cf/src/fence";
-import { acceptStream, readAttachment, socketClosed, socketMessage, wrapSocket, type StreamHost } from "./stream";
-import { createAgentSession } from "../../packages/pi-cf/src/session";
+import { appendEntry, ensureEntriesSchema, entryHead, listEntries, openRun, recordTurnWithOpen, runInSyncTx, sumResultUsage, type SessionUsageMeta } from "../../packages/pi-cf/src/entries";
+import type { SessionUsage } from "../../packages/pi-cf/src/session";
+import { archiveMeta, compactionPending, ensureCompactionSchema, pendingSessions, readArchivePage, runCompaction } from "./compaction";
+import { acceptStream, checkedRotate, executeTurn, readAttachment, socketClosed, socketMessage, wrapSocket, type StreamHost, type TurnSink } from "./stream";
 import { normalizeWorkspacePath } from "../../packages/pi-cf/src/tools";
-import { buildRuntime, clampThinkingLevel, defaultTurnModel, keyedProviders, resolveCatalogModel, resolveKeyedModel, resolveKeyedModelLive, resolveProviderKey, supportedThinkingLevels, THINKING_LEVELS, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
-import { createWorkspaceFs, hasGitDir } from "./git-fs";
-import { gateArgv, notARepoBody, NotARepoError, runGitRead, runGitWrite, WRITE_SUBCOMMANDS } from "./git-reads";
+import { buildRuntime, clampThinkingLevel, keyedProviders, resolveCatalogModel, resolveKeyedModelLive, supportedThinkingLevels, THINKING_LEVELS, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
+import { createWorkspaceFs, gateArgv, hasGitDir, notARepoBody, NotARepoError, runGitRead, runGitWrite, WRITE_SUBCOMMANDS } from "./git";
+
 interface ShellWorkerBinding {
   exec(input: {
     command: string;
@@ -18,10 +17,16 @@ interface ShellWorkerBinding {
   kill(input: { sid: string }): Promise<{ killed: boolean }>;
   dispose(input: { sid: string }): Promise<{ disposed: true }>;
 }
+
 interface Env {
   WORKSPACE_DO: DurableObjectNamespace;
   SHELL_WORKER: ShellWorkerBinding;
 }
+
+const MINT_WS_HINT = "create one with POST /workspaces first, then mint a session";
+const UNKNOWN_SESSION_HINT = "mint one with POST /workspaces/:id/sessions first, then retry with that session id";
+const MAX_FILE_BYTES = 8 * 1024 * 1024;
+const FILE_TOO_LARGE_HINT = "retry with a file under 8 MiB, or split it across paths";
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -30,15 +35,51 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
+function err(error: string, hint: string, status: number): Response {
+  return json({ error, hint }, status);
+}
+
+type UsageRow = { inTokens: number; outTokens: number; cacheRead: number; costTotal: number; elapsedMs: number; tokensPerSec: number | null };
+
+const zeroUsage: UsageRow = { inTokens: 0, outTokens: 0, cacheRead: 0, costTotal: 0, elapsedMs: 0, tokensPerSec: null };
+
+function tokensPerSec(outTokens: number, elapsedMs: number): number | null {
+  return outTokens > 0 && elapsedMs >= 100 ? (outTokens * 1000) / elapsedMs : null;
+}
+
+function fmtUsage(sums: SessionUsage, contextWindow: number | null): SessionUsageMeta {
+  const full: SessionUsage = { ...zeroUsage, ...sums };
+  const context = full.inTokens + full.outTokens + full.cacheRead;
+  const contextPct = typeof contextWindow === "number" && contextWindow > 0 ? (context / contextWindow) * 100 : null;
+  const hitDenom = full.inTokens + full.cacheRead;
+  return { ...full, tokensPerSec: tokensPerSec(full.outTokens, full.elapsedMs), contextPct, hitPct: hitDenom > 0 ? (full.cacheRead / hitDenom) * 100 : 0 };
+}
+
+function fmtModel(sid: string, provider: string, id: string, rot: { fence: string; revision: number } | null, revision: number): Response {
+  if (rot !== null) return json({ sessionId: sid, model: { provider, id }, fence: rot.fence, revision: rot.revision });
+  return json({ sessionId: sid, model: { provider, id }, revision });
+}
+
+function fmtThinking(sid: string, applied: string, requested: string, rot: { fence: string; revision: number } | null, revision: number): Response {
+  if (rot !== null) return json({ sessionId: sid, thinking: applied, requested, fence: rot.fence, revision: rot.revision });
+  return json({ sessionId: sid, thinking: applied, requested, revision });
+}
+
+function fmtSettings(ws: string, settings: { provider: string | null; id: string | null; thinking: string | null }): Response {
+  return json({ ws, settings: { modelProvider: settings.provider, modelId: settings.id, thinkingLevel: settings.thinking } });
+}
+
+function saveSettings(sql: { exec(query: string, ...bindings: unknown[]): unknown }, ws: string, provider: unknown, id: unknown, thinking: unknown): void {
+  sql.exec("INSERT OR REPLACE INTO workspace_settings(ws, modelProvider, modelId, thinkingLevel) VALUES (?, ?, ?, ?)", ws, provider, id, thinking);
+}
+
 export class WorkspaceDO implements DurableObject {
   private state: DurableObjectState;
   private env: Env;
   private files: FileStore;
-  // Ephemeral liveness witnesses for stream turns, one per incarnation. An
-  // eviction resets this map; correctness state stays in SQLite, and the next
-  // openRun flips any orphaned run to interrupted.
   private live = new Map<string, AbortController>();
   private sessionQueues = new Map<string, Promise<void>>();
+
   private enqueueSessionTurn<T>(sid: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.sessionQueues.get(sid) ?? Promise.resolve();
     let release!: () => void;
@@ -87,6 +128,7 @@ export class WorkspaceDO implements DurableObject {
       "CREATE TABLE IF NOT EXISTS workspace_settings(ws TEXT PRIMARY KEY, modelProvider TEXT, modelId TEXT, thinkingLevel TEXT)",
     );
   }
+
   private readFence(sid: string): { fence: string | null; revision: number } | null {
     const rows = [
       ...this.state.storage.sql.exec("SELECT ownerFence, revision FROM sessions WHERE sid = ?", sid),
@@ -101,6 +143,7 @@ export class WorkspaceDO implements DurableObject {
   private rotateFence(sid: string, next: { fence: string; revision: number }): void {
     this.state.storage.sql.exec("UPDATE sessions SET ownerFence = ?, revision = ? WHERE sid = ?", next.fence, next.revision, sid);
   }
+
   private casRotateFence(
     sid: string,
     oldFence: string,
@@ -129,6 +172,20 @@ export class WorkspaceDO implements DurableObject {
     ];
     return rows.length > 0;
   }
+
+  private requireSession(ws: string, sid: string | null, missingHint: string, unknownWsHint: string): Response | null {
+    if (!ws) {
+      return err("missing workspace", missingHint, 400);
+    }
+    if (!this.workspaceExists(ws)) {
+      return err("unknown workspace", unknownWsHint, 404);
+    }
+    if (sid !== null && (sid.length === 0 || !this.sessionExists(ws, sid))) {
+      return err("unknown session", UNKNOWN_SESSION_HINT, 404);
+    }
+    return null;
+  }
+
   private readTriple(sid: string): { provider: string | null; id: string | null; thinking: string | null; retention: "short" | "long" } | null {
     const rows = [
       ...this.state.storage.sql.exec("SELECT modelProvider, modelId, thinkingLevel, cacheRetention FROM sessions WHERE sid = ?", sid),
@@ -143,7 +200,6 @@ export class WorkspaceDO implements DurableObject {
     };
   }
 
-  // resolveCatalogModel throws on unknown ids; meta reports null instead of guessing.
   private sessionContextWindow(triple: { provider: string | null; id: string | null } | null): number | null {
     try {
       if (triple?.provider && triple?.id) {
@@ -182,13 +238,7 @@ export class WorkspaceDO implements DurableObject {
         workspaceId = undefined;
       }
       if (!workspaceId) {
-        return json(
-          {
-            error: "missing workspaceId",
-            hint: "POST /workspaces on the Worker to mint a workspace id",
-          },
-          400,
-        );
+        return err("missing workspaceId", "POST /workspaces on the Worker to mint a workspace id", 400);
       }
       this.state.storage.sql.exec(
         "INSERT OR IGNORE INTO workspaces(id, created_at) VALUES (?, ?)",
@@ -197,75 +247,40 @@ export class WorkspaceDO implements DurableObject {
       );
       return json({ workspaceId });
     }
+
     if (request.method === "GET" && url.pathname === "/exists") {
       const ws = url.searchParams.get("ws") ?? "";
-      if (!ws) {
-        return json(
-          {
-            error: "missing workspace",
-            hint: "call POST /workspaces/:id/exec on the Worker instead",
-          },
-          400,
-        );
-      }
-      if (!this.workspaceExists(ws)) {
-        return json(
-          {
-            error: "unknown workspace",
-            hint: "create one with POST /workspaces first",
-          },
-          404,
-        );
-      }
+      const bad = this.requireSession(ws, null, "call POST /workspaces/:id/exec on the Worker instead", "create one with POST /workspaces first");
+      if (bad) return bad;
       return json({ workspaceId: ws, exists: true });
     }
 
     if (url.pathname === "/files") {
       const ws = url.searchParams.get("ws") ?? "";
-      if (!ws) {
-        return json(
-          {
-            error: "missing workspace",
-            hint: "call PUT /workspaces/:id/files?path=P on the Worker instead",
-          },
-          400,
-        );
-      }
-      if (!this.workspaceExists(ws)) {
-        return json(
-          {
-            error: "unknown workspace",
-            hint: "create one with POST /workspaces first",
-          },
-          404,
-        );
-      }
+      const bad = this.requireSession(ws, null, "call PUT /workspaces/:id/files?path=P on the Worker instead", "create one with POST /workspaces first");
+      if (bad) return bad;
 
       if (request.method === "PUT") {
         const path = url.searchParams.get("path");
         if (!path) {
-          return json(
-            {
-              error: "missing path",
-              hint: "retry as PUT /workspaces/:id/files?path=P with raw bytes",
-            },
-            400,
-          );
+          return err("missing path", "retry as PUT /workspaces/:id/files?path=P with raw bytes", 400);
+        }
+        const declared = request.headers.get("content-length");
+        if (declared !== null && Number(declared) > MAX_FILE_BYTES) {
+          return err("file too large", FILE_TOO_LARGE_HINT, 413);
         }
         const buf = new Uint8Array(await request.arrayBuffer());
+        if (buf.byteLength > MAX_FILE_BYTES) {
+          return err("file too large", FILE_TOO_LARGE_HINT, 413);
+        }
         const bytes = this.files.put(ws, path, buf, new Date().toISOString());
         return json({ path, bytes });
       }
+
       if (request.method === "DELETE") {
         const rawPath = url.searchParams.get("path");
         if (!rawPath) {
-          return json(
-            {
-              error: "missing path",
-              hint: "retry as DELETE /workspaces/:id/files?path=P",
-            },
-            400,
-          );
+          return err("missing path", "retry as DELETE /workspaces/:id/files?path=P", 400);
         }
         let path: string;
         try {
@@ -273,18 +288,12 @@ export class WorkspaceDO implements DurableObject {
         } catch (e) {
           if (e !== null && typeof e === "object" && "error" in e && typeof e.error === "string") {
             const hint = "hint" in e && typeof e.hint === "string" ? e.hint : "retry with a workspace-relative path";
-            return json({ error: e.error, hint }, 400);
+            return err(e.error, hint, 400);
           }
           throw e;
         }
         if (path === "") {
-          return json(
-            {
-              error: "bad path",
-              hint: "refusing to remove the workspace root; retry with a file or directory path",
-            },
-            400,
-          );
+          return err("bad path", "refusing to remove the workspace root; retry with a file or directory path", 400);
         }
         if (this.files.exists(ws, path)) {
           this.files.remove(ws, path);
@@ -292,22 +301,10 @@ export class WorkspaceDO implements DurableObject {
         }
         const under = this.files.list(ws, `${path}/`);
         if (under.length === 0) {
-          return json(
-            {
-              error: `no such file: ${path}`,
-              hint: "check the path with files ls first, then retry",
-            },
-            404,
-          );
+          return err(`no such file: ${path}`, "check the path with files ls first, then retry", 404);
         }
         if (url.searchParams.get("recursive") !== "true") {
-          return json(
-            {
-              error: `${path} is a directory`,
-              hint: "retry with ?recursive=true to delete the whole tree, or remove files one by one",
-            },
-            400,
-          );
+          return err(`${path} is a directory`, "retry with ?recursive=true to delete the whole tree, or remove files one by one", 400);
         }
         const removed = this.files.removeTree(ws, `${path}/`);
         return json({ removed });
@@ -321,23 +318,11 @@ export class WorkspaceDO implements DurableObject {
         }
         const path = url.searchParams.get("path");
         if (!path) {
-          return json(
-            {
-              error: "missing path",
-              hint: "retry as GET /workspaces/:id/files?path=P, or list with ?list=DIR",
-            },
-            400,
-          );
+          return err("missing path", "retry as GET /workspaces/:id/files?path=P, or list with ?list=DIR", 400);
         }
         const body = this.files.get(ws, path);
         if (body === undefined) {
-          return json(
-            {
-              error: `no such file: ${path}`,
-              hint: "upload it with PUT /workspaces/:id/files?path=P first",
-            },
-            404,
-          );
+          return err(`no such file: ${path}`, "upload it with PUT /workspaces/:id/files?path=P first", 404);
         }
         return new Response(body as BodyInit, {
           status: 200,
@@ -348,24 +333,8 @@ export class WorkspaceDO implements DurableObject {
 
     if (request.method === "POST" && url.pathname === "/sessions") {
       const ws = url.searchParams.get("ws") ?? "";
-      if (!ws) {
-        return json(
-          {
-            error: "missing workspace",
-            hint: "call POST /workspaces/:id/sessions on the Worker instead",
-          },
-          400,
-        );
-      }
-      if (!this.workspaceExists(ws)) {
-        return json(
-          {
-            error: "unknown workspace",
-            hint: "create one with POST /workspaces first, then POST /workspaces/:id/sessions",
-          },
-          404,
-        );
-      }
+      const bad = this.requireSession(ws, null, "call POST /workspaces/:id/sessions on the Worker instead", "create one with POST /workspaces first, then POST /workspaces/:id/sessions");
+      if (bad) return bad;
       let retention: unknown;
       let hasRetention = false;
       try {
@@ -379,13 +348,7 @@ export class WorkspaceDO implements DurableObject {
       }
       const effRetention = hasRetention ? retention : "short";
       if (effRetention !== "short" && effRetention !== "long") {
-        return json(
-          {
-            error: "bad retention",
-            hint: 'retry with {"retention": "short"|"long"}; omit it for short',
-          },
-          400,
-        );
+        return err("bad retention", 'retry with {"retention": "short"|"long"}; omit it for short', 400);
       }
       const sessionId = crypto.randomUUID();
       const fence = crypto.randomUUID();
@@ -407,30 +370,8 @@ export class WorkspaceDO implements DurableObject {
     if (request.method === "POST" && url.pathname === "/git") {
       const ws = url.searchParams.get("ws") ?? "";
       const sid = url.searchParams.get("sid") ?? "";
-      if (!ws) {
-        return json(
-          { error: "missing workspace", hint: "call POST /workspaces/:id/sessions/:sid/git on the Worker instead" },
-          400,
-        );
-      }
-      if (!this.workspaceExists(ws)) {
-        return json(
-          {
-            error: "unknown workspace",
-            hint: "create one with POST /workspaces first, then mint a session",
-          },
-          404,
-        );
-      }
-      if (!sid || !this.sessionExists(ws, sid)) {
-        return json(
-          {
-            error: "unknown session",
-            hint: "mint one with POST /workspaces/:id/sessions first, then retry with that session id",
-          },
-          404,
-        );
-      }
+      const bad = this.requireSession(ws, sid, "call POST /workspaces/:id/sessions/:sid/git on the Worker instead", MINT_WS_HINT);
+      if (bad) return bad;
       let argv: unknown;
       try {
         const body: unknown = await request.json();
@@ -441,7 +382,7 @@ export class WorkspaceDO implements DurableObject {
         argv = undefined;
       }
       const gate = gateArgv(argv);
-      if (!gate.ok) return json({ error: gate.error, hint: gate.hint }, gate.status);
+      if (!gate.ok) return err(gate.error, gate.hint, gate.status);
       try {
         const rows = [
           ...this.state.storage.sql.exec("SELECT path, body FROM files WHERE ws = ?", ws),
@@ -456,18 +397,21 @@ export class WorkspaceDO implements DurableObject {
           const result = await runGitWrite(fs, gate.sub, gate.rest);
           const now = new Date().toISOString();
           const dirty = fs.dirty();
-          for (const up of dirty.upserts) {
-            this.state.storage.sql.exec(
-              "INSERT OR REPLACE INTO files(ws, path, body, updated_at) VALUES (?, ?, ?, ?)",
-              ws,
-              up.path,
-              up.body,
-              now,
-            );
-          }
-          for (const del of dirty.deletes) {
-            this.state.storage.sql.exec("DELETE FROM files WHERE ws = ? AND path = ?", ws, del);
-          }
+          const sql = this.state.storage.sql;
+          runInSyncTx(sql, () => {
+            for (const up of dirty.upserts) {
+              sql.exec(
+                "INSERT OR REPLACE INTO files(ws, path, body, updated_at) VALUES (?, ?, ?, ?)",
+                ws,
+                up.path,
+                up.body,
+                now,
+              );
+            }
+            for (const del of dirty.deletes) {
+              sql.exec("DELETE FROM files WHERE ws = ? AND path = ?", ws, del);
+            }
+          });
           return json({ ...result, exitCode: 0 });
         }
         const result = await runGitRead(fs, gate.sub, gate.rest);
@@ -476,261 +420,99 @@ export class WorkspaceDO implements DurableObject {
         if (e instanceof NotARepoError) return json(notARepoBody(), 404);
         const msg = e instanceof Error ? e.message : String(e ?? "git failed");
         if (/not a git repository/i.test(msg)) return json(notARepoBody(), 404);
-        return json(
-          { error: msg.slice(0, 300), hint: "retry with argv [status|log|diff|show|add|commit|rm|checkout|switch|init]; clone/fetch/push are forbidden" },
-          400,
-        );
+        return err(msg.slice(0, 300), "retry with argv [status|log|diff|show|add|commit|rm|checkout|switch|init]; clone/fetch/push are forbidden", 400);
       }
     }
 
     if (request.method === "POST" && url.pathname === "/claim") {
       const ws = url.searchParams.get("ws") ?? "";
       const sid = url.searchParams.get("sid") ?? "";
-      if (!ws) {
-        return json(
-          {
-            error: "missing workspace",
-            hint: "call POST /workspaces/:id/sessions/:sid/claim on the Worker instead",
-          },
-          400,
-        );
-      }
-      if (!this.workspaceExists(ws)) {
-        return json(
-          {
-            error: "unknown workspace",
-            hint: "create one with POST /workspaces first, then mint a session",
-          },
-          404,
-        );
-      }
-      if (!sid || !this.sessionExists(ws, sid)) {
-        return json(
-          {
-            error: "unknown session",
-            hint: "mint one with POST /workspaces/:id/sessions first, then retry with that session id",
-          },
-          404,
-        );
-      }
-      let fence: unknown;
-      let expected: unknown;
+      const bad = this.requireSession(ws, sid, "call POST /workspaces/:id/sessions/:sid/claim on the Worker instead", MINT_WS_HINT);
+      if (bad) return bad;
+      let body: unknown;
       try {
-        const body: unknown = await request.json();
-        if (body !== null && typeof body === "object") {
-          if ("fence" in body) fence = body.fence;
-          if ("expected" in body) expected = body.expected;
-        }
+        body = await request.json();
       } catch {
-        fence = undefined;
-        expected = undefined;
+        body = undefined;
       }
-      if (typeof fence !== "string" || fence.length === 0 || !Number.isInteger(expected)) {
-        return json(
-          {
-            error: "missing fence",
-            hint: "retry as POST /workspaces/:id/sessions/:sid/claim with JSON {fence, expected}",
-          },
-          400,
-        );
-      }
-      const checked = enforceFence(this.readFence(sid), fence, expected);
-      if ("status" in checked) return json(checked.body, checked.status);
-      this.rotateFence(sid, checked);
-      return json({ sessionId: sid, fence: checked.fence, revision: checked.revision });
+      return this.enqueueSessionTurn(sid, async () => {
+        const hint = "retry as POST /workspaces/:id/sessions/:sid/claim with JSON {fence, expected}";
+        const rot = checkedRotate(this.readFence(sid), body, hint, (next) => this.rotateFence(sid, next));
+        if (rot === null) return err("missing fence", hint, 400);
+        if ("status" in rot) return json(rot.body, rot.status);
+        return json({ sessionId: sid, fence: rot.fence, revision: rot.revision });
+      });
     }
 
-    if (request.method === "POST" && url.pathname === "/model") {
+    if (request.method === "POST" && (url.pathname === "/model" || url.pathname === "/thinking")) {
+      const isThinking = url.pathname === "/thinking";
       const ws = url.searchParams.get("ws") ?? "";
       const sid = url.searchParams.get("sid") ?? "";
-      if (!ws) {
-        return json(
-          {
-            error: "missing workspace",
-            hint: "call POST /workspaces/:id/sessions/:sid/model on the Worker instead",
-          },
-          400,
-        );
-      }
-      if (!this.workspaceExists(ws)) {
-        return json(
-          {
-            error: "unknown workspace",
-            hint: "create one with POST /workspaces first, then mint a session",
-          },
-          404,
-        );
-      }
-      if (!sid || !this.sessionExists(ws, sid)) {
-        return json(
-          {
-            error: "unknown session",
-            hint: "mint one with POST /workspaces/:id/sessions first, then retry with that session id",
-          },
-          404,
-        );
-      }
-      let provider: unknown;
-      let id: unknown;
-      let fence: unknown;
-      let expected: unknown;
-      let hasFence = false;
-      let hasExpected = false;
+      const bad = this.requireSession(
+        ws,
+        sid,
+        isThinking
+          ? "call POST /workspaces/:id/sessions/:sid/thinking on the Worker instead"
+          : "call POST /workspaces/:id/sessions/:sid/model on the Worker instead",
+        MINT_WS_HINT,
+      );
+      if (bad) return bad;
+      let body: unknown;
       try {
-        const body: unknown = await request.json();
-        if (body !== null && typeof body === "object") {
-          if ("provider" in body) provider = body.provider;
-          if ("id" in body) id = body.id;
-          if ("fence" in body) {
-            fence = body.fence;
-            hasFence = true;
-          }
-          if ("expected" in body) {
-            expected = body.expected;
-            hasExpected = true;
+        body = await request.json();
+      } catch {
+        body = undefined;
+      }
+      const rec = body !== null && typeof body === "object" ? (body as Record<string, unknown>) : {};
+      if (!isThinking) {
+        let provider: unknown = rec["provider"];
+        let id: unknown = rec["id"];
+        if (typeof provider !== "string" || provider.length === 0 || typeof id !== "string" || id.length === 0) {
+          try {
+            const runtime = buildRuntime(this.env as unknown as RuntimeEnv);
+            if (runtime.stub) {
+              return err("no model key", "set a provider key as a Worker secret, then retry", 400);
+            }
+            provider = runtime.model.provider;
+            id = runtime.model.id;
+          } catch (e) {
+            if (e !== null && typeof e === "object" && "error" in e && typeof e.error === "string") {
+              const hint = "hint" in e && typeof e.hint === "string" ? e.hint : "retry with a catalog model";
+              return err(e.error, hint, 400);
+            }
+            return err("unknown model", "retry with a catalog model", 400);
           }
         }
-      } catch {
-        provider = undefined;
-        id = undefined;
-      }
-      if (typeof provider !== "string" || provider.length === 0 || typeof id !== "string" || id.length === 0) {
-        // No explicit triple: resolve the keyed default (MODEL_ID override or
-        // first keyed provider) so fresh sessions run keyed without the client
-        // duplicating precedence. No keys → explicit error, never the stub.
+        if (typeof provider !== "string" || provider.length === 0 || typeof id !== "string" || id.length === 0) {
+          return err("unknown model", "retry with a catalog model", 400);
+        }
         try {
-          const runtime = buildRuntime(this.env as unknown as RuntimeEnv);
-          if (runtime.stub) {
-            return json(
-              {
-                error: "no model key",
-                hint: "set a provider key as a Worker secret, then retry",
-              },
-              400,
-            );
-          }
-          provider = runtime.model.provider;
-          id = runtime.model.id;
+          resolveCatalogModel(provider, id);
         } catch (e) {
           if (e !== null && typeof e === "object" && "error" in e && typeof e.error === "string") {
             const hint = "hint" in e && typeof e.hint === "string" ? e.hint : "retry with a catalog model";
-            return json({ error: e.error, hint }, 400);
+            return err(e.error, hint, 404);
           }
-          return json({ error: "unknown model", hint: "retry with a catalog model" }, 400);
+          return err("unknown model", "retry with a catalog model", 404);
         }
-      }
-      if (typeof provider !== "string" || provider.length === 0 || typeof id !== "string" || id.length === 0) {
-        return json({ error: "unknown model", hint: "retry with a catalog model" }, 400);
-      }
-      try {
-        resolveCatalogModel(provider, id);
-      } catch (e) {
-        if (e !== null && typeof e === "object" && "error" in e && typeof e.error === "string") {
-          const hint = "hint" in e && typeof e.hint === "string" ? e.hint : "retry with a catalog model";
-          return json({ error: e.error, hint }, 404);
-        }
-        return json({ error: "unknown model", hint: "retry with a catalog model" }, 404);
-      }
-      let rotated: { fence: string; revision: number } | null = null;
-      if (hasFence || hasExpected) {
-        if (typeof fence !== "string" || fence.length === 0 || !Number.isInteger(expected)) {
-          return json(
-            {
-              error: "missing fence",
-              hint: "retry the model switch with both {fence, expected}, or omit both for the legacy path",
-            },
-            400,
-          );
-        }
-        const checked = enforceFence(this.readFence(sid), fence, expected);
-        if ("status" in checked) return json(checked.body, checked.status);
-        this.rotateFence(sid, checked);
-        rotated = checked;
-      }
-      const sql = this.state.storage.sql;
-      const from = this.readTriple(sid);
-      runInSyncTx(sql, () => {
-        sql.exec("UPDATE sessions SET modelProvider = ?, modelId = ? WHERE sid = ?", provider, id, sid);
-        // Model choice becomes the workspace default so future sessions
-        // inherit it; thinking level preserved from existing settings.
-        sql.exec(
-          "INSERT OR REPLACE INTO workspace_settings(ws, modelProvider, modelId, thinkingLevel) VALUES (?, ?, ?, ?)",
-          ws,
-          provider,
-          id,
-          this.readSettings(ws).thinking,
-        );
-        appendEntry(sql, sid, "model_change", {
-          from: { provider: from?.provider ?? null, id: from?.id ?? null },
-          to: { provider, id },
+        const rot = checkedRotate(this.readFence(sid), body, "retry the model switch with both {fence, expected}, or omit both for the legacy path", (next) => this.rotateFence(sid, next));
+        if (rot !== null && "status" in rot) return json(rot.body, rot.status);
+        const sql = this.state.storage.sql;
+        const from = this.readTriple(sid);
+        runInSyncTx(sql, () => {
+          sql.exec("UPDATE sessions SET modelProvider = ?, modelId = ? WHERE sid = ?", provider, id, sid);
+          saveSettings(sql, ws, provider, id, this.readSettings(ws).thinking);
+          appendEntry(sql, sid, "model_change", {
+            from: { provider: from?.provider ?? null, id: from?.id ?? null },
+            to: { provider, id },
+          });
         });
-      });
-      const cur = this.readFence(sid);
-      if (rotated !== null) {
-        return json({ sessionId: sid, model: { provider, id }, fence: rotated.fence, revision: rotated.revision });
+        const cur = this.readFence(sid);
+        return fmtModel(sid, provider, id, rot, cur?.revision ?? 0);
       }
-      return json({ sessionId: sid, model: { provider, id }, revision: cur?.revision ?? 0 });
-    }
-
-    if (request.method === "POST" && url.pathname === "/thinking") {
-      const ws = url.searchParams.get("ws") ?? "";
-      const sid = url.searchParams.get("sid") ?? "";
-      if (!ws) {
-        return json(
-          {
-            error: "missing workspace",
-            hint: "call POST /workspaces/:id/sessions/:sid/thinking on the Worker instead",
-          },
-          400,
-        );
-      }
-      if (!this.workspaceExists(ws)) {
-        return json(
-          {
-            error: "unknown workspace",
-            hint: "create one with POST /workspaces first, then mint a session",
-          },
-          404,
-        );
-      }
-      if (!sid || !this.sessionExists(ws, sid)) {
-        return json(
-          {
-            error: "unknown session",
-            hint: "mint one with POST /workspaces/:id/sessions first, then retry with that session id",
-          },
-          404,
-        );
-      }
-      let level: unknown;
-      let fence: unknown;
-      let expected: unknown;
-      let hasFence = false;
-      let hasExpected = false;
-      try {
-        const body: unknown = await request.json();
-        if (body !== null && typeof body === "object") {
-          if ("level" in body) level = body.level;
-          if ("fence" in body) {
-            fence = body.fence;
-            hasFence = true;
-          }
-          if ("expected" in body) {
-            expected = body.expected;
-            hasExpected = true;
-          }
-        }
-      } catch {
-        level = undefined;
-      }
+      const level: unknown = rec["level"];
       if (typeof level !== "string" || level.length === 0) {
-        return json(
-          {
-            error: "missing level",
-            hint: 'retry as POST /workspaces/:id/sessions/:sid/thinking with JSON {"level": "high"}',
-          },
-          400,
-        );
+        return err("missing level", 'retry as POST /workspaces/:id/sessions/:sid/thinking with JSON {"level": "high"}', 400);
       }
       const triple = this.readTriple(sid);
       let like: RuntimeModel | Record<string, never> = {};
@@ -740,9 +522,9 @@ export class WorkspaceDO implements DurableObject {
         } catch (e) {
           if (e !== null && typeof e === "object" && "error" in e && typeof e.error === "string") {
             const hint = "hint" in e && typeof e.hint === "string" ? e.hint : "retry with a catalog model";
-            return json({ error: e.error, hint }, 404);
+            return err(e.error, hint, 404);
           }
-          return json({ error: "unknown model", hint: "retry with a catalog model" }, 404);
+          return err("unknown model", "retry with a catalog model", 404);
         }
       } else {
         try {
@@ -753,30 +535,10 @@ export class WorkspaceDO implements DurableObject {
         }
       }
       if (!(THINKING_LEVELS as readonly string[]).includes(level)) {
-        return json(
-          {
-            error: `unknown thinking level: ${level}`,
-            hint: `supported levels: ${supportedThinkingLevels(like).join(", ")}`,
-          },
-          400,
-        );
+        return err(`unknown thinking level: ${level}`, `supported levels: ${supportedThinkingLevels(like).join(", ")}`, 400);
       }
-      let rotated: { fence: string; revision: number } | null = null;
-      if (hasFence || hasExpected) {
-        if (typeof fence !== "string" || fence.length === 0 || !Number.isInteger(expected)) {
-          return json(
-            {
-              error: "missing fence",
-              hint: "retry the thinking switch with both {fence, expected}, or omit both for the legacy path",
-            },
-            400,
-          );
-        }
-        const checked = enforceFence(this.readFence(sid), fence, expected);
-        if ("status" in checked) return json(checked.body, checked.status);
-        this.rotateFence(sid, checked);
-        rotated = checked;
-      }
+      const rotated = checkedRotate(this.readFence(sid), body, "retry the thinking switch with both {fence, expected}, or omit both for the legacy path", (next) => this.rotateFence(sid, next));
+      if (rotated !== null && "status" in rotated) return json(rotated.body, rotated.status);
       const applied = clampThinkingLevel(like, level);
       const sql = this.state.storage.sql;
       runInSyncTx(sql, () => {
@@ -788,35 +550,16 @@ export class WorkspaceDO implements DurableObject {
         });
       });
       const cur = this.readFence(sid);
-      if (rotated !== null) {
-        return json({ sessionId: sid, thinking: applied, requested: level, fence: rotated.fence, revision: rotated.revision });
-      }
-      return json({ sessionId: sid, thinking: applied, requested: level, revision: cur?.revision ?? 0 });
+      return fmtThinking(sid, applied, level, rotated, cur?.revision ?? 0);
     }
 
     if (url.pathname === "/settings") {
       const ws = url.searchParams.get("ws") ?? "";
-      if (!ws) {
-        return json(
-          {
-            error: "missing workspace",
-            hint: "call PUT /workspaces/:id/settings on the Worker instead",
-          },
-          400,
-        );
-      }
-      if (!this.workspaceExists(ws)) {
-        return json(
-          {
-            error: "unknown workspace",
-            hint: "create one with POST /workspaces first, then set its defaults",
-          },
-          404,
-        );
-      }
+      const bad = this.requireSession(ws, null, "call PUT /workspaces/:id/settings on the Worker instead", "create one with POST /workspaces first, then set its defaults");
+      if (bad) return bad;
       if (request.method === "GET") {
         const current = this.readSettings(ws);
-        return json({ ws, settings: { modelProvider: current.provider, modelId: current.id, thinkingLevel: current.thinking } });
+        return fmtSettings(ws, current);
       }
       if (request.method === "POST" || request.method === "PUT") {
         let patchProvider: unknown;
@@ -842,23 +585,11 @@ export class WorkspaceDO implements DurableObject {
             }
           }
         } catch {
-          return json(
-            {
-              error: "bad settings",
-              hint: 'retry as PUT /workspaces/:id/settings with JSON {"modelProvider": "anthropic", "modelId": "claude-opus-4-6", "thinkingLevel": "high"}; omit keys to leave them, null clears',
-            },
-            400,
-          );
+          return err("bad settings", 'retry as PUT /workspaces/:id/settings with JSON {"modelProvider": "anthropic", "modelId": "claude-opus-4-6", "thinkingLevel": "high"}; omit keys to leave them, null clears', 400);
         }
         for (const [name, value] of [["modelProvider", patchProvider], ["modelId", patchId], ["thinkingLevel", patchThinking]] as Array<[string, unknown]>) {
           if (value !== undefined && value !== null && (typeof value !== "string" || value.length === 0)) {
-            return json(
-              {
-                error: `bad settings: ${name}`,
-                hint: `set ${name} to a non-empty string, null to clear, or omit it to leave it`,
-              },
-              400,
-            );
+            return err(`bad settings: ${name}`, `set ${name} to a non-empty string, null to clear, or omit it to leave it`, 400);
           }
         }
         const current = this.readSettings(ws);
@@ -868,13 +599,7 @@ export class WorkspaceDO implements DurableObject {
           thinking: hasThinking ? (patchThinking as string | null) : current.thinking,
         };
         if ((next.provider === null) !== (next.id === null)) {
-          return json(
-            {
-              error: "half model default",
-              hint: "set both modelProvider and modelId, or clear both with null",
-            },
-            400,
-          );
+          return err("half model default", "set both modelProvider and modelId, or clear both with null", 400);
         }
         if (next.provider !== null && next.id !== null) {
           try {
@@ -882,100 +607,37 @@ export class WorkspaceDO implements DurableObject {
           } catch (e) {
             if (e !== null && typeof e === "object" && "error" in e && typeof e.error === "string") {
               const hint = "hint" in e && typeof e.hint === "string" ? e.hint : "retry with a catalog model";
-              return json({ error: e.error, hint }, 404);
-            }
-            return json({ error: "unknown model", hint: "retry with a catalog model" }, 404);
+              return err(e.error, hint, 404);
           }
         }
-        if (next.thinking !== null && !(THINKING_LEVELS as readonly string[]).includes(next.thinking)) {
-          return json(
-            {
-              error: `unknown thinking level: ${next.thinking}`,
-              hint: `supported levels: ${(THINKING_LEVELS as readonly string[]).join(", ")}`,
-            },
-            400,
-          );
         }
-        this.state.storage.sql.exec(
-          "INSERT OR REPLACE INTO workspace_settings(ws, modelProvider, modelId, thinkingLevel) VALUES (?, ?, ?, ?)",
-          ws,
-          next.provider,
-          next.id,
-          next.thinking,
-        );
-        return json({ ws, settings: { modelProvider: next.provider, modelId: next.id, thinkingLevel: next.thinking } });
+        if (next.thinking !== null && !(THINKING_LEVELS as readonly string[]).includes(next.thinking)) {
+          return err(`unknown thinking level: ${next.thinking}`, `supported levels: ${(THINKING_LEVELS as readonly string[]).join(", ")}`, 400);
+        }
+        saveSettings(this.state.storage.sql, ws, next.provider, next.id, next.thinking);
+        return fmtSettings(ws, next);
       }
-      return json(
-        { error: "method not allowed", hint: "use GET or PUT /workspaces/:id/settings" },
-        405,
-      );
+      return err("method not allowed", "use GET or PUT /workspaces/:id/settings", 405);
     }
 
     if (request.method === "POST" && url.pathname === "/run") {
       const ws = url.searchParams.get("ws") ?? "";
       const sid = url.searchParams.get("sid") ?? "";
-      if (!ws) {
-        return json(
-          {
-            error: "missing workspace",
-            hint: "call POST /workspaces/:id/sessions/:sid/run on the Worker instead",
-          },
-          400,
-        );
-      }
-      if (!this.workspaceExists(ws)) {
-        return json(
-          {
-            error: "unknown workspace",
-            hint: "create one with POST /workspaces first, then mint a session",
-          },
-          404,
-        );
-      }
-      if (!sid || !this.sessionExists(ws, sid)) {
-        return json(
-          {
-            error: "unknown session",
-            hint: "mint one with POST /workspaces/:id/sessions first, then retry with that session id",
-          },
-          404,
-        );
-      }
-      let prompt: unknown;
-      let fence: unknown;
-      let expected: unknown;
-      let hasFence = false;
-      let hasExpected = false;
-      let oneShotModel: unknown;
-      let oneShotThinking: unknown;
+      const bad = this.requireSession(ws, sid, "call POST /workspaces/:id/sessions/:sid/run on the Worker instead", MINT_WS_HINT);
+      if (bad) return bad;
+      let body: unknown;
       try {
-        const body: unknown = await request.json();
-        if (body !== null && typeof body === "object") {
-          if ("prompt" in body) prompt = body.prompt;
-          if ("fence" in body) {
-            fence = body.fence;
-            hasFence = true;
-          }
-          if ("expected" in body) {
-            expected = body.expected;
-            hasExpected = true;
-          }
-          if ("model" in body) oneShotModel = body.model;
-          if ("thinking" in body) oneShotThinking = body.thinking;
-        }
+        body = await request.json();
       } catch {
-        prompt = undefined;
+        body = undefined;
       }
+      const rec = body !== null && typeof body === "object" ? (body as Record<string, unknown>) : {};
+      const prompt: unknown = rec["prompt"];
+      const oneShotModel: unknown = "model" in rec ? rec["model"] : undefined;
+      const oneShotThinking: unknown = "thinking" in rec ? rec["thinking"] : undefined;
       if (typeof prompt !== "string" || prompt.length === 0) {
-        return json(
-          {
-            error: "missing prompt",
-            hint: 'retry as POST /workspaces/:id/sessions/:sid/run with JSON {"prompt": "read seed.txt"}',
-          },
-          400,
-        );
+        return err("missing prompt", 'retry as POST /workspaces/:id/sessions/:sid/run with JSON {"prompt": "read seed.txt"}', 400);
       }
-      // One-shot overrides: validated like the switch routes, persist nothing.
       let overrideProvider: string | null = null;
       let overrideId: string | null = null;
       if (oneShotModel !== undefined) {
@@ -992,23 +654,11 @@ export class WorkspaceDO implements DurableObject {
           }
         }
         if (overrideProvider === null || overrideProvider.length === 0 || overrideId === null || overrideId.length === 0) {
-          return json(
-            {
-              error: "bad model override",
-              hint: 'retry with {"model": {"provider": "anthropic", "id": "claude-opus-4-6"}} or {"model": "anthropic/claude-opus-4-6"}',
-            },
-            400,
-          );
+          return err("bad model override", 'retry with {"model": {"provider": "anthropic", "id": "claude-opus-4-6"}} or {"model": "anthropic/claude-opus-4-6"}', 400);
         }
       }
       if (oneShotThinking !== undefined && (typeof oneShotThinking !== "string" || oneShotThinking.length === 0)) {
-        return json(
-          {
-            error: "bad thinking override",
-            hint: 'retry with {"thinking": "high"} using a supported level',
-          },
-          400,
-        );
+        return err("bad thinking override", 'retry with {"thinking": "high"} using a supported level', 400);
       }
       const stored = this.readTriple(sid);
       const effProvider = overrideProvider ?? stored?.provider ?? null;
@@ -1023,9 +673,9 @@ export class WorkspaceDO implements DurableObject {
         } catch (e) {
           if (e !== null && typeof e === "object" && "error" in e && typeof e.error === "string") {
             const hint = "hint" in e && typeof e.hint === "string" ? e.hint : "retry with a catalog model";
-            return json({ error: e.error, hint }, 404);
+            return err(e.error, hint, 404);
           }
-          return json({ error: "unknown model", hint: "retry with a catalog model" }, 404);
+          return err("unknown model", "retry with a catalog model", 404);
         }
       }
       const wantThinking = (oneShotThinking as string | undefined) ?? stored?.thinking ?? null;
@@ -1039,216 +689,65 @@ export class WorkspaceDO implements DurableObject {
         }
       }
       if (oneShotThinking !== undefined && !(THINKING_LEVELS as readonly string[]).includes(oneShotThinking as string)) {
-        return json(
-          {
-            error: `unknown thinking level: ${oneShotThinking as string}`,
-            hint: `supported levels: ${supportedThinkingLevels(like).join(", ")}`,
-          },
-          400,
-        );
+        return err(`unknown thinking level: ${oneShotThinking as string}`, `supported levels: ${supportedThinkingLevels(like).join(", ")}`, 400);
       }
       const effThinking = wantThinking === null ? null : clampThinkingLevel(like, wantThinking);
       return this.enqueueSessionTurn(sid, async () => {
-      let rotated: { fence: string; revision: number } | null = null;
-      if (hasFence || hasExpected) {
-        if (typeof fence !== "string" || fence.length === 0 || !Number.isInteger(expected)) {
-          return json(
-            {
-              error: "missing fence",
-              hint: "retry the run with both {fence, expected}, or omit both for the legacy path",
-            },
-            400,
-          );
-        }
-        const checked = enforceFence(this.readFence(sid), fence, expected);
-        if ("status" in checked) return json(checked.body, checked.status);
-        this.rotateFence(sid, checked);
-        rotated = checked;
-      }
-      const sql = this.state.storage.sql;
-      const runId = crypto.randomUUID();
-      try {
-        let turnModel: { id: string; name?: string; api?: string; provider?: string; baseUrl?: string };
-        let respProvider: string;
-        if (catalog !== null) {
-          // Session triple (or one-shot) wins over env-only resolution. Keyed
-          // providers run the real model; keyless keeps the stub path, which
-          // ignores the model and records its id on the turn.
-          const keyed = keyedProviders(this.env as unknown as RuntimeEnv);
-          if (keyed.length === 0) {
-            turnModel = { id: catalog.id };
-            respProvider = catalog.provider;
-          } else {
-            try {
-              const keyedModel = resolveKeyedModel(this.env as unknown as RuntimeEnv, catalog.provider, catalog.id);
-              turnModel = keyedModel;
-              respProvider = keyedModel.provider;
-            } catch (e) {
-              if (e !== null && typeof e === "object" && "error" in e && typeof e.error === "string") {
-                const hint = "hint" in e && typeof e.hint === "string" ? e.hint : "retry with a catalog model";
-                return json({ error: e.error, hint }, 404);
-              }
-              return json({ error: "unknown model", hint: "retry with a catalog model" }, 404);
-            }
-          }
-        } else {
-          // No session triple and no one-shot override: deterministic stub,
-          // even when provider keys exist. Shared defaultTurnModel keeps the
-          // run and stream paths in lockstep.
-          turnModel = defaultTurnModel();
-          respProvider = "stub";
-        }
-        const session = createAgentSession({
-          files: this.files,
-          ws,
-          shell: this.env.SHELL_WORKER,
-          model: turnModel,
-          apiKey: resolveProviderKey(this.env as unknown as RuntimeEnv, respProvider),
-          history: { leaf: sessionLeaf(sql, sid), readEntry: (cursor) => getEntry(sql, sid, cursor) },
-          sessionId: sid,
-          cacheRetention: stored?.retention ?? "short",
-        });
-        const turn = await session.run(prompt, { thinking: effThinking });
-        recordTurnWithOpen(sql, sid, runId, prompt, turn.toolCalls, turn.result, turn.usage, turn.halt ?? null);
-        // Window reserve: mark for compaction but never compact inside the turn. The alarm runs seconds later so a burst of turns settles into one compaction.
-        if (maybeMarkForCompaction(sql, sid)) await this.state.storage.setAlarm(Date.now() + 2000);
-        else if (compactionPending(sql, sid)) await this.state.storage.setAlarm(Date.now() + 2000);
-        const runtimeOut = { via: turn.via, model: turn.model, provider: respProvider, thinking: effThinking };
-        if (rotated !== null) {
-          return json({
-            result: turn.result,
-            toolCalls: turn.toolCalls,
-            runtime: runtimeOut,
-            usage: turn.usage,
-            ...(turn.halt ? { halt: turn.halt } : {}),
-            fence: rotated.fence,
-            revision: rotated.revision,
-          });
-        }
-        return json({
-          result: turn.result,
-          toolCalls: turn.toolCalls,
-          runtime: runtimeOut,
-          usage: turn.usage,
-          ...(turn.halt ? { halt: turn.halt } : {}),
-        });
-      } catch (e) {
-        // The open now commits with the turn, so a failed turn re-opens here
-        // and still flips to interrupted on the next turn.
-        openRun(sql, sid, runId);
-        if (
-          e !== null &&
-          typeof e === "object" &&
-          "error" in e &&
-          typeof e.error === "string"
-        ) {
-          const hint = "hint" in e && typeof e.hint === "string" ? e.hint : "retry the run";
-          return json({ error: e.error, hint }, 500);
-        }
-        return json(
-          { error: "run failed", hint: "retry the run with a simpler prompt" },
-          500,
-        );
-      }
+        const rot = checkedRotate(this.readFence(sid), body, "retry the run with both {fence, expected}, or omit both for the legacy path", (next) => this.rotateFence(sid, next));
+        if (rot !== null && "status" in rot) return json(rot.body, rot.status);
+        const rotated = rot;
+        const sql = this.state.storage.sql;
+        const runId = crypto.randomUUID();
+        let response: Response | null = null;
+        const sink: TurnSink = {
+          push() {},
+          done(doneId, turn, runtime) {
+            recordTurnWithOpen(sql, sid, doneId, prompt, turn.toolCalls, turn.result, turn.usage, turn.halt ?? null);
+            const out = { result: turn.result, toolCalls: turn.toolCalls, runtime, usage: turn.usage, ...(turn.halt ? { halt: turn.halt } : {}) };
+            response = rotated !== null ? json({ ...out, fence: rotated.fence, revision: rotated.revision }) : json(out);
+          },
+          fail(failId, error, hint, status, opened) {
+            if (opened) openRun(sql, sid, failId);
+            response = json({ error, hint }, status);
+          },
+          aborted() {},
+        };
+        await executeTurn(this.streamHost(ws, sid), { prompt, catalog, thinking: effThinking, runId }, sink);
+        return response ?? json({ error: "run failed", hint: "retry the run with a simpler prompt" }, 500);
       });
     }
 
-    // GET /stream?ws=&sid= — hibernation WS upgrade for live turns (see stream.ts).
     if (url.pathname === "/stream") {
       const ws = url.searchParams.get("ws") ?? "";
       const sid = url.searchParams.get("sid") ?? "";
       return acceptStream(request, this.streamHost(ws, sid), this.state);
     }
 
-    // GET /entries?ws=&sid=&after=N&limit=L — ordered replay slice plus resume cursor.
     if (request.method === "GET" && url.pathname === "/entries") {
       const ws = url.searchParams.get("ws") ?? "";
       const sid = url.searchParams.get("sid") ?? "";
-      if (!ws) {
-        return json(
-          {
-            error: "missing workspace",
-            hint: "retry as GET /workspaces/:id/sessions/:sid/entries on the Worker instead",
-          },
-          400,
-        );
-      }
-      if (!this.workspaceExists(ws)) {
-        return json(
-          {
-            error: "unknown workspace",
-            hint: "create one with POST /workspaces first, then mint a session",
-          },
-          404,
-        );
-      }
-      if (!sid || !this.sessionExists(ws, sid)) {
-        return json(
-          {
-            error: "unknown session",
-            hint: "mint one with POST /workspaces/:id/sessions first, then retry with that session id",
-          },
-          404,
-        );
-      }
+      const bad = this.requireSession(ws, sid, "retry as GET /workspaces/:id/sessions/:sid/entries on the Worker instead", MINT_WS_HINT);
+      if (bad) return bad;
       const rawAfter = url.searchParams.get("after") ?? "0";
       const after = Number(rawAfter);
       if (!Number.isInteger(after) || after < 0) {
-        return json(
-          {
-            error: "bad after",
-            hint: "retry with ?after=N where N is a non-negative cursor, e.g. ?after=0",
-          },
-          400,
-        );
+        return err("bad after", "retry with ?after=N where N is a non-negative cursor, e.g. ?after=0", 400);
       }
       const rawLimit = url.searchParams.get("limit") ?? "100";
       const limit = Number(rawLimit);
       if (!Number.isInteger(limit) || limit < 0) {
-        return json(
-          {
-            error: "bad limit",
-            hint: "retry with ?limit=L where L is a non-negative integer up to 1000, e.g. ?limit=100",
-          },
-          400,
-        );
+        return err("bad limit", "retry with ?limit=L where L is a non-negative integer up to 1000, e.g. ?limit=100", 400);
       }
       const sql = this.state.storage.sql;
       const { count, head } = entryHead(sql, sid);
       return json({ entries: listEntries(sql, sid, { after, limit }), head, count });
     }
 
-    // GET /meta?ws=&sid= — resume cursor: session row plus entry head and open run.
     if (request.method === "GET" && url.pathname === "/meta") {
       const ws = url.searchParams.get("ws") ?? "";
       const sid = url.searchParams.get("sid") ?? "";
-      if (!ws) {
-        return json(
-          {
-            error: "missing workspace",
-            hint: "retry as GET /workspaces/:id/sessions/:sid/meta on the Worker instead",
-          },
-          400,
-        );
-      }
-      if (!this.workspaceExists(ws)) {
-        return json(
-          {
-            error: "unknown workspace",
-            hint: "create one with POST /workspaces first, then mint a session",
-          },
-          404,
-        );
-      }
-      if (!sid || !this.sessionExists(ws, sid)) {
-        return json(
-          {
-            error: "unknown session",
-            hint: "mint one with POST /workspaces/:id/sessions first, then retry with that session id",
-          },
-          404,
-        );
-      }
+      const bad = this.requireSession(ws, sid, "retry as GET /workspaces/:id/sessions/:sid/meta on the Worker instead", MINT_WS_HINT);
+      if (bad) return bad;
       const sql = this.state.storage.sql;
       let created = "";
       for (const row of sql.exec("SELECT created_at FROM sessions WHERE sid = ? AND ws = ? LIMIT 1", sid, ws)) {
@@ -1271,97 +770,35 @@ export class WorkspaceDO implements DurableObject {
       }
       const triple = this.readTriple(sid);
       const archive = archiveMeta(sql, sid);
-      const sums = sumResultUsage(sql, sid);
-      const usage = withSessionRates(sums, this.sessionContextWindow(triple));
+      const usage = fmtUsage(sumResultUsage(sql, sid), this.sessionContextWindow(triple));
       return json({ sid, ws, created, head, count, leaf, openRun, model: { provider: triple?.provider ?? null, id: triple?.id ?? null }, thinking: triple?.thinking ?? null, retention: triple?.retention ?? "short", usage, compaction: { pending: compactionPending(sql, sid), archivePages: archive.pages, archiveTotal: archive.total } });
     }
 
-    // POST /compact?ws=&sid= — manual trigger; same runCompaction the alarm runs.
     if (request.method === "POST" && url.pathname === "/compact") {
       const ws = url.searchParams.get("ws") ?? "";
       const sid = url.searchParams.get("sid") ?? "";
-      if (!ws) {
-        return json(
-          {
-            error: "missing workspace",
-            hint: "retry as POST /workspaces/:id/sessions/:sid/compact on the Worker instead",
-          },
-          400,
-        );
-      }
-      if (!this.workspaceExists(ws)) {
-        return json(
-          {
-            error: "unknown workspace",
-            hint: "create one with POST /workspaces first, then mint a session",
-          },
-          404,
-        );
-      }
-      if (!sid || !this.sessionExists(ws, sid)) {
-        return json(
-          {
-            error: "unknown session",
-            hint: "mint one with POST /workspaces/:id/sessions first, then retry with that session id",
-          },
-          404,
-        );
-      }
+      const bad = this.requireSession(ws, sid, "retry as POST /workspaces/:id/sessions/:sid/compact on the Worker instead", MINT_WS_HINT);
+      if (bad) return bad;
       return this.enqueueSessionTurn(sid, async () => {
         const out = runCompaction(this.state.storage.sql, sid, true);
         return json({ sid, ...out });
       });
     }
 
-    // GET /archive?ws=&sid=&page=N — re-read one paginated cold-storage page.
     if (request.method === "GET" && url.pathname === "/archive") {
       const ws = url.searchParams.get("ws") ?? "";
       const sid = url.searchParams.get("sid") ?? "";
-      if (!ws) {
-        return json(
-          {
-            error: "missing workspace",
-            hint: "retry as GET /workspaces/:id/sessions/:sid/archive on the Worker instead",
-          },
-          400,
-        );
-      }
-      if (!this.workspaceExists(ws)) {
-        return json(
-          {
-            error: "unknown workspace",
-            hint: "create one with POST /workspaces first, then mint a session",
-          },
-          404,
-        );
-      }
-      if (!sid || !this.sessionExists(ws, sid)) {
-        return json(
-          {
-            error: "unknown session",
-            hint: "mint one with POST /workspaces/:id/sessions first, then retry with that session id",
-          },
-          404,
-        );
-      }
+      const bad = this.requireSession(ws, sid, "retry as GET /workspaces/:id/sessions/:sid/archive on the Worker instead", MINT_WS_HINT);
+      if (bad) return bad;
       const page = Number(url.searchParams.get("page") ?? "1");
       if (!Number.isInteger(page) || page < 1) {
-        return json(
-          {
-            error: "bad page",
-            hint: "retry with ?page=N where N is a positive integer, e.g. ?page=1",
-          },
-          400,
-        );
+        return err("bad page", "retry with ?page=N where N is a positive integer, e.g. ?page=1", 400);
       }
       const sql = this.state.storage.sql;
       return json({ sid, ...readArchivePage(sql, sid, page) });
     }
 
-    return json(
-      { error: "not found", hint: "use POST /workspaces, /workspaces/:id/sessions, or /workspaces/:id/files" },
-      404,
-    );
+    return err("not found", "use POST /workspaces, /workspaces/:id/sessions, or /workspaces/:id/files", 404);
   }
 
   async alarm(): Promise<void> {
@@ -1370,8 +807,8 @@ export class WorkspaceDO implements DurableObject {
     for (const sid of pendingSessions(sql)) {
       try {
         runCompaction(sql, sid);
-      } catch {
-        continue;
+      } catch (e) {
+        appendEntry(sql, sid, "error", { error: e instanceof Error ? e.message : String(e ?? "compaction failed") });
       }
     }
   }
@@ -1394,6 +831,7 @@ export class WorkspaceDO implements DurableObject {
       casRotateFence: (oldFence, oldRevision, next) => this.casRotateFence(sid, oldFence, oldRevision, next),
       live: this.live,
       enqueue: (fn) => this.enqueueSessionTurn(sid, fn),
+      scheduleAlarm: () => this.state.storage.setAlarm(Date.now() + 2000),
     };
   }
 

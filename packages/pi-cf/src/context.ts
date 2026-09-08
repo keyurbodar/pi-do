@@ -1,4 +1,5 @@
 import type { EntryRow } from "./entries.ts";
+import { ENTRY_PROJECTION, parseJsonObject, strField } from "./sql-util.ts";
 
 export type ContextRole = "user" | "assistant" | "compactionSummary" | "toolCall" | "toolResult";
 
@@ -72,24 +73,6 @@ export function capSessionContext(ctx: SessionContext, budgetTokens: number): Se
 
 export type EntryReader = (cursor: number) => EntryRow | null;
 
-function parseBodyObject(body: string): Record<string, unknown> | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    return null;
-  }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return null;
-  }
-  return parsed as Record<string, unknown>;
-}
-
-function stringField(obj: Record<string, unknown>, key: string): string | null {
-  const value = obj[key];
-  return typeof value === "string" ? value : null;
-}
-
 export function buildSessionContext(leaf: number, readEntry: EntryReader): SessionContext {
   const context: SessionContext = { messages: [], model: null, thinking: "off", toolNames: null, skipped: [], truncated: false, dropped: 0 };
   if (!Number.isInteger(leaf) || leaf <= 0) {
@@ -137,25 +120,19 @@ export function buildSessionContext(leaf: number, readEntry: EntryReader): Sessi
   }
   for (const entry of chain) {
     if (entry.type === "thinking_level_change") {
-      const obj = parseBodyObject(entry.body);
-      const level = obj === null ? null : stringField(obj, "level");
+      const obj = parseJsonObject(entry.body);
+      const level = obj === null ? null : strField(obj, "level");
       if (level === null) {
         context.skipped.push({ cursor: entry.cursor, type: entry.type, reason: "unreadable-body" });
       } else {
         context.thinking = level;
       }
     } else if (entry.type === "model_change") {
-      const obj = parseBodyObject(entry.body);
-      let provider: string | null = null;
-      let id: string | null = null;
-      if (obj !== null) {
-        const to = obj["to"];
-        if (to !== null && typeof to === "object" && !Array.isArray(to)) {
-          const record = to as Record<string, unknown>;
-          provider = stringField(record, "provider");
-          id = stringField(record, "id");
-        }
-      }
+      const obj = parseJsonObject(entry.body);
+      const to = obj === null ? null : obj["to"];
+      const record = to !== null && typeof to === "object" && !Array.isArray(to) ? (to as Record<string, unknown>) : null;
+      const provider = record === null ? null : strField(record, "provider");
+      const id = record === null ? null : strField(record, "id");
       if (provider === null || id === null) {
         context.skipped.push({ cursor: entry.cursor, type: entry.type, reason: "unreadable-body" });
       } else {
@@ -165,78 +142,21 @@ export function buildSessionContext(leaf: number, readEntry: EntryReader): Sessi
   }
   for (let i = windowStart; i < chain.length; i++) {
     const entry = chain[i];
-    switch (entry.type) {
-      case "thinking_level_change":
-      case "model_change": {
-        break;
-      }
-      case "prompt": {
-        const obj = parseBodyObject(entry.body);
-        const prompt = obj === null ? null : stringField(obj, "prompt");
-        if (prompt === null) {
-          context.skipped.push({ cursor: entry.cursor, type: entry.type, reason: "unreadable-body" });
-        } else {
-          context.messages.push({ role: "user", text: prompt, cursor: entry.cursor });
-        }
-        break;
-      }
-      case "result": {
-        const obj = parseBodyObject(entry.body);
-        const result = obj === null ? null : stringField(obj, "result");
-        if (result === null) {
-          context.skipped.push({ cursor: entry.cursor, type: entry.type, reason: "unreadable-body" });
-        } else {
-          context.messages.push({ role: "assistant", text: result, cursor: entry.cursor });
-        }
-        break;
-      }
-      case "toolCall": {
-        const obj = parseBodyObject(entry.body);
-        const tool = obj === null ? null : stringField(obj, "tool");
-        if (tool === null) {
-          context.skipped.push({ cursor: entry.cursor, type: entry.type, reason: "unreadable-body" });
-        } else {
-          const args = obj === null ? undefined : obj["args"];
-          const text = args !== null && typeof args === "object" ? `${tool} ${JSON.stringify(args)}` : tool;
-          context.messages.push({ role: "toolCall", text, cursor: entry.cursor });
-        }
-        break;
-      }
-      case "toolResult": {
-        const obj = parseBodyObject(entry.body);
-        const output = obj === null ? null : stringField(obj, "output");
-        if (output === null) {
-          context.skipped.push({ cursor: entry.cursor, type: entry.type, reason: "unreadable-body" });
-        } else {
-          context.messages.push({ role: "toolResult", text: output, cursor: entry.cursor });
-        }
-        break;
-      }
-      case "compaction": {
-        const obj = parseBodyObject(entry.body);
-        const summary = obj === null ? null : stringField(obj, "summary");
-        if (summary === null) {
-          context.skipped.push({ cursor: entry.cursor, type: entry.type, reason: "unreadable-body" });
-        } else {
-          context.messages.push({ role: "compactionSummary", text: summary, cursor: entry.cursor });
-        }
-        break;
-      }
-      case "steer": {
-        const obj = parseBodyObject(entry.body);
-        const text = obj === null ? null : stringField(obj, "text");
-        if (text === null) {
-          context.skipped.push({ cursor: entry.cursor, type: entry.type, reason: "unreadable-body" });
-        } else {
-          context.messages.push({ role: "user", text, cursor: entry.cursor });
-        }
-        break;
-      }
-      default: {
-        context.skipped.push({ cursor: entry.cursor, type: entry.type, reason: "unprojected" });
-        break;
-      }
+    if (entry.type === "thinking_level_change" || entry.type === "model_change") continue;
+    const proj = ENTRY_PROJECTION[entry.type];
+    if (proj === undefined) {
+      context.skipped.push({ cursor: entry.cursor, type: entry.type, reason: "unprojected" });
+      continue;
     }
+    const obj = parseJsonObject(entry.body);
+    const value = obj === null ? null : strField(obj, proj.field);
+    if (value === null) {
+      context.skipped.push({ cursor: entry.cursor, type: entry.type, reason: "unreadable-body" });
+      continue;
+    }
+    const args = obj === null ? undefined : obj["args"];
+    const text = proj.withArgs === true && args !== null && typeof args === "object" ? `${value} ${JSON.stringify(args)}` : value;
+    context.messages.push({ role: proj.role as ContextRole, text, cursor: entry.cursor });
   }
   return context;
 }

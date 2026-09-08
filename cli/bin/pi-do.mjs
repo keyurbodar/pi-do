@@ -1,503 +1,104 @@
 #!/usr/bin/env node
-// pi-do CLI driver: doctor / workspace create / session create / files put|get|ls|rm / exec / git / run / entries.
-// Zero dependencies, plain JS on global fetch (node >= 18).
 import { readFile, writeFile } from "node:fs/promises";
 
 const DEFAULT_BASE = "http://127.0.0.1:8787";
 
-const ROOT_HELP = `pi-do — front door for the pi-do worker
-
+const HELP = {
+  root: `pi-do — front door for the pi-do worker
 usage:
   pi-do [--base URL] [--json] <command> [options]
-
 commands:
-  doctor                        check the worker is listening (GET BASE/)
-  workspace create              create a workspace (POST /workspaces)
-  session create                mint a session (POST /workspaces/:id/sessions)
-  files put|get|ls|rm           read/write/list/remove workspace files
-  exec                          run a one-off shell command (POST /workspaces/:id/exec)
-  git                           narrow git reads (POST /workspaces/:id/sessions/:sid/git)
-  run                           one headless harness turn (POST /workspaces/:id/sessions/:sid/run)
-  claim                         rotate owner fence via revision CAS (POST /workspaces/:id/sessions/:sid/claim)
-  model                         switch the session model (POST /workspaces/:id/sessions/:sid/model)
-  thinking                      switch the thinking level (POST /workspaces/:id/sessions/:sid/thinking)
-  models                        list catalog models (GET /models)
-  settings                      workspace default model triple (PUT|GET /workspaces/:id/settings)
-  entries                       raw replay slice (GET /workspaces/:id/sessions/:sid/entries)
-  compact                       summarize plus archive the live table (POST /workspaces/:id/sessions/:sid/compact)
-  archive                       re-read one cold page (GET /workspaces/:id/sessions/:sid/archive)
-  stream                        live turns over WS (GET /workspaces/:id/sessions/:sid/stream)
-  meta                          resume cursor (GET /workspaces/:id/sessions/:sid/meta)
-
-global flags:
-  --base URL    worker base URL (default ${DEFAULT_BASE})
-  --json        machine data on stdout, human text on stderr
-  --help, -h    show help (also: pi-do <command> --help)
-
+  doctor | workspace create | session create | files put|get|ls|rm | exec | git
+  run | claim | model | thinking | models | settings | entries | meta
+  compact | archive | stream
+flags: --base URL (default ${DEFAULT_BASE})  --json  --help, -h
 examples:
   pi-do doctor
   pi-do workspace create
   pi-do files put --ws <id> --path hello.txt --body "hi"
   pi-do exec --ws <id> --command "echo hi"
-`;
-const DOCTOR_HELP = `pi-do doctor — check the worker is listening
-
-usage:
-  pi-do doctor [--base URL] [--json]
-
-behavior:
-  GETs BASE/ and reports whether a server answers. Any HTTP response
-  counts as listening (exit 0). A connection failure means absent (exit 2).
-  Read-only: creates nothing. Human text goes to stderr.
-
-exit codes:
-  0  server listening
-  2  absent / usage error
-
-example:
-  pi-do doctor --base http://127.0.0.1:8787
-`;
-
-const WORKSPACE_HELP = `pi-do workspace — manage workspaces
-
-usage:
-  pi-do workspace create [--base URL] [--json]
-
-subcommands:
-  create    create a workspace (POST /workspaces)
-
-example:
-  pi-do workspace create
-`;
-
-const WORKSPACE_CREATE_HELP = `pi-do workspace create — create a workspace
-
-usage:
-  pi-do workspace create [--base URL] [--json]
-
-behavior:
-  POSTs /workspaces. Prints the new workspace id.
-  Without --json stdout is "workspace <id>"; with --json stdout is the
-  raw server JSON and the human line goes to stderr.
-
-exit codes:
-  0  created
-  1  server-side failure (error + hint printed from the body)
-  2  usage error
-
-example:
-  pi-do workspace create --base http://127.0.0.1:8787
-`;
-const SESSION_HELP = `pi-do session — manage sessions
-
-usage:
-  pi-do session create --ws WS [--base URL] [--retention short|long] [--json]
-
-subcommands:
-  create    mint a session (POST /workspaces/:id/sessions)
-
-example:
-  pi-do session create --ws <workspace-id>
-`;
-
-const SESSION_CREATE_HELP = `pi-do session create — mint a session in a workspace
-
-usage:
-  pi-do session create --ws WS [--retention short|long] [--base URL] [--json]
-
-behavior:
-  POSTs /workspaces/:id/sessions. Prints the new session id.
-  Without --json stdout is "session <id>"; with --json stdout is the
-  raw server JSON and the human line goes to stderr.
-
-exit codes:
-  0  created
-  1  server-side failure (error + hint printed from the body)
-  2  usage error
-
-example:
-  pi-do session create --ws 550e8400-e29b-41d4-a716-446655440000
-`;
-const CLAIM_HELP = `pi-do claim — rotate the owner fence via revision CAS
-
-usage:
-  pi-do claim --ws WS --sid SID --fence F --expected N [--base URL] [--json]
-
-behavior:
-  POSTs {fence, expected} to /workspaces/:id/sessions/:sid/claim. Wrong
-  fence answers 403 (Fenced); stale expected answers 409 (Conflict) naming
-  the current revision. Success rotates the fence, bumps revision, returns
-  both. Every error path mutates nothing.
-
-exit codes:
-  0  claimed ({fence, revision})
-  1  server-side failure, e.g. 403 Fenced or 409 Conflict (error + hint printed)
-  2  usage error
-
-example:
-  pi-do claim --ws <id> --sid <sid> --fence <fence> --expected 0
-`;
-
-const RUN_HELP = `pi-do run — one headless harness turn in a session
-
-  pi-do run --ws WS --sid SID --prompt T [--model provider/id] [--thinking L] [--fence F --expected N] [--base URL] [--json]
-
-behavior:
-  POSTs {prompt} to /workspaces/:id/sessions/:sid/run. The stub model reads
-  seed.txt and echoes a bash marker, then answers {result, toolCalls}.
-  The turn resolves the session model triple; --model/--thinking carry
-  one-shot overrides that the turn uses without persisting (same fail-closed
-  validation as the model/thinking switches).
-  With --fence/--expected the run enforces the owner fence like claim
-  before opening the run (403 Fenced on wrong fence, 409 Conflict on stale
-  revision); success rotates the fence, bumps revision, and returns both
-  alongside the turn. Omit both for the legacy path.
-  Without --json stdout is the result text; with --json stdout is the raw
-  server JSON and the human line goes to stderr.
-
-exit codes:
-  0  ok
-  1  server-side failure, e.g. unknown workspace/session (error + hint printed)
-  2  usage error
-
-example:
-  pi-do run --ws <id> --sid <sid> --prompt "read seed.txt"
-`;
-const MODEL_HELP = `pi-do model — switch the session model mid-session
-
-usage:
-  pi-do model --ws WS --sid SID --model provider/id [--fence F --expected N] [--base URL] [--json]
-
-behavior:
-  POSTs {provider, id} to /workspaces/:id/sessions/:sid/model. Unknown ids
-  fail closed naming the catalog (nothing mutates). Success updates the
-  session row and appends a model_change pi entry in one transaction, so the
-  next run resolves the new model. With --fence/--expected the switch
-  enforces the owner fence like claim; omit both for the legacy path.
-
-exit codes:
-  0  switched ({model, revision})
-  1  server-side failure, e.g. unknown model (error + hint printed)
-  2  usage error
-
-example:
-  pi-do model --ws <id> --sid <sid> --model anthropic/claude-opus-4-6
-`;
-
-const THINKING_HELP = `pi-do thinking — switch the session thinking level
-
-usage:
-  pi-do thinking --ws WS --sid SID --level L [--fence F --expected N] [--base URL] [--json]
-
-behavior:
-  POSTs {level} to /workspaces/:id/sessions/:sid/thinking. Unknown levels
-  fail closed naming the supported ones (nothing mutates). A known level the
-  session model does not support clamps to the nearest supported one.
-  Success updates the session row and appends a thinking_level_change pi
-  entry in one transaction. With --fence/--expected the switch enforces the
-  owner fence like claim; omit both for the legacy path.
-
-exit codes:
-  0  switched ({thinking, revision})
-  1  server-side failure, e.g. unknown level (error + hint printed)
-  2  usage error
-
-example:
-  pi-do thinking --ws <id> --sid <sid> --level high
-`;
-
-const MODELS_HELP = `pi-do models — list catalog models with context windows
-
-usage:
-  pi-do models [--provider P] [--base URL] [--json]
-
-behavior:
-  GETs /models (optionally ?provider=P). Unknown providers fail closed.
-  Without --json stdout is one "provider/id (ctx N)" line per model.
-
-exit codes:
-  0  listed
-  1  server-side failure (error + hint printed)
-  2  usage error
-
-example:
-  pi-do models --provider anthropic
-`;
-
-const SETTINGS_HELP = `pi-do settings — workspace default model triple for session mint
-
-usage:
-  pi-do settings --ws WS [--model provider/id] [--level L] [--base URL] [--json]
-  pi-do settings --ws WS [--base URL] [--json]
-
-behavior:
-  With --model/--level, merge-patches PUT /workspaces/:id/settings; omitted
-  keys keep their values. Unknown model ids fail closed (nothing mutates).
-  New sessions mint with the stored triple. Without flags, GETs the current
-  defaults.
-
-exit codes:
-  0  stored or shown
-  1  server-side failure (error + hint printed)
-  2  usage error
-
-example:
-  pi-do settings --ws <id> --model anthropic/claude-opus-4-6 --level high
-`;
-
-const GIT_HELP = `pi-do git — narrow git reads and local writes over a session
-
-usage:
-  pi-do git --ws WS --sid SID [--base URL] [--json] <argv...>
-  pi-do git --ws WS --sid SID [--base URL] [--json] -- <argv...>
-
-behavior:
-  POSTs { argv } to /workspaces/:id/sessions/:sid/git. Reads:
-  status, log, diff, show. Local writes: add, commit, rm,
-  checkout/switch, init. Anything else is rejected before anything
-  executes (403 forbidden for clone/fetch/push, or 501 when the verb
-  is a deferred write).
-
-exit codes:
-  0  ok (stdout is the command output)
-  1  server-side failure (error + hint printed from the body)
-  2  usage error
-
-examples:
-  pi-do git --ws <ws> --sid <sid> status
-  pi-do git --ws <ws> --sid <sid> log
-`;
-
-const FILES_HELP = `pi-do files — read/write/list/remove workspace files
-
-usage:
-  pi-do files put --ws WS --path P [--body STR | --body-file F] [--base URL] [--json]
-  pi-do files get --ws WS --path P [--out F] [--base URL] [--json]
-  pi-do files ls  --ws WS [--path DIR] [--base URL] [--json]
-  pi-do files rm  --ws WS --path P [--recursive] [--base URL] [--json]
-
-subcommands:
-  put     upload raw bytes (PUT /workspaces/:id/files?path=P)
-  get     download raw bytes (GET ...?path=P); stdout stays byte-exact
-  ls      list entries (GET ...?list=DIR, default "")
-  rm      delete a file, or a directory tree with --recursive (DELETE ...?path=P)
-
-examples:
-  pi-do files put --ws <id> --path hello.txt --body "hi"
-  pi-do files get --ws <id> --path hello.txt --out ./hello.txt
-  pi-do files ls --ws <id> --path ""
-  pi-do files rm --ws <id> --path hello.txt
-`;
-
-const FILES_PUT_HELP = `pi-do files put — upload raw bytes to a workspace file
-
-usage:
-  pi-do files put --ws WS --path P [--body STR | --body-file F] [--base URL] [--json]
-
-behavior:
-  PUTs the body bytes to /workspaces/:id/files?path=P with
-  content-type application/octet-stream. Body source: --body (utf8 string),
-  --body-file (file bytes), or piped stdin when neither is given.
-  --body and --body-file are mutually exclusive.
-
-exit codes:
-  0  ok
-  1  server-side failure (error + hint printed from the body)
-  2  usage error
-
-example:
-  pi-do files put --ws 550e8400-e29b-41d4-a716-446655440000 --path notes/hi.txt --body "hello"
-`;
-
-const FILES_GET_HELP = `pi-do files get — download raw bytes of a workspace file
-
-usage:
-  pi-do files get --ws WS --path P [--out F] [--base URL] [--json]
-
-behavior:
-  GETs /workspaces/:id/files?path=P. On success stdout is the exact raw
-  file bytes (or the file at --out when given); nothing else is written to
-  stdout, so output stays byte-exact. Human progress goes to stderr.
-  With --json the JSON metadata goes to stderr too (stdout stays raw).
-
-exit codes:
-  0  ok
-  1  server-side failure, e.g. missing file (error + hint printed)
-  2  usage error
-
-example:
-  pi-do files get --ws 550e8400-e29b-41d4-a716-446655440000 --path notes/hi.txt --out ./hi.txt
-`;
-
-const FILES_LS_HELP = `pi-do files ls — list workspace file entries
-
-usage:
-  pi-do files ls --ws WS [--path DIR] [--base URL] [--json]
-
-behavior:
-  GETs /workspaces/:id/files?list=DIR (--path doubles as the DIR prefix,
-  default ""). Prints one entry per line without --json, raw server JSON
-  on stdout with --json.
-
-exit codes:
-  0  ok
-  1  server-side failure (error + hint printed from the body)
-  2  usage error
-
-example:
-  pi-do files ls --ws 550e8400-e29b-41d4-a716-446655440000 --path notes/
-`;
-const FILES_RM_HELP = `pi-do files rm — delete a workspace file or directory tree
-
-usage:
-  pi-do files rm --ws WS --path P [--recursive] [--base URL] [--json]
-
-behavior:
-  DELETEs /workspaces/:id/files?path=P. A directory needs --recursive
-  (?recursive=true) or the server refuses with a hint. Traversal outside
-  the workspace root fails closed with a 400 plus hint.
-
-exit codes:
-  0  ok
-  1  server-side failure (error + hint printed from the body)
-  2  usage error
-
-example:
-  pi-do files rm --ws 550e8400-e29b-41d4-a716-446655440000 --path notes/hi.txt
-`;
-const EXEC_HELP = `pi-do exec — run a one-off shell command in a workspace
-
-usage:
-  pi-do exec --ws WS --command CMD [--cwd DIR] [--base URL] [--json]
-
-behavior:
-  POSTs {command, cwd} to /workspaces/:id/exec. The command runs once in
-  an isolated shell (no workspace files or entries are touched) with output
-  capped at 1 MiB and a fixed runtime timeout (live session runs stop via POST /workspaces/:id/exec/kill).
-  Without --json stdout is the command stdout plus an "exit N" line on
-  stderr; with --json stdout is the raw server JSON {stdout, stderr, exit}.
-
-exit codes:
-  0  ok (command exit is in the body, not the CLI exit)
-  1  server-side failure, e.g. unknown workspace (error + hint printed)
-  2  usage error
-
-example:
-  pi-do exec --ws 550e8400-e29b-41d4-a716-446655440000 --command "echo hi"
-`;
-
-const ENTRIES_HELP = `pi-do entries — ordered replay slice of persisted session entries
-
-usage:
-  pi-do entries --ws WS --sid SID [--after N] [--limit L] [--all] [--base URL] [--json]
-
-behavior:
-  GETs /workspaces/:id/sessions/:sid/entries?after=N&limit=L. Returns the
-  ordered entry list plus the resume cursor ({entries: [{cursor, type, body}],
-  head, count}). limit defaults to 100 and clamps at 1000. Without --json
-  stdout is one "CURSOR TYPE BODY" line per entry; with --json stdout is
-  the raw server JSON.
-  With --all, pages after=lastCursor gaplessly until an empty page (limit
-  per page from --limit, at most 100 pages). Pretty --all prints every entry
-  once in cursor order; --json --all prints the assembled {entries, head,
-  count}.
-
-exit codes:
-  0  ok
-  1  server-side failure, e.g. unknown workspace/session (error + hint printed)
-  2  usage error
-
-example:
-  pi-do entries --ws <id> --sid <sid> --after 0 --limit 3
-  pi-do entries --ws <id> --sid <sid> --all
-`;
-
-const META_HELP = `pi-do meta — resume cursor for a session
-
-usage:
-  pi-do meta --ws WS --sid SID [--base URL] [--json]
-
-behavior:
-  GETs /workspaces/:id/sessions/:sid/meta. Returns {sid, ws, created, head,
-  count, openRun} where openRun is the still-open run id or null. Without
-  --json stdout is human lines; with --json stdout is the raw server JSON.
-
-exit codes:
-  0  ok
-  1  server-side failure, e.g. unknown workspace/session (error + hint printed)
-  2  usage error
-
-example:
-  pi-do meta --ws <id> --sid <sid>
-`;
-const COMPACT_HELP = `pi-do compact — summarize old entries and archive the originals
-
-usage:
-  pi-do compact --ws WS --sid SID [--base URL] [--json]
-
-behavior:
-  POSTs /workspaces/:id/sessions/:sid/compact. Runs the same compaction the
-  alarm runs: old entries move to paginated cold storage, one compaction
-  summary entry plus the live tail stay in the table. Without --json stdout
-  is a human line; with --json stdout is the raw server JSON.
-
-exit codes:
-  0  ok
-  1  server-side failure, e.g. unknown workspace/session (error + hint printed)
-  2  usage error
-
-example:
-  pi-do compact --ws <id> --sid <sid>
-`;
-const ARCHIVE_HELP = `pi-do archive — re-read one paginated cold-storage page
-
-usage:
-  pi-do archive --ws WS --sid SID [--page N] [--base URL] [--json]
-
-behavior:
-  GETs /workspaces/:id/sessions/:sid/archive?page=N. Returns the archived
-  entries for that page plus {page, pages, total}. Without --json stdout is
-  one "CURSOR TYPE BODY" line per entry; with --json stdout is the raw
-  server JSON.
-
-exit codes:
-  0  ok
-  1  server-side failure, e.g. unknown workspace/session (error + hint printed)
-  2  usage error
-
-example:
-  pi-do archive --ws <id> --sid <sid> --page 1
-`;
-const STREAM_HELP = `pi-do stream — live turns over a WebSocket
-
-usage:
-  pi-do stream --ws WS --sid SID [--fence F --expected N] [--base URL] [--json]
-
-behavior:
-  Opens GET /workspaces/:id/sessions/:sid/stream as a WebSocket. Each stdin
-  line becomes one {prompt} frame (the live fence attaches when --fence and
-  --expected are given, and tracks {done} rotations). Every server frame
-  prints on stdout as it arrives: {entry} frames carry the storage re-read,
-  {done} carries the rotated {fence, revision} plus the result text,
-  {aborted} ends a cancelled turn, {busy} means a turn is already running,
-  {ping} is a heartbeat, {message}/{tool}/{agent} pass through for
-  forward-compat, anything else prints as raw JSON.
-
-stdin controls (one per line):
-  <text>          send {prompt: text} (+fence/expected when given)
-  {json}          send the raw JSON frame as-is
-  /abort          send {abort: true}
-  /steer <text>   send {steer: true, text} (+fence/expected when given)
-
-exit codes:
-  0  socket closed cleanly after stdin ended
-  1  server-side failure or socket error (error + hint printed)
-  2  usage error
-
-example:
-  printf 'read seed.txt\\n' | pi-do stream --ws <id> --sid <sid>
-`;
-
+`,
+  doctor: `pi-do doctor — check the worker is listening
+usage: pi-do doctor [--base URL] [--json]
+Any HTTP response counts as listening (exit 0); connection failure is absent (exit 2).
+`,
+  workspace: `pi-do workspace — manage workspaces
+usage: pi-do workspace create [--base URL] [--json]
+`,
+  "workspace:create": `pi-do workspace create — create a workspace
+usage: pi-do workspace create [--base URL] [--json]
+POSTs /workspaces. Stdout is "workspace <id>" (raw JSON with --json).
+`,
+  session: `pi-do session — manage sessions
+usage: pi-do session create --ws WS [--retention short|long] [--base URL] [--json]
+`,
+  "session:create": `pi-do session create — mint a session in a workspace
+usage: pi-do session create --ws WS [--retention short|long] [--base URL] [--json]
+POSTs /workspaces/:id/sessions. Stdout is "session <id>" (raw JSON with --json).
+`,
+  claim: `pi-do claim — rotate the owner fence via revision CAS
+usage: pi-do claim --ws WS --sid SID --fence F --expected N [--base URL] [--json]
+Wrong fence is 403, stale expected is 409. Success rotates fence and bumps revision.
+`,
+  run: `pi-do run — one headless harness turn in a session
+usage: pi-do run --ws WS --sid SID --prompt T [--model provider/id] [--thinking L] [--fence F --expected N] [--base URL] [--json]
+Without --json stdout is the result text; with --json stdout is the raw server JSON.
+`,
+  model: `pi-do model — switch the session model mid-session
+usage: pi-do model --ws WS --sid SID --model provider/id [--fence F --expected N] [--base URL] [--json]
+`,
+  thinking: `pi-do thinking — switch the session thinking level
+usage: pi-do thinking --ws WS --sid SID --level L [--fence F --expected N] [--base URL] [--json]
+`,
+  models: `pi-do models — list catalog models with context windows
+usage: pi-do models [--provider P] [--base URL] [--json]
+`,
+  settings: `pi-do settings — workspace default model triple for session mint
+usage: pi-do settings --ws WS [--model provider/id] [--level L] [--base URL] [--json]
+No --model/--level reads the defaults (GET); with either it stores them (PUT).
+`,
+  git: `pi-do git — narrow git reads and local writes over a session
+usage: pi-do git --ws WS --sid SID [--base URL] [--json] <argv...>
+POSTs {argv} to /workspaces/:id/sessions/:sid/git.
+`,
+  files: `pi-do files — read/write/list/remove workspace files
+usage: pi-do files put|get|ls|rm --ws WS [options]
+`,
+  "files:put": `pi-do files put — upload raw bytes to a workspace file
+usage: pi-do files put --ws WS --path P (--body STR | --body-file F | piped stdin) [--base URL] [--json]
+`,
+  "files:get": `pi-do files get — download raw bytes of a workspace file
+usage: pi-do files get --ws WS --path P [--out F] [--base URL] [--json]
+Stdout is the raw bytes (or nothing with --out).
+`,
+  "files:ls": `pi-do files ls — list workspace file entries
+usage: pi-do files ls --ws WS [--path DIR] [--base URL] [--json]
+`,
+  "files:rm": `pi-do files rm — delete a workspace file or directory tree
+usage: pi-do files rm --ws WS --path P [--recursive] [--base URL] [--json]
+`,
+  exec: `pi-do exec — run a one-off shell command in a workspace
+usage: pi-do exec --ws WS --command CMD [--cwd D] [--base URL] [--json]
+`,
+  entries: `pi-do entries — ordered replay slice of persisted session entries
+usage: pi-do entries --ws WS --sid SID [--after N] [--limit L] [--all] [--base URL] [--json]
+--all pages gaplessly and prints every entry (JSON mode prints one merged payload).
+`,
+  meta: `pi-do meta — resume cursor for a session
+usage: pi-do meta --ws WS --sid SID [--base URL] [--json]
+`,
+  compact: `pi-do compact — summarize old entries and archive the originals
+usage: pi-do compact --ws WS --sid SID [--base URL] [--json]
+`,
+  archive: `pi-do archive — re-read one paginated cold-storage page
+usage: pi-do archive --ws WS --sid SID [--page N] [--base URL] [--json]
+`,
+  stream: `pi-do stream — live turns over a WebSocket
+usage: pi-do stream --ws WS --sid SID [--fence F --expected N] [--base URL] [--json]
+Stdin lines are prompts ("/abort", "/steer TEXT", or {raw JSON}); frames print on stdout.
+Needs node >= 22 for the global WebSocket.
+`,
+};
 
 function failUsage(message, help) {
   process.stderr.write(`pi-do: ${message}\n`);
@@ -508,140 +109,41 @@ function failUsage(message, help) {
 
 function parseArgs(argv) {
   const opts = {
-    base: DEFAULT_BASE,
-    json: false,
-    help: false,
-    ws: undefined,
-    sid: undefined,
-    prompt: undefined,
-    fence: undefined,
-    expected: undefined,
-    after: undefined,
-    limit: undefined,
-    page: undefined,
-    path: undefined,
-    body: undefined,
-    bodyFile: undefined,
-    out: undefined,
-    command: undefined,
-    cwd: undefined,
-    model: undefined,
-    level: undefined,
-    provider: undefined,
-    retention: undefined,
-    all: false,
+    base: DEFAULT_BASE, json: false, help: false, ws: undefined, sid: undefined, prompt: undefined,
+    fence: undefined, expected: undefined, after: undefined, limit: undefined, page: undefined,
+    path: undefined, body: undefined, bodyFile: undefined, out: undefined, command: undefined,
+    cwd: undefined, model: undefined, level: undefined, provider: undefined, retention: undefined, all: false,
+  };
+  const keys = {
+    "--base": "base", "--ws": "ws", "--workspace": "ws", "--sid": "sid", "--session": "sid",
+    "--path": "path", "--body": "body", "--body-file": "bodyFile", "--out": "out", "-o": "out",
+    "--command": "command", "--cwd": "cwd", "--fence": "fence", "--expected": "expected", "--prompt": "prompt",
+    "--after": "after", "--limit": "limit", "--page": "page", "--model": "model", "--level": "level",
+    "--thinking": "level", "--provider": "provider", "--retention": "retention",
   };
   const positionals = [];
   let baseSet = false;
   for (let i = 0; i < argv.length; i++) {
     const tok = argv[i];
-    const takeValue = (flag) => {
-      const eq = tok.indexOf("=");
-      if (eq !== -1) return tok.slice(eq + 1);
-      const next = argv[i + 1];
-      if (next === undefined || next.startsWith("--")) {
-        failUsage(`flag ${flag} needs a value.`);
-      }
-      i++;
-      return next;
-    };
-    if (tok === "--") {
-      for (let j = i + 1; j < argv.length; j++) positionals.push(argv[j]);
-      break;
-    } else if (tok === "--base") {
-      opts.base = takeValue("--base");
-      baseSet = true;
-    } else if (tok.startsWith("--base=")) {
-      opts.base = tok.slice("--base=".length);
-      baseSet = true;
-    } else if (tok === "--json") {
-      opts.json = true;
-    } else if (tok === "--help" || tok === "-h") {
-      opts.help = true;
-    } else if (tok === "--ws" || tok === "--workspace") {
-      opts.ws = takeValue(tok);
-    } else if (tok.startsWith("--ws=")) {
-      opts.ws = tok.slice("--ws=".length);
-    } else if (tok.startsWith("--workspace=")) {
-      opts.workspace = undefined;
-      opts.ws = tok.slice("--workspace=".length);
-    } else if (tok === "--sid" || tok === "--session") {
-      opts.sid = takeValue(tok);
-    } else if (tok.startsWith("--sid=")) {
-      opts.sid = tok.slice("--sid=".length);
-    } else if (tok.startsWith("--session=")) {
-      opts.sid = tok.slice("--session=".length);
-    } else if (tok === "--path") {
-      opts.path = takeValue("--path");
-    } else if (tok.startsWith("--path=")) {
-      opts.path = tok.slice("--path=".length);
-    } else if (tok === "--body") {
-      opts.body = takeValue("--body");
-    } else if (tok.startsWith("--body=")) {
-      opts.body = tok.slice("--body=".length);
-    } else if (tok === "--body-file") {
-      opts.bodyFile = takeValue("--body-file");
-    } else if (tok.startsWith("--body-file=")) {
-      opts.bodyFile = tok.slice("--body-file=".length);
-    } else if (tok === "--out" || tok === "-o") {
-      opts.out = takeValue(tok);
-    } else if (tok.startsWith("--out=")) {
-      opts.out = tok.slice("--out=".length);
-    } else if (tok === "--command") {
-      opts.command = takeValue("--command");
-    } else if (tok.startsWith("--command=")) {
-      opts.command = tok.slice("--command=".length);
-    } else if (tok === "--cwd") {
-      opts.cwd = takeValue("--cwd");
-    } else if (tok.startsWith("--cwd=")) {
-      opts.cwd = tok.slice("--cwd=".length);
-    } else if (tok === "--fence") {
-      opts.fence = takeValue("--fence");
-    } else if (tok.startsWith("--fence=")) {
-      opts.fence = tok.slice("--fence=".length);
-    } else if (tok === "--expected") {
-      opts.expected = takeValue("--expected");
-    } else if (tok.startsWith("--expected=")) {
-      opts.expected = tok.slice("--expected=".length);
-    } else if (tok === "--prompt") {
-      opts.prompt = takeValue("--prompt");
-    } else if (tok.startsWith("--prompt=")) {
-      opts.prompt = tok.slice("--prompt=".length);
-    } else if (tok === "--after") {
-      opts.after = takeValue("--after");
-    } else if (tok.startsWith("--after=")) {
-      opts.after = tok.slice("--after=".length);
-    } else if (tok === "--limit") {
-      opts.limit = takeValue("--limit");
-    } else if (tok.startsWith("--limit=")) {
-      opts.limit = tok.slice("--limit=".length);
-    } else if (tok === "--page") {
-      opts.page = takeValue("--page");
-    } else if (tok.startsWith("--page=")) {
-      opts.page = tok.slice("--page=".length);
-    } else if (tok === "--model") {
-      opts.model = takeValue("--model");
-    } else if (tok.startsWith("--model=")) {
-      opts.model = tok.slice("--model=".length);
-    } else if (tok === "--level" || tok === "--thinking") {
-      opts.level = takeValue(tok);
-    } else if (tok.startsWith("--level=") || tok.startsWith("--thinking=")) {
-      opts.level = tok.slice(tok.indexOf("=") + 1);
-    } else if (tok === "--provider") {
-      opts.provider = takeValue("--provider");
-    } else if (tok.startsWith("--provider=")) {
-      opts.provider = tok.slice("--provider=".length);
-    } else if (tok === "--retention") {
-      opts.retention = takeValue("--retention");
-    } else if (tok.startsWith("--retention=")) {
-      opts.retention = tok.slice("--retention=".length);
-    } else if (tok === "--all") {
-      opts.all = true;
-    } else if (tok === "--recursive") {
-      opts.recursive = true;
-    } else {
+    if (tok === "--") { positionals.push(...argv.slice(i + 1)); break; }
+    if (tok === "--json") { opts.json = true; continue; }
+    if (tok === "--help" || tok === "-h") { opts.help = true; continue; }
+    if (tok === "--all") { opts.all = true; continue; }
+    if (tok === "--recursive") { opts.recursive = true; continue; }
+    const eq = tok.startsWith("--") ? tok.indexOf("=") : -1;
+    const flag = eq === -1 ? tok : tok.slice(0, eq);
+    const key = keys[flag];
+    if (key === undefined) {
       positionals.push(tok);
+      continue;
     }
+    const v = eq !== -1 ? tok.slice(eq + 1) : argv[i + 1];
+    if (eq === -1) {
+      if (v === undefined || v.startsWith("--")) failUsage(`flag ${flag} needs a value.`);
+      i++;
+    }
+    opts[key] = v;
+    if (key === "base") baseSet = true;
   }
   if (baseSet && opts.base === "") failUsage(`flag --base needs a value.`);
   return { opts, positionals };
@@ -665,138 +167,110 @@ function printJson(obj) {
   process.stdout.write(`${JSON.stringify(obj)}\n`);
 }
 
-/** Print a non-2xx response as error+hint (stderr) and raw JSON (stdout when --json). Returns exit code 1. */
+function emit(json, data, { text, hint } = {}) {
+  if (json) {
+    printJson(data);
+    if (hint !== undefined) human(hint);
+  } else if (text) {
+    process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
+  }
+}
+
+function fmtEntry(e) {
+  return `${e.cursor} ${e.type} ${e.body}`;
+}
+
+function printEntries(entries) {
+  for (const e of entries) process.stdout.write(`${fmtEntry(e)}\n`);
+}
+
 async function failFromResponse(res, json) {
   const text = await res.text();
   let parsed = null;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    parsed = null;
-  }
-  const errorMsg =
-    parsed && typeof parsed.error === "string" ? parsed.error : `request failed (HTTP ${res.status})`;
+  try { parsed = JSON.parse(text); } catch { parsed = null; }
+  const errorMsg = parsed && typeof parsed.error === "string" ? parsed.error : `request failed (HTTP ${res.status})`;
   const hint = parsed && typeof parsed.hint === "string" ? parsed.hint : text.slice(0, 500);
   human(`error: ${errorMsg}`);
   if (hint) human(`hint: ${hint}`);
   if (json) printJson(parsed ?? { error: errorMsg, status: res.status });
   process.exit(1);
 }
-function printEntryPretty(entry) {
-  process.stdout.write(`${entry.cursor} ${entry.type} ${entry.body}\n`);
+
+async function doFetch(base, json, url, init) {
+  let res;
+  try {
+    res = await fetch(url, init);
+  } catch (e) {
+    human(`error: cannot reach server at ${base}`); human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
+    if (json) printJson({ error: "cannot reach server", base });
+    process.exit(1);
+  }
+  if (!res.ok) await failFromResponse(res, json);
+  return res;
 }
 
-function formatCount(n) {
-  return Number(n).toLocaleString("en-US");
+function need(val, message, help) {
+  if (val === undefined || val === null || val === false || val === "") failUsage(message, help);
 }
 
-function formatElapsed(ms) {
-  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+function needWsSid(opts, what, help) {
+  need(opts.ws, `${what} needs --ws WS.`, help);
+  need(opts.sid, `${what} needs --sid SID.`, help);
 }
 
-// in covers input plus cacheWrite (cache writes bill as input).
+function checkedUint(raw, message, help, min = 0, max = Number.POSITIVE_INFINITY) {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < min || n > max) failUsage(message, help);
+  return n;
+}
+
+function fenceExpected(opts, what, help) {
+  if ((opts.fence !== undefined) !== (opts.expected !== undefined))
+    failUsage(`${what} needs both --fence F and --expected N together, or neither.`, help);
+  if (opts.expected === undefined) return undefined;
+  return checkedUint(opts.expected, `${what} needs --expected N (a non-negative integer).`, help);
+}
+
 function formatUsageRow(usage) {
-  const parts = [`in ${formatCount(usage.inTokens ?? 0)}`, `out ${formatCount(usage.outTokens ?? 0)}`];
-  if ((usage.cacheRead ?? 0) > 0) parts.push(`cache ${formatCount(usage.cacheRead)}`);
-  parts.push(`t ${formatElapsed(usage.elapsedMs ?? 0)}`);
+  const num = (n) => Number(n).toLocaleString("en-US");
+  const parts = [`in ${num(usage.inTokens ?? 0)}`, `out ${num(usage.outTokens ?? 0)}`];
+  if ((usage.cacheRead ?? 0) > 0) parts.push(`cache ${num(usage.cacheRead)}`);
+  const ms = usage.elapsedMs ?? 0;
+  parts.push(`t ${ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`}`);
   if (usage.tokensPerSec !== null && usage.tokensPerSec !== undefined) parts.push(`${usage.tokensPerSec.toFixed(1)}/s`);
-  const input = usage.inTokens ?? 0;
-  const read = usage.cacheRead ?? 0;
-  const denom = input + read;
-  const hit = denom > 0 ? (read / denom) * 100 : 0;
+  const denom = (usage.inTokens ?? 0) + (usage.cacheRead ?? 0);
+  const hit = denom > 0 ? ((usage.cacheRead ?? 0) / denom) * 100 : 0;
   parts.push(`CH${hit.toFixed(1)}%`);
   parts.push(`ret ${usage.retention ?? "short"}`);
   return parts.join("  ");
 }
 
-function printEntriesPayload(data, opts) {
-  const entries = Array.isArray(data.entries) ? data.entries : [];
-  if (opts.json) {
-    printJson(data);
-  } else {
-    for (const e of entries) printEntryPretty(e);
-  }
-  human(`entries ${entries.length} (after ${opts.after} limit ${opts.limit} head ${data.head} count ${data.count})`);
-}
-
-async function fetchEntriesPage(base, json, ws, sid, after, limit) {
-  const url = `${stripBase(base)}/workspaces/${encodeURIComponent(ws)}/sessions/${encodeURIComponent(sid)}/entries?after=${encodeURIComponent(after)}&limit=${encodeURIComponent(limit)}`;
-  let res;
-  try {
-    res = await fetch(url);
-  } catch (e) {
-    human(`error: cannot reach server at ${base}`);
-    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
-    if (json) printJson({ error: "cannot reach server", base });
-    process.exit(1);
-  }
-  if (!res.ok) await failFromResponse(res, json);
-  return res.json();
-}
-
 function printStreamFrame(frame, json) {
-  if (json) {
-    printJson(frame);
-    return;
-  }
-  if (frame.entry) {
-    process.stdout.write(`entry ${frame.entry.cursor} ${frame.entry.type} ${frame.entry.body}\n`);
-  } else if (frame.done) {
+  if (json) return printJson(frame);
+  if (frame.entry) return process.stdout.write(`entry ${fmtEntry(frame.entry)}\n`);
+  if (frame.done) {
     if (typeof frame.fence === "string") process.stdout.write(`done fence=${frame.fence} revision=${frame.revision}\n`);
     else process.stdout.write(`done\n`);
     if (frame.result) process.stdout.write(frame.result.endsWith("\n") ? frame.result : `${frame.result}\n`);
     if (frame.usage) process.stdout.write(`usage ${formatUsageRow(frame.usage)}\n`);
     if (frame.halt) process.stdout.write(`halt: ${frame.halt.reason ?? frame.halt}\n`);
-  } else if (frame.aborted) {
-    process.stdout.write(`aborted run=${frame.runId ?? ""}\n`);
-  } else if (frame.busy) {
-    process.stdout.write(`busy ${frame.hint ?? ""}\n`);
-  } else if (frame.ping) {
-    process.stdout.write(`ping\n`);
-  } else if (frame.error) {
-    process.stdout.write(`error ${frame.error} ${frame.hint ?? ""}\n`);
-  } else if (frame.message !== undefined) {
-    process.stdout.write(`message ${JSON.stringify(frame.message)}\n`);
-  } else if (frame.tool !== undefined) {
-    process.stdout.write(`tool ${JSON.stringify(frame.tool)}\n`);
-  } else if (frame.agent !== undefined) {
-    process.stdout.write(`agent ${JSON.stringify(frame.agent)}\n`);
-  } else {
-    process.stdout.write(`${JSON.stringify(frame)}\n`);
+    return;
   }
+  const line =
+    frame.aborted ? `aborted run=${frame.runId ?? ""}` :
+    frame.busy ? `busy ${frame.hint ?? ""}` :
+    frame.ping ? `ping` :
+    frame.error ? `error ${frame.error} ${frame.hint ?? ""}` :
+    frame.message !== undefined ? `message ${JSON.stringify(frame.message)}` :
+    frame.tool !== undefined ? `tool ${JSON.stringify(frame.tool)}` :
+    frame.agent !== undefined ? `agent ${JSON.stringify(frame.agent)}` :
+    JSON.stringify(frame);
+  process.stdout.write(`${line}\n`);
 }
 
 function helpFor(cmd, sub) {
-  if (cmd === "doctor") return DOCTOR_HELP;
-  if (cmd === "workspace") {
-    if (sub === "create") return WORKSPACE_CREATE_HELP;
-    return WORKSPACE_HELP;
-  }
-  if (cmd === "session") {
-    if (sub === "create") return SESSION_CREATE_HELP;
-    return SESSION_HELP;
-  }
-  if (cmd === "files") {
-    if (sub === "put") return FILES_PUT_HELP;
-    if (sub === "get") return FILES_GET_HELP;
-    if (sub === "ls") return FILES_LS_HELP;
-    if (sub === "rm") return FILES_RM_HELP;
-    return FILES_HELP;
-  }
-  if (cmd === "exec") return EXEC_HELP;
-  if (cmd === "git") return GIT_HELP;
-  if (cmd === "run") return RUN_HELP;
-  if (cmd === "claim") return CLAIM_HELP;
-  if (cmd === "model") return MODEL_HELP;
-  if (cmd === "thinking") return THINKING_HELP;
-  if (cmd === "models") return MODELS_HELP;
-  if (cmd === "settings") return SETTINGS_HELP;
-  if (cmd === "entries") return ENTRIES_HELP;
-  if (cmd === "compact") return COMPACT_HELP;
-  if (cmd === "archive") return ARCHIVE_HELP;
-  if (cmd === "meta") return META_HELP;
-  if (cmd === "stream") return STREAM_HELP;
-  return ROOT_HELP;
+  const key = sub === undefined ? cmd : `${cmd}:${sub}`;
+  return Object.hasOwn(HELP, key) ? HELP[key] : Object.hasOwn(HELP, cmd) ? HELP[cmd] : HELP.root;
 }
 
 async function readStdinBytes() {
@@ -807,21 +281,14 @@ async function readStdinBytes() {
 }
 
 async function resolvePutBody(opts) {
-  if (opts.body !== undefined && opts.bodyFile !== undefined) {
-    failUsage(`--body and --body-file are mutually exclusive.`, FILES_PUT_HELP);
-  }
+  if (opts.body !== undefined && opts.bodyFile !== undefined)
+    failUsage(`--body and --body-file are mutually exclusive.`, HELP["files:put"]);
   if (opts.body !== undefined) return Buffer.from(opts.body, "utf8");
   if (opts.bodyFile !== undefined) {
-    try {
-      return await readFile(opts.bodyFile);
-    } catch (e) {
-      failUsage(`cannot read --body-file ${opts.bodyFile}: ${e.message}.`);
-    }
+    try { return await readFile(opts.bodyFile); } catch (e) { failUsage(`cannot read --body-file ${opts.bodyFile}: ${e.message}.`); }
   }
   const piped = await readStdinBytes();
-  if (piped === null) {
-    failUsage(`need --body STR, --body-file F, or piped stdin bytes.`, FILES_PUT_HELP);
-  }
+  if (piped === null) failUsage(`need --body STR, --body-file F, or piped stdin bytes.`, HELP["files:put"]);
   return piped;
 }
 
@@ -830,8 +297,7 @@ async function doDoctor(base, json) {
   try {
     res = await fetch(`${stripBase(base)}/`);
   } catch (e) {
-    human(`pi-do doctor: absent — no server listening at ${base} (is 'wrangler dev' running?).`);
-    human(`detail: ${e.cause?.message ?? e.message}`);
+    human(`pi-do doctor: absent — no server listening at ${base} (is 'wrangler dev' running?).`); human(`detail: ${e.cause?.message ?? e.message}`);
     if (json) printJson({ ok: false, base, error: "absent" });
     process.exit(2);
   }
@@ -841,92 +307,45 @@ async function doDoctor(base, json) {
 }
 
 async function doWorkspaceCreate(base, json) {
-  let res;
-  try {
-    res = await fetch(`${stripBase(base)}/workspaces`, { method: "POST" });
-  } catch (e) {
-    human(`error: cannot reach server at ${base}`);
-    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
-    if (json) printJson({ error: "cannot reach server", base });
-    process.exit(1);
-  }
-  if (!res.ok) await failFromResponse(res, json);
+  const res = await doFetch(base, json, `${stripBase(base)}/workspaces`, { method: "POST" });
   const data = await res.json();
-  if (json) {
-    printJson(data);
-    human(`workspace ${data.workspaceId}`);
-  } else {
-    process.stdout.write(`workspace ${data.workspaceId}\n`);
-  }
+  emit(json, data, { text: `workspace ${data.workspaceId}`, hint: `workspace ${data.workspaceId}` });
   process.exit(0);
 }
+
 async function doSessionCreate(base, json, opts) {
-  if (!opts.ws) failUsage(`session create needs --ws WS.`, SESSION_CREATE_HELP);
-  if (opts.retention !== undefined && opts.retention !== "short" && opts.retention !== "long") failUsage(`session create needs --retention short|long.`, SESSION_CREATE_HELP);
+  need(opts.ws, `session create needs --ws WS.`, HELP["session:create"]);
+  if (opts.retention !== undefined && opts.retention !== "short" && opts.retention !== "long") failUsage(`session create needs --retention short|long.`, HELP["session:create"]);
   const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/sessions`;
-  const body = opts.retention === undefined ? undefined : { retention: opts.retention };
-  let res;
-  try {
-    res = await fetch(url, body === undefined ? { method: "POST" } : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-  } catch (e) {
-    human(`error: cannot reach server at ${base}`);
-    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
-    if (json) printJson({ error: "cannot reach server", base });
-    process.exit(1);
-  }
-  if (!res.ok) await failFromResponse(res, json);
+  const init = opts.retention === undefined
+    ? { method: "POST" }
+    : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ retention: opts.retention }) };
+  const res = await doFetch(base, json, url, init);
   const data = await res.json();
-  if (json) {
-    printJson(data);
-    human(`session ${data.sessionId} ret ${data.retention ?? "short"}`);
-  } else {
-    process.stdout.write(`session ${data.sessionId} ret ${data.retention ?? "short"}\n`);
-  }
+  emit(json, data, { text: `session ${data.sessionId} ret ${data.retention ?? "short"}`, hint: `session ${data.sessionId} ret ${data.retention ?? "short"}` });
   process.exit(0);
 }
 
 async function doRun(base, json, opts) {
-  if (!opts.ws) failUsage(`run needs --ws WS.`, RUN_HELP);
-  if (!opts.sid) failUsage(`run needs --sid SID.`, RUN_HELP);
-  if (opts.prompt === undefined) failUsage(`run needs --prompt T.`, RUN_HELP);
-  if ((opts.fence !== undefined) !== (opts.expected !== undefined)) {
-    failUsage(`run needs both --fence F and --expected N together, or neither.`, RUN_HELP);
-  }
-  let expected;
-  if (opts.expected !== undefined) {
-    expected = Number(opts.expected);
-    if (!Number.isInteger(expected) || expected < 0) failUsage(`run needs --expected N (a non-negative integer).`, RUN_HELP);
-  }
+  needWsSid(opts, "run", HELP.run);
+  if (opts.prompt === undefined) failUsage(`run needs --prompt T.`, HELP.run);
+  const expected = fenceExpected(opts, "run", HELP.run);
   const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/sessions/${encodeURIComponent(opts.sid)}/run`;
   const payload = { prompt: opts.prompt };
-  if (opts.fence !== undefined) {
-    payload.fence = opts.fence;
-    payload.expected = expected;
-  }
-  if (opts.model !== undefined) payload.model = splitProviderId(opts.model, `run needs --model provider/id (e.g. --model anthropic/claude-opus-4-6).`, RUN_HELP);
+  if (opts.fence !== undefined) { payload.fence = opts.fence; payload.expected = expected; }
+  if (opts.model !== undefined) payload.model = splitProviderId(opts.model, `run needs --model provider/id (e.g. --model anthropic/claude-opus-4-6).`, HELP.run);
   if (opts.level !== undefined) payload.thinking = opts.level;
-  let res;
-  try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-  } catch (e) {
-    human(`error: cannot reach server at ${base}`);
-    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
-    if (json) printJson({ error: "cannot reach server", base });
-    process.exit(1);
-  }
-  if (!res.ok) await failFromResponse(res, json);
+  const res = await doFetch(base, json, url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
   const data = await res.json();
   const calls = Array.isArray(data.toolCalls) ? data.toolCalls : [];
-  if (json) {
-    printJson(data);
-    human(`run ok: ${calls.length} tool calls`);
-  } else {
-    if (data.result) process.stdout.write(data.result.endsWith("\n") ? data.result : `${data.result}\n`);
-    human(`run ok: ${calls.length} tool calls`);
+  const note = `run ok: ${calls.length} tool calls`;
+  emit(json, data, { text: data.result, hint: note });
+  if (!json) {
+    human(note);
     if (data.usage) human(`usage ${formatUsageRow(data.usage)}`);
     if (data.halt) human(`halt: ${data.halt.reason ?? data.halt}`);
   }
@@ -934,288 +353,138 @@ async function doRun(base, json, opts) {
 }
 
 async function doClaim(base, json, opts) {
-  if (!opts.ws) failUsage(`claim needs --ws WS.`, CLAIM_HELP);
-  if (!opts.sid) failUsage(`claim needs --sid SID.`, CLAIM_HELP);
-  if (opts.fence === undefined) failUsage(`claim needs --fence F.`, CLAIM_HELP);
-  if (opts.expected === undefined) failUsage(`claim needs --expected N.`, CLAIM_HELP);
-  const expected = Number(opts.expected);
-  if (!Number.isInteger(expected) || expected < 0) failUsage(`claim needs --expected N (a non-negative integer).`, CLAIM_HELP);
+  needWsSid(opts, "claim", HELP.claim);
+  if (opts.fence === undefined) failUsage(`claim needs --fence F.`, HELP.claim);
+  if (opts.expected === undefined) failUsage(`claim needs --expected N.`, HELP.claim);
+  const expected = checkedUint(opts.expected, `claim needs --expected N (a non-negative integer).`, HELP.claim);
   const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/sessions/${encodeURIComponent(opts.sid)}/claim`;
-  let res;
-  try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ fence: opts.fence, expected }),
-    });
-  } catch (e) {
-    human(`error: cannot reach server at ${base}`);
-    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
-    if (json) printJson({ error: "cannot reach server", base });
-    process.exit(1);
-  }
-  if (!res.ok) await failFromResponse(res, json);
+  const res = await doFetch(base, json, url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ fence: opts.fence, expected }),
+  });
   const data = await res.json();
-  if (json) {
-    printJson(data);
-    human(`claim ok: revision ${data.revision}`);
-  } else {
-    process.stdout.write(`fence ${data.fence} revision ${data.revision}\n`);
-  }
+  emit(json, data, { text: `fence ${data.fence} revision ${data.revision}`, hint: `claim ok: revision ${data.revision}` });
   process.exit(0);
 }
+
 async function doModel(base, json, opts) {
-  if (!opts.ws) failUsage(`model needs --ws WS.`, MODEL_HELP);
-  if (!opts.sid) failUsage(`model needs --sid SID.`, MODEL_HELP);
-  if (opts.model === undefined) failUsage(`model needs --model provider/id.`, MODEL_HELP);
-  if ((opts.fence !== undefined) !== (opts.expected !== undefined)) {
-    failUsage(`model needs both --fence F and --expected N together, or neither.`, MODEL_HELP);
-  }
-  let expected;
-  if (opts.expected !== undefined) {
-    expected = Number(opts.expected);
-    if (!Number.isInteger(expected) || expected < 0) failUsage(`model needs --expected N (a non-negative integer).`, MODEL_HELP);
-  }
-  const { provider, id } = splitProviderId(opts.model, `model needs --model provider/id (e.g. --model anthropic/claude-opus-4-6).`, MODEL_HELP);
+  needWsSid(opts, "model", HELP.model);
+  if (opts.model === undefined) failUsage(`model needs --model provider/id.`, HELP.model);
+  const expected = fenceExpected(opts, "model", HELP.model);
+  const { provider, id } = splitProviderId(opts.model, `model needs --model provider/id (e.g. --model anthropic/claude-opus-4-6).`, HELP.model);
   const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/sessions/${encodeURIComponent(opts.sid)}/model`;
   const payload = { provider, id };
-  if (opts.fence !== undefined) {
-    payload.fence = opts.fence;
-    payload.expected = expected;
-  }
-  let res;
-  try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-  } catch (e) {
-    human(`error: cannot reach server at ${base}`);
-    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
-    if (json) printJson({ error: "cannot reach server", base });
-    process.exit(1);
-  }
-  if (!res.ok) await failFromResponse(res, json);
+  if (opts.fence !== undefined) { payload.fence = opts.fence; payload.expected = expected; }
+  const res = await doFetch(base, json, url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
   const data = await res.json();
-  if (json) {
-    printJson(data);
-    human(`model ok: ${data.model.provider}/${data.model.id} (revision ${data.revision})`);
-  } else {
-    process.stdout.write(`model ${data.model.provider}/${data.model.id} revision ${data.revision}\n`);
-  }
+  emit(json, data, { text: `model ${data.model.provider}/${data.model.id} revision ${data.revision}`, hint: `model ok: ${data.model.provider}/${data.model.id} (revision ${data.revision})` });
   process.exit(0);
 }
 
 async function doThinking(base, json, opts) {
-  if (!opts.ws) failUsage(`thinking needs --ws WS.`, THINKING_HELP);
-  if (!opts.sid) failUsage(`thinking needs --sid SID.`, THINKING_HELP);
-  if (opts.level === undefined) failUsage(`thinking needs --level L.`, THINKING_HELP);
-  if ((opts.fence !== undefined) !== (opts.expected !== undefined)) {
-    failUsage(`thinking needs both --fence F and --expected N together, or neither.`, THINKING_HELP);
-  }
-  let expected;
-  if (opts.expected !== undefined) {
-    expected = Number(opts.expected);
-    if (!Number.isInteger(expected) || expected < 0) failUsage(`thinking needs --expected N (a non-negative integer).`, THINKING_HELP);
-  }
+  needWsSid(opts, "thinking", HELP.thinking);
+  if (opts.level === undefined) failUsage(`thinking needs --level L.`, HELP.thinking);
+  const expected = fenceExpected(opts, "thinking", HELP.thinking);
   const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/sessions/${encodeURIComponent(opts.sid)}/thinking`;
   const payload = { level: opts.level };
-  if (opts.fence !== undefined) {
-    payload.fence = opts.fence;
-    payload.expected = expected;
-  }
-  let res;
-  try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-  } catch (e) {
-    human(`error: cannot reach server at ${base}`);
-    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
-    if (json) printJson({ error: "cannot reach server", base });
-    process.exit(1);
-  }
-  if (!res.ok) await failFromResponse(res, json);
+  if (opts.fence !== undefined) { payload.fence = opts.fence; payload.expected = expected; }
+  const res = await doFetch(base, json, url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
   const data = await res.json();
-  if (json) {
-    printJson(data);
-    human(`thinking ok: ${data.thinking} (revision ${data.revision})`);
-  } else {
-    process.stdout.write(`thinking ${data.thinking} revision ${data.revision}\n`);
-  }
+  emit(json, data, { text: `thinking ${data.thinking} revision ${data.revision}`, hint: `thinking ok: ${data.thinking} (revision ${data.revision})` });
   process.exit(0);
 }
 
 async function doModels(base, json, opts) {
   let url = `${stripBase(base)}/models`;
   if (opts.provider !== undefined) url += `?provider=${encodeURIComponent(opts.provider)}`;
-  let res;
-  try {
-    res = await fetch(url);
-  } catch (e) {
-    human(`error: cannot reach server at ${base}`);
-    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
-    if (json) printJson({ error: "cannot reach server", base });
-    process.exit(1);
-  }
-  if (!res.ok) await failFromResponse(res, json);
+  const res = await doFetch(base, json, url);
   const data = await res.json();
   const models = Array.isArray(data.models) ? data.models : [];
-  if (json) {
-    printJson(data);
-    human(`${models.length} models`);
-  } else if (models.length === 0) {
-    process.stdout.write(`(empty)\n`);
-  } else {
-    for (const m of models) process.stdout.write(`${m.provider}/${m.id} (ctx ${m.contextWindow})\n`);
-  }
+  const text = models.length === 0 ? `(empty)` : models.map((m) => `${m.provider}/${m.id} (ctx ${m.contextWindow})`).join("\n");
+  emit(json, data, { text, hint: `${models.length} models` });
   process.exit(0);
 }
 
+function settingsText(s) {
+  return `model ${s.modelProvider ?? "null"}/${s.modelId ?? "null"} thinking ${s.thinkingLevel ?? "null"}`;
+}
+
 async function doSettings(base, json, opts) {
-  if (!opts.ws) failUsage(`settings needs --ws WS.`, SETTINGS_HELP);
+  need(opts.ws, `settings needs --ws WS.`, HELP.settings);
   const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/settings`;
   if (opts.model === undefined && opts.level === undefined) {
-    let res;
-    try {
-      res = await fetch(url);
-    } catch (e) {
-      human(`error: cannot reach server at ${base}`);
-      human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
-      if (json) printJson({ error: "cannot reach server", base });
-      process.exit(1);
-    }
-    if (!res.ok) await failFromResponse(res, json);
+    const res = await doFetch(base, json, url);
     const data = await res.json();
-    if (json) {
-      printJson(data);
-      human(`settings shown`);
-    } else {
-      const s = data.settings ?? {};
-      process.stdout.write(`model ${s.modelProvider ?? "null"}/${s.modelId ?? "null"} thinking ${s.thinkingLevel ?? "null"}\n`);
-    }
+    emit(json, data, { text: settingsText(data.settings ?? {}), hint: `settings shown` });
     process.exit(0);
   }
   const patch = {};
   if (opts.model !== undefined) {
-    const { provider, id } = splitProviderId(opts.model, `settings needs --model provider/id (e.g. --model anthropic/claude-opus-4-6).`, SETTINGS_HELP);
+    const { provider, id } = splitProviderId(opts.model, `settings needs --model provider/id (e.g. --model anthropic/claude-opus-4-6).`, HELP.settings);
     patch.modelProvider = provider;
     patch.modelId = id;
   }
   if (opts.level !== undefined) patch.thinkingLevel = opts.level;
-  let res;
-  try {
-    res = await fetch(url, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(patch),
-    });
-  } catch (e) {
-    human(`error: cannot reach server at ${base}`);
-    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
-    if (json) printJson({ error: "cannot reach server", base });
-    process.exit(1);
-  }
-  if (!res.ok) await failFromResponse(res, json);
+  const res = await doFetch(base, json, url, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(patch),
+  });
   const data = await res.json();
-  if (json) {
-    printJson(data);
-    human(`settings stored`);
-  } else {
-    const s = data.settings ?? {};
-    process.stdout.write(`model ${s.modelProvider ?? "null"}/${s.modelId ?? "null"} thinking ${s.thinkingLevel ?? "null"}\n`);
-  }
+  emit(json, data, { text: settingsText(data.settings ?? {}), hint: `settings stored` });
   process.exit(0);
 }
 
 async function doGit(base, json, opts, gitArgv) {
-  if (!opts.ws) failUsage(`git needs --ws WS.`, GIT_HELP);
-  if (!opts.sid) failUsage(`git needs --sid SID.`, GIT_HELP);
-  if (gitArgv.length === 0) failUsage(`git needs an argv (e.g. pi-do git --ws WS --sid SID status).`, GIT_HELP);
+  needWsSid(opts, "git", HELP.git);
+  if (gitArgv.length === 0) failUsage(`git needs an argv (e.g. pi-do git --ws WS --sid SID status).`, HELP.git);
   const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/sessions/${encodeURIComponent(opts.sid)}/git`;
-  let res;
-  try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ argv: gitArgv }),
-    });
-  } catch (e) {
-    human(`error: cannot reach server at ${base}`);
-    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
-    if (json) printJson({ error: "cannot reach server", base });
-    process.exit(1);
-  }
-  if (!res.ok) await failFromResponse(res, json);
+  const res = await doFetch(base, json, url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ argv: gitArgv }),
+  });
   const data = await res.json();
-  if (json) {
-    printJson(data);
-    if (typeof data.stdout === "string" && data.stdout.length > 0) human(String(data.stdout));
-  } else if (typeof data.stdout === "string" && data.stdout.length > 0) {
-    process.stdout.write(data.stdout.endsWith("\n") ? data.stdout : `${data.stdout}\n`);
-  } else {
-    process.stdout.write(`${JSON.stringify(data)}\n`);
-  }
+  const out = typeof data.stdout === "string" && data.stdout.length > 0 ? data.stdout : undefined;
+  emit(json, data, { text: out ?? JSON.stringify(data), hint: out });
   process.exit(0);
 }
 
 async function doFilesPut(base, json, opts) {
-  if (!opts.ws) failUsage(`files put needs --ws WS.`, FILES_PUT_HELP);
-  if (opts.path === undefined) failUsage(`files put needs --path P.`, FILES_PUT_HELP);
-  if (opts.out !== undefined) failUsage(`files put takes no --out (did you mean files get?).`, FILES_PUT_HELP);
+  need(opts.ws, `files put needs --ws WS.`, HELP["files:put"]);
+  if (opts.path === undefined) failUsage(`files put needs --path P.`, HELP["files:put"]);
+  if (opts.out !== undefined) failUsage(`files put takes no --out (did you mean files get?).`, HELP["files:put"]);
   const body = await resolvePutBody(opts);
   const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/files?path=${encodeURIComponent(opts.path)}`;
-  let res;
-  try {
-    res = await fetch(url, {
-      method: "PUT",
-      headers: { "content-type": "application/octet-stream" },
-      body,
-    });
-  } catch (e) {
-    human(`error: cannot reach server at ${base}`);
-    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
-    if (json) printJson({ error: "cannot reach server", base });
-    process.exit(1);
-  }
-  if (!res.ok) await failFromResponse(res, json);
+  const res = await doFetch(base, json, url, {
+    method: "PUT",
+    headers: { "content-type": "application/octet-stream" },
+    body,
+  });
   const data = await res.json();
-  if (json) {
-    printJson(data);
-    human(`wrote ${data.bytes} bytes to ${data.path}`);
-  } else {
-    process.stdout.write(`wrote ${data.bytes} bytes to ${data.path}\n`);
-  }
+  emit(json, data, { text: `wrote ${data.bytes} bytes to ${data.path}`, hint: `wrote ${data.bytes} bytes to ${data.path}` });
   process.exit(0);
 }
 
 async function doFilesGet(base, json, opts) {
-  if (!opts.ws) failUsage(`files get needs --ws WS.`, FILES_GET_HELP);
-  if (opts.path === undefined) failUsage(`files get needs --path P.`, FILES_GET_HELP);
-  if (opts.body !== undefined || opts.bodyFile !== undefined) {
-    failUsage(`files get takes no --body/--body-file (did you mean files put?).`, FILES_GET_HELP);
-  }
+  need(opts.ws, `files get needs --ws WS.`, HELP["files:get"]);
+  if (opts.path === undefined) failUsage(`files get needs --path P.`, HELP["files:get"]);
+  if (opts.body !== undefined || opts.bodyFile !== undefined)
+    failUsage(`files get takes no --body/--body-file (did you mean files put?).`, HELP["files:get"]);
   const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/files?path=${encodeURIComponent(opts.path)}`;
-  let res;
-  try {
-    res = await fetch(url);
-  } catch (e) {
-    human(`error: cannot reach server at ${base}`);
-    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
-    if (json) printJson({ error: "cannot reach server", base });
-    process.exit(1);
-  }
-  if (!res.ok) await failFromResponse(res, json);
+  const res = await doFetch(base, json, url);
   const bytes = Buffer.from(await res.arrayBuffer());
   if (opts.out !== undefined) {
-    try {
-      await writeFile(opts.out, bytes);
-    } catch (e) {
-      failUsage(`cannot write --out ${opts.out}: ${e.message}.`);
-    }
+    try { await writeFile(opts.out, bytes); } catch (e) { failUsage(`cannot write --out ${opts.out}: ${e.message}.`); }
     human(`${bytes.length} bytes from ${opts.path} -> ${opts.out}`);
     if (json) human(JSON.stringify({ path: opts.path, bytes: bytes.length, out: opts.out }));
   } else {
@@ -1229,77 +498,50 @@ async function doFilesGet(base, json, opts) {
 }
 
 async function doFilesLs(base, json, opts) {
-  if (!opts.ws) failUsage(`files ls needs --ws WS.`, FILES_LS_HELP);
-  if (opts.body !== undefined || opts.bodyFile !== undefined || opts.out !== undefined) {
-    failUsage(`files ls takes no --body/--body-file/--out.`, FILES_LS_HELP);
-  }
+  need(opts.ws, `files ls needs --ws WS.`, HELP["files:ls"]);
+  if (opts.body !== undefined || opts.bodyFile !== undefined || opts.out !== undefined)
+    failUsage(`files ls takes no --body/--body-file/--out.`, HELP["files:ls"]);
   const dir = opts.path ?? "";
   const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/files?list=${encodeURIComponent(dir)}`;
-  let res;
-  try {
-    res = await fetch(url);
-  } catch (e) {
-    human(`error: cannot reach server at ${base}`);
-    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
-    if (json) printJson({ error: "cannot reach server", base });
-    process.exit(1);
-  }
-  if (!res.ok) await failFromResponse(res, json);
+  const res = await doFetch(base, json, url);
   const data = await res.json();
   const entries = Array.isArray(data.entries) ? data.entries : [];
-  if (json) {
-    printJson(data);
-    human(`${entries.length} entries under "${dir}"`);
-  } else if (entries.length === 0) {
-    process.stdout.write(`(empty)\n`);
-  } else {
-    for (const e of entries) process.stdout.write(`${e.path} (${e.bytes} bytes)\n`);
-  }
-  process.exit(0);
-}
-async function doFilesRm(base, json, opts) {
-  if (!opts.ws) failUsage(`files rm needs --ws WS.`, FILES_RM_HELP);
-  if (opts.path === undefined) failUsage(`files rm needs --path P.`, FILES_RM_HELP);
-  if (opts.body !== undefined || opts.bodyFile !== undefined || opts.out !== undefined) {
-    failUsage(`files rm takes no --body/--body-file/--out.`, FILES_RM_HELP);
-  }
-  const rec = opts.recursive === true ? "&recursive=true" : "";
-  const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/files?path=${encodeURIComponent(opts.path)}${rec}`;
-  let res;
-  try {
-    res = await fetch(url, { method: "DELETE" });
-  } catch (e) {
-    human(`error: cannot reach server at ${base}`);
-    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
-    if (json) printJson({ error: "cannot reach server", base });
-    process.exit(1);
-  }
-  if (!res.ok) await failFromResponse(res, json);
-  const data = await res.json();
-  const removed = Array.isArray(data.removed) ? data.removed : [];
-  if (json) {
-    printJson(data);
-    human(`removed ${removed.length} path(s)`);
-  } else if (removed.length === 0) {
-    process.stdout.write(`(removed nothing)\n`);
-  } else {
-    for (const p of removed) process.stdout.write(`removed ${p}\n`);
-  }
+  const text = entries.length === 0 ? `(empty)` : entries.map((e) => `${e.path} (${e.bytes} bytes)`).join("\n");
+  emit(json, data, { text, hint: `${entries.length} entries under "${dir}"` });
   process.exit(0);
 }
 
+async function doFilesRm(base, json, opts) {
+  need(opts.ws, `files rm needs --ws WS.`, HELP["files:rm"]);
+  if (opts.path === undefined) failUsage(`files rm needs --path P.`, HELP["files:rm"]);
+  if (opts.body !== undefined || opts.bodyFile !== undefined || opts.out !== undefined)
+    failUsage(`files rm takes no --body/--body-file/--out.`, HELP["files:rm"]);
+  const rec = opts.recursive === true ? "&recursive=true" : "";
+  const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/files?path=${encodeURIComponent(opts.path)}${rec}`;
+  const res = await doFetch(base, json, url, { method: "DELETE" });
+  const data = await res.json();
+  const removed = Array.isArray(data.removed) ? data.removed : [];
+  const text = removed.length === 0 ? `(removed nothing)` : removed.map((p) => `removed ${p}`).join("\n");
+  emit(json, data, { text, hint: `removed ${removed.length} path(s)` });
+  process.exit(0);
+}
+
+async function fetchEntriesPage(base, json, ws, sid, after, limit) {
+  const url = `${stripBase(base)}/workspaces/${encodeURIComponent(ws)}/sessions/${encodeURIComponent(sid)}/entries?after=${encodeURIComponent(after)}&limit=${encodeURIComponent(limit)}`;
+  const res = await doFetch(base, json, url);
+  return res.json();
+}
+
 async function doEntries(base, json, opts) {
-  if (!opts.ws) failUsage(`entries needs --ws WS.`, ENTRIES_HELP);
-  if (!opts.sid) failUsage(`entries needs --sid SID.`, ENTRIES_HELP);
-  const after = opts.after ?? "0";
-  if (!/^\d+$/.test(after)) failUsage(`entries needs --after N (a non-negative integer).`, ENTRIES_HELP);
-  const limit = opts.limit ?? "100";
-  if (!/^\d+$/.test(limit) || Number(limit) > 1000) {
-    failUsage(`entries needs --limit L (a non-negative integer up to 1000).`, ENTRIES_HELP);
-  }
+  needWsSid(opts, "entries", HELP.entries);
+  const after = String(checkedUint(opts.after ?? "0", `entries needs --after N (a non-negative integer).`, HELP.entries));
+  const limit = String(checkedUint(opts.limit ?? "100", `entries needs --limit L (a non-negative integer up to 1000).`, HELP.entries, 0, 1000));
   if (!opts.all) {
     const data = await fetchEntriesPage(base, json, opts.ws, opts.sid, after, limit);
-    printEntriesPayload(data, { json, after, limit });
+    const entries = Array.isArray(data.entries) ? data.entries : [];
+    emit(json, data);
+    if (!json) printEntries(entries);
+    human(`entries ${entries.length} (after ${after} limit ${limit} head ${data.head} count ${data.count})`);
     process.exit(0);
   }
   const entries = [];
@@ -1312,104 +554,54 @@ async function doEntries(base, json, opts) {
     head = data.head;
     count = data.count;
     if (slice.length === 0) break;
-    for (const e of slice) {
-      entries.push(e);
-      if (!json) printEntryPretty(e);
-    }
+    for (const e of slice) entries.push(e);
+    if (!json) printEntries(slice);
     cursor = String(slice[slice.length - 1].cursor);
   }
-  if (json) printJson({ entries, head, count });
+  emit(json, { entries, head, count });
   human(`entries ${entries.length} (after ${after} limit ${limit} head ${head} count ${count})`);
   process.exit(0);
 }
 
 async function doMeta(base, json, opts) {
-  if (!opts.ws) failUsage(`meta needs --ws WS.`, META_HELP);
-  if (!opts.sid) failUsage(`meta needs --sid SID.`, META_HELP);
+  needWsSid(opts, "meta", HELP.meta);
   const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/sessions/${encodeURIComponent(opts.sid)}/meta`;
-  let res;
-  try {
-    res = await fetch(url);
-  } catch (e) {
-    human(`error: cannot reach server at ${base}`);
-    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
-    if (json) printJson({ error: "cannot reach server", base });
-    process.exit(1);
-  }
-  if (!res.ok) await failFromResponse(res, json);
+  const res = await doFetch(base, json, url);
   const data = await res.json();
-  if (json) {
-    printJson(data);
-    human(`meta head ${data.head} count ${data.count} openRun ${data.openRun ?? "null"}`);
-  } else {
-    process.stdout.write(`sid ${data.sid}\nws ${data.ws}\ncreated ${data.created}\nhead ${data.head}\ncount ${data.count}\nopenRun ${data.openRun ?? "null"}\n`);
-    human(`meta head ${data.head} count ${data.count}`);
-  }
+  const text = `sid ${data.sid}\nws ${data.ws}\ncreated ${data.created}\nhead ${data.head}\ncount ${data.count}\nopenRun ${data.openRun ?? "null"}`;
+  emit(json, data, { text, hint: `meta head ${data.head} count ${data.count} openRun ${data.openRun ?? "null"}` });
+  if (!json) human(`meta head ${data.head} count ${data.count}`);
   process.exit(0);
 }
+
 async function doCompact(base, json, opts) {
-  if (!opts.ws) failUsage(`compact needs --ws WS.`, COMPACT_HELP);
-  if (!opts.sid) failUsage(`compact needs --sid SID.`, COMPACT_HELP);
+  needWsSid(opts, "compact", HELP.compact);
   const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/sessions/${encodeURIComponent(opts.sid)}/compact`;
-  let res;
-  try {
-    res = await fetch(url, { method: "POST" });
-  } catch (e) {
-    human(`error: cannot reach server at ${base}`);
-    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
-    if (json) printJson({ error: "cannot reach server", base });
-    process.exit(1);
-  }
-  if (!res.ok) await failFromResponse(res, json);
+  const res = await doFetch(base, json, url, { method: "POST" });
   const data = await res.json();
-  if (json) {
-    printJson(data);
-  } else {
-    process.stdout.write(`compacted ${data.compacted} live ${data.live} archived ${data.archived} summary ${data.summaryCursor ?? "null"} pages ${data.pages}\n`);
-  }
+  emit(json, data, { text: `compacted ${data.compacted} live ${data.live} archived ${data.archived} summary ${data.summaryCursor ?? "null"} pages ${data.pages}` });
   human(`compacted ${data.compacted} live ${data.live}`);
   process.exit(0);
 }
+
 async function doArchive(base, json, opts) {
-  if (!opts.ws) failUsage(`archive needs --ws WS.`, ARCHIVE_HELP);
-  if (!opts.sid) failUsage(`archive needs --sid SID.`, ARCHIVE_HELP);
-  const page = opts.page ?? "1";
-  if (!/^[1-9][0-9]*$/.test(page)) failUsage(`archive needs --page N (a positive integer).`, ARCHIVE_HELP);
+  needWsSid(opts, "archive", HELP.archive);
+  const page = String(checkedUint(opts.page ?? "1", `archive needs --page N (a positive integer).`, HELP.archive, 1));
   const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/sessions/${encodeURIComponent(opts.sid)}/archive?page=${encodeURIComponent(page)}`;
-  let res;
-  try {
-    res = await fetch(url);
-  } catch (e) {
-    human(`error: cannot reach server at ${base}`);
-    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
-    if (json) printJson({ error: "cannot reach server", base });
-    process.exit(1);
-  }
-  if (!res.ok) await failFromResponse(res, json);
+  const res = await doFetch(base, json, url);
   const data = await res.json();
   const entries = Array.isArray(data.entries) ? data.entries : [];
-  if (json) {
-    printJson(data);
-  } else {
-    for (const e of entries) printEntryPretty(e);
-  }
+  emit(json, data);
+  if (!json) printEntries(entries);
   human(`archive page ${data.page}/${data.pages} entries ${entries.length} total ${data.total}`);
   process.exit(0);
 }
+
 async function doStream(base, json, opts) {
-  if (!opts.ws) failUsage(`stream needs --ws WS.`, STREAM_HELP);
-  if (!opts.sid) failUsage(`stream needs --sid SID.`, STREAM_HELP);
-  if ((opts.fence !== undefined) !== (opts.expected !== undefined)) {
-    failUsage(`stream needs both --fence F and --expected N together, or neither.`, STREAM_HELP);
-  }
-  let expected;
-  if (opts.expected !== undefined) {
-    expected = Number(opts.expected);
-    if (!Number.isInteger(expected) || expected < 0) failUsage(`stream needs --expected N (a non-negative integer).`, STREAM_HELP);
-  }
+  needWsSid(opts, "stream", HELP.stream);
+  let expected = fenceExpected(opts, "stream", HELP.stream);
   if (typeof WebSocket === "undefined") {
-    human(`error: this node has no global WebSocket`);
-    human(`hint: use node >= 22 for 'pi-do stream', or drive the socket from verify/stream-protocol.sh`);
+    human(`error: this node has no global WebSocket`); human(`hint: use node >= 22 for 'pi-do stream', or drive the socket from verify/stream-protocol.sh`);
     process.exit(1);
   }
   const wsBase = stripBase(base).replace(/^http:/, "ws:").replace(/^https:/, "wss:");
@@ -1422,45 +614,30 @@ async function doStream(base, json, opts) {
   const sock = new WebSocket(url.toString());
   const sendRaw = (obj) => sock.send(JSON.stringify(obj));
   const withFence = (frame) => {
-    if (fence !== undefined) {
-      frame.fence = fence;
-      frame.expected = expected;
-    }
+    if (fence === undefined) return frame;
+    frame.fence = fence;
+    frame.expected = expected;
     return frame;
   };
   const sendLine = (line) => {
     const text = line.trim();
     if (!text) return;
-    if (text === "/abort") {
-      sendRaw({ abort: true });
-      return;
-    }
-    if (text === "/steer" || text.startsWith("/steer ")) {
-      sendRaw(withFence({ steer: true, text: text.slice("/steer".length).trim() }));
-      return;
-    }
-    if (text.startsWith("{")) {
-      sock.send(text);
-      return;
-    }
+    if (text === "/abort") return sendRaw({ abort: true });
+    if (text === "/steer" || text.startsWith("/steer ")) return sendRaw(withFence({ steer: true, text: text.slice("/steer".length).trim() }));
+    if (text.startsWith("{")) return sock.send(text);
     sendRaw(withFence({ prompt: text }));
   };
   let settled = false;
   const finish = (code) => {
     if (settled) return;
     settled = true;
-    try {
-      sock.close();
-    } catch {
-      // Already gone; exit code carries the outcome.
-    }
+    try { sock.close(); } catch { process.exit(code); }
     process.exit(code);
   };
   sock.onopen = () => {
     human(`stream open ${url.toString()}`);
-    if (process.stdin.isTTY) {
+    if (process.stdin.isTTY)
       human(`hint: type prompts line by line; Ctrl-D ends stdin, Ctrl-C closes the socket`);
-    }
     let rest = "";
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", (chunk) => {
@@ -1472,77 +649,62 @@ async function doStream(base, json, opts) {
         sendLine(line);
       }
     });
-    process.stdin.on("end", () => {
-      if (rest.trim()) sendLine(rest);
-    });
+    process.stdin.on("end", () => { if (rest.trim()) sendLine(rest); });
     process.stdin.resume();
   };
   sock.onmessage = (event) => {
     let frame;
-    try {
-      frame = JSON.parse(String(event.data));
-    } catch {
-      human(`error: non-JSON frame from server`);
-      human(`hint: the stream speaks one JSON object per message; reconnect and retry`);
+    try { frame = JSON.parse(String(event.data)); } catch {
+      human(`error: non-JSON frame from server`); human(`hint: the stream speaks one JSON object per message; reconnect and retry`);
       finish(1);
       return;
     }
-    if (frame.done === true && typeof frame.fence === "string") {
-      fence = frame.fence;
-      expected = frame.revision;
-    }
+    if (frame.done === true && typeof frame.fence === "string") { fence = frame.fence; expected = frame.revision; }
     if (frame.error && !frame.entry) human(`error: ${frame.error}`);
     if (frame.error && frame.hint) human(`hint: ${frame.hint}`);
     printStreamFrame(frame, json);
   };
   sock.onerror = () => {
-    human(`error: socket error talking to ${base}`);
-    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
+    human(`error: socket error talking to ${base}`); human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
     if (json) printJson({ error: "socket error", base });
     finish(1);
   };
   sock.onclose = (event) => {
     human(`stream close code=${event.code} reason=${event.reason || "-"}`);
-    finish(event.wasClean || event.code === 1000 ? 0 : 0);
+    finish(0);
   };
   process.on("SIGINT", () => finish(0));
 }
 
-
 async function doExec(base, json, opts) {
-  if (!opts.ws) failUsage(`exec needs --ws WS.`, EXEC_HELP);
-  if (opts.command === undefined) failUsage(`exec needs --command CMD.`, EXEC_HELP);
-  if (opts.path !== undefined || opts.body !== undefined || opts.bodyFile !== undefined || opts.out !== undefined) {
-    failUsage(`exec takes no --path/--body/--body-file/--out.`, EXEC_HELP);
-  }
+  need(opts.ws, `exec needs --ws WS.`, HELP.exec);
+  if (opts.command === undefined) failUsage(`exec needs --command CMD.`, HELP.exec);
+  if (opts.path !== undefined || opts.body !== undefined || opts.bodyFile !== undefined || opts.out !== undefined)
+    failUsage(`exec takes no --path/--body/--body-file/--out.`, HELP.exec);
   const payload = { command: opts.command };
   if (opts.cwd !== undefined) payload.cwd = opts.cwd;
   const url = `${stripBase(base)}/workspaces/${encodeURIComponent(opts.ws)}/exec`;
-  let res;
-  try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-  } catch (e) {
-    human(`error: cannot reach server at ${base}`);
-    human(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
-    if (json) printJson({ error: "cannot reach server", base });
-    process.exit(1);
-  }
-  if (!res.ok) await failFromResponse(res, json);
+  const res = await doFetch(base, json, url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
   const data = await res.json();
-  if (json) {
-    printJson(data);
-    human(`exit ${data.exit}`);
-  } else {
-    if (data.stdout) process.stdout.write(data.stdout.endsWith("\n") ? data.stdout : `${data.stdout}\n`);
+  const note = `exit ${data.exit}`;
+  emit(json, data, { text: typeof data.stdout === "string" && data.stdout.length > 0 ? data.stdout : undefined, hint: note });
+  if (!json) {
     if (data.stderr) process.stderr.write(data.stderr.endsWith("\n") ? data.stderr : `${data.stderr}\n`);
-    human(`exit ${data.exit}`);
+    human(note);
   }
   process.exit(0);
 }
+
+const PLAIN = {
+  doctor: doDoctor, exec: doExec, entries: doEntries, meta: doMeta,
+  compact: doCompact, archive: doArchive, claim: doClaim, run: doRun,
+  stream: doStream, model: doModel, thinking: doThinking, models: doModels,
+};
+const FILES_CMDS = { put: doFilesPut, get: doFilesGet, ls: doFilesLs, rm: doFilesRm };
 
 async function main() {
   const { opts, positionals } = parseArgs(process.argv.slice(2));
@@ -1553,70 +715,30 @@ async function main() {
     process.exit(0);
   }
   if (!cmd || cmd === "help") {
-    if (sub) {
-      process.stdout.write(helpFor(sub, extra[0]));
-    } else {
-      process.stdout.write(ROOT_HELP);
-    }
+    process.stdout.write(sub ? helpFor(sub, extra[0]) : HELP.root);
     process.exit(0);
   }
 
-  if (cmd === "doctor") {
-    if (sub !== undefined || extra.length > 0) failUsage(`doctor takes no subcommand.`, DOCTOR_HELP);
-    await doDoctor(opts.base, opts.json);
+  if (Object.hasOwn(PLAIN, cmd)) {
+    if (sub !== undefined || extra.length > 0) failUsage(`${cmd} takes no subcommand.`, HELP[cmd]);
+    await PLAIN[cmd](opts.base, opts.json, opts);
   } else if (cmd === "workspace") {
-    if (sub === undefined) failUsage(`workspace needs a subcommand (create).`, WORKSPACE_HELP);
-    if (sub !== "create" || extra.length > 0) failUsage(`unknown workspace subcommand '${sub ?? ""}'.`, WORKSPACE_HELP);
+    if (sub === undefined) failUsage(`workspace needs a subcommand (create).`, HELP.workspace);
+    if (sub !== "create" || extra.length > 0) failUsage(`unknown workspace subcommand '${sub ?? ""}'.`, HELP.workspace);
     await doWorkspaceCreate(opts.base, opts.json);
   } else if (cmd === "files") {
-    if (sub === undefined) failUsage(`files needs a subcommand (put|get|ls|rm).`, FILES_HELP);
-    if (sub === "put" && extra.length === 0) await doFilesPut(opts.base, opts.json, opts);
-    else if (sub === "get" && extra.length === 0) await doFilesGet(opts.base, opts.json, opts);
-    else if (sub === "ls" && extra.length === 0) await doFilesLs(opts.base, opts.json, opts);
-    else if (sub === "rm" && extra.length === 0) await doFilesRm(opts.base, opts.json, opts);
-    else failUsage(`unknown files subcommand '${sub}'.`, FILES_HELP);
-  } else if (cmd === "exec") {
-    if (sub !== undefined || extra.length > 0) failUsage(`exec takes no subcommand.`, EXEC_HELP);
-    await doExec(opts.base, opts.json, opts);
+    if (sub === undefined) failUsage(`files needs a subcommand (put|get|ls|rm).`, HELP.files);
+    if (!Object.hasOwn(FILES_CMDS, sub) || extra.length > 0) failUsage(`unknown files subcommand '${sub}'.`, HELP.files);
+    await FILES_CMDS[sub](opts.base, opts.json, opts);
   } else if (cmd === "git") {
     await doGit(opts.base, opts.json, opts, sub === undefined ? [...extra] : [sub, ...extra]);
-  } else if (cmd === "entries") {
-    if (sub !== undefined || extra.length > 0) failUsage(`entries takes no subcommand.`, ENTRIES_HELP);
-    await doEntries(opts.base, opts.json, opts);
-  } else if (cmd === "meta") {
-    if (sub !== undefined || extra.length > 0) failUsage(`meta takes no subcommand.`, META_HELP);
-    await doMeta(opts.base, opts.json, opts);
-  } else if (cmd === "compact") {
-    if (sub !== undefined || extra.length > 0) failUsage(`compact takes no subcommand.`, COMPACT_HELP);
-    await doCompact(opts.base, opts.json, opts);
-  } else if (cmd === "archive") {
-    if (sub !== undefined || extra.length > 0) failUsage(`archive takes no subcommand.`, ARCHIVE_HELP);
-    await doArchive(opts.base, opts.json, opts);
   } else if (cmd === "session") {
-    if (sub !== "create" || extra.length > 0) failUsage(`unknown session subcommand '${sub ?? ""}'.`, SESSION_HELP);
+    if (sub !== "create" || extra.length > 0) failUsage(`unknown session subcommand '${sub ?? ""}'.`, HELP.session);
     await doSessionCreate(opts.base, opts.json, opts);
-  } else if (cmd === "claim") {
-    if (sub !== undefined || extra.length > 0) failUsage(`claim takes no subcommand.`, CLAIM_HELP);
-    await doClaim(opts.base, opts.json, opts);
-  } else if (cmd === "run") {
-    if (sub !== undefined || extra.length > 0) failUsage(`run takes no subcommand.`, RUN_HELP);
-    await doRun(opts.base, opts.json, opts);
-  } else if (cmd === "stream") {
-    if (sub !== undefined || extra.length > 0) failUsage(`stream takes no subcommand.`, STREAM_HELP);
-    await doStream(opts.base, opts.json, opts);
-  } else if (cmd === "model") {
-    if (sub !== undefined || extra.length > 0) failUsage(`model takes no subcommand.`, MODEL_HELP);
-    await doModel(opts.base, opts.json, opts);
-  } else if (cmd === "thinking") {
-    if (sub !== undefined || extra.length > 0) failUsage(`thinking takes no subcommand.`, THINKING_HELP);
-    await doThinking(opts.base, opts.json, opts);
-  } else if (cmd === "models") {
-    if (sub !== undefined || extra.length > 0) failUsage(`models takes no subcommand.`, MODELS_HELP);
-    await doModels(opts.base, opts.json, opts);
   } else if (cmd === "settings") {
     await doSettings(opts.base, opts.json, opts);
   } else {
-    failUsage(`unknown command '${cmd}'.`, ROOT_HELP);
+    failUsage(`unknown command '${cmd}'.`, HELP.root);
   }
 }
 

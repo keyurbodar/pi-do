@@ -1,9 +1,3 @@
-// index.ts — createPiCf: the L1 embed factory.
-//
-// A foreign Worker brings its own account, keys, and shell; the factory
-// supplies the rest: VFS over DO SQLite, the pi harness, persisted entries,
-// and the owner-fence. Same modules as the first-party Worker, so the wire
-// shapes match and the same CLI drives either host.
 import { createDofsVfs, type FileStore } from "./vfs-dofs.ts";
 import {
   ensureEntriesSchema,
@@ -33,16 +27,10 @@ export type { SessionModel, SessionTools, ShellLike };
 export interface CreatePiCfOptions {
   model?: SessionModel;
   tools?: Partial<SessionTools>;
-  // Host shell for the bash tool. Keyless stub turns only need `echo`, which
-  // the default below answers; anything else fails closed telling the host
-  // to pass a real binding (first-party passes its SHELL_WORKER service).
   shell?: ShellLike;
   apiKey?: string;
 }
 
-// Structural DO state: the real DurableObjectState satisfies this, and the
-// factory never touches anything else, so embeds stay testable without
-// @cloudflare/workers-types.
 export interface PiCfState {
   storage: { sql: EntriesSql };
 }
@@ -54,9 +42,6 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
-// Echo-only fallback shell. Strict literal: `echo ` plus text with no shell
-// metacharacters. Covers the keyless stub marker; everything else throws a
-// hinted error so a real model turn never silently runs on a fake shell.
 const echoShell: ShellLike = {
   exec: async (input: { command: string; cwd?: string }) => {
     void input.cwd;
@@ -117,20 +102,6 @@ export function createPiCf(options: CreatePiCfOptions = {}): new (
       });
     }
 
-    private workspaceExists(ws: string): boolean {
-      const rows = [
-        ...this.state.storage.sql.exec("SELECT 1 FROM workspaces WHERE id = ? LIMIT 1", ws),
-      ];
-      return rows.length > 0;
-    }
-
-    private sessionExists(ws: string, sid: string): boolean {
-      const rows = [
-        ...this.state.storage.sql.exec("SELECT 1 FROM sessions WHERE sid = ? AND ws = ? LIMIT 1", sid, ws),
-      ];
-      return rows.length > 0;
-    }
-
     private readFence(sid: string): { fence: string | null; revision: number } | null {
       const rows = [
         ...this.state.storage.sql.exec("SELECT ownerFence, revision FROM sessions WHERE sid = ?", sid),
@@ -150,6 +121,7 @@ export function createPiCf(options: CreatePiCfOptions = {}): new (
     async fetch(request: Request): Promise<Response> {
       this.ensureSchema();
       const url = new URL(request.url);
+      const sql = this.state.storage.sql;
 
       if (request.method === "POST" && url.pathname === "/create") {
         let workspaceId: string | undefined;
@@ -180,7 +152,7 @@ export function createPiCf(options: CreatePiCfOptions = {}): new (
             400,
           );
         }
-        if (!this.workspaceExists(ws)) {
+        if ([...sql.exec("SELECT 1 FROM workspaces WHERE id = ? LIMIT 1", ws)].length === 0) {
           return json(
             { error: "unknown workspace", hint: "create one with POST /workspaces first, then POST /workspaces/:id/sessions" },
             404,
@@ -206,7 +178,7 @@ export function createPiCf(options: CreatePiCfOptions = {}): new (
             400,
           );
         }
-        if (!this.workspaceExists(ws)) {
+        if ([...sql.exec("SELECT 1 FROM workspaces WHERE id = ? LIMIT 1", ws)].length === 0) {
           return json({ error: "unknown workspace", hint: "create one with POST /workspaces first" }, 404);
         }
         if (request.method === "PUT") {
@@ -286,8 +258,8 @@ export function createPiCf(options: CreatePiCfOptions = {}): new (
       if (request.method === "POST" && url.pathname === "/claim") {
         const ws = url.searchParams.get("ws") ?? "";
         const sid = url.searchParams.get("sid") ?? "";
-        if (!ws || !this.workspaceExists(ws) || !sid || !this.sessionExists(ws, sid)) {
-          const unknown = !ws || !this.workspaceExists(ws) ? "workspace" : "session";
+        if (!ws || [...sql.exec("SELECT 1 FROM workspaces WHERE id = ? LIMIT 1", ws)].length === 0 || !sid || [...sql.exec("SELECT 1 FROM sessions WHERE sid = ? AND ws = ? LIMIT 1", sid, ws)].length === 0) {
+          const unknown = !ws || [...sql.exec("SELECT 1 FROM workspaces WHERE id = ? LIMIT 1", ws)].length === 0 ? "workspace" : "session";
           return json(
             {
               error: `unknown ${unknown}`,
@@ -330,10 +302,10 @@ export function createPiCf(options: CreatePiCfOptions = {}): new (
             400,
           );
         }
-        if (!this.workspaceExists(ws)) {
+        if ([...sql.exec("SELECT 1 FROM workspaces WHERE id = ? LIMIT 1", ws)].length === 0) {
           return json({ error: "unknown workspace", hint: "create one with POST /workspaces first, then mint a session" }, 404);
         }
-        if (!sid || !this.sessionExists(ws, sid)) {
+        if (!sid || [...sql.exec("SELECT 1 FROM sessions WHERE sid = ? AND ws = ? LIMIT 1", sid, ws)].length === 0) {
           return json(
             { error: "unknown session", hint: "mint one with POST /workspaces/:id/sessions first, then retry with that session id" },
             404,
@@ -380,7 +352,6 @@ export function createPiCf(options: CreatePiCfOptions = {}): new (
             this.rotateFence(sid, checked);
             rotated = checked;
           }
-          const sql = this.state.storage.sql;
           const runId = crypto.randomUUID();
           try {
             const session = createAgentSession({ files: this.files, ws, shell, model, tools, apiKey, history: { leaf: sessionLeaf(sql, sid), readEntry: (cursor) => getEntry(sql, sid, cursor) } });
@@ -414,13 +385,13 @@ export function createPiCf(options: CreatePiCfOptions = {}): new (
             400,
           );
         }
-        if (!this.workspaceExists(ws)) {
+        if ([...sql.exec("SELECT 1 FROM workspaces WHERE id = ? LIMIT 1", ws)].length === 0) {
           return json(
             { error: "unknown workspace", hint: "create one with POST /workspaces first, then mint a session" },
             404,
           );
         }
-        if (!sid || !this.sessionExists(ws, sid)) {
+        if (!sid || [...sql.exec("SELECT 1 FROM sessions WHERE sid = ? AND ws = ? LIMIT 1", sid, ws)].length === 0) {
           return json(
             { error: "unknown session", hint: "mint one with POST /workspaces/:id/sessions first, then retry with that session id" },
             404,
@@ -440,7 +411,6 @@ export function createPiCf(options: CreatePiCfOptions = {}): new (
             400,
           );
         }
-        const sql = this.state.storage.sql;
         const { count, head } = entryHead(sql, sid);
         return json({ entries: listEntries(sql, sid, { after, limit }), head, count });
       }
@@ -454,19 +424,18 @@ export function createPiCf(options: CreatePiCfOptions = {}): new (
             400,
           );
         }
-        if (!this.workspaceExists(ws)) {
+        if ([...sql.exec("SELECT 1 FROM workspaces WHERE id = ? LIMIT 1", ws)].length === 0) {
           return json(
             { error: "unknown workspace", hint: "create one with POST /workspaces first, then mint a session" },
             404,
           );
         }
-        if (!sid || !this.sessionExists(ws, sid)) {
+        if (!sid || [...sql.exec("SELECT 1 FROM sessions WHERE sid = ? AND ws = ? LIMIT 1", sid, ws)].length === 0) {
           return json(
             { error: "unknown session", hint: "mint one with POST /workspaces/:id/sessions first, then retry with that session id" },
             404,
           );
         }
-        const sql = this.state.storage.sql;
         let created = "";
         for (const row of sql.exec("SELECT created_at FROM sessions WHERE sid = ? AND ws = ? LIMIT 1", sid, ws)) {
           if (row !== null && typeof row === "object" && "created_at" in row && typeof row.created_at === "string") {
@@ -487,8 +456,6 @@ export function createPiCf(options: CreatePiCfOptions = {}): new (
           head,
           count,
           openRun,
-          model: { provider: null, id: null },
-          thinking: null,
           usage: withSessionRates(sumResultUsage(sql, sid), null),
         });
       }

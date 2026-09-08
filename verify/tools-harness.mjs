@@ -1,9 +1,3 @@
-// tools-harness.mjs — drives the shipped pi-cf tool modules against live
-// workspace bytes. Seeds come from the real server over HTTP (files get),
-// the store mimics the DO files table, the shell is the same just-bash
-// interpreter the worker runs, and every tool is the exact module workerd
-// executes. Usage: node verify/tools-harness.mjs BASE WS OUT search|ready|ts [NEEDLE]
-// Exit nonzero on the first gap, PASS lines on stdout per check.
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -13,7 +7,8 @@ import { Bash } from "just-bash";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const { ComputerExecutionEnv } = await import("../packages/pi-cf/src/env.ts");
 const { findTool, grepTool } = await import("../packages/pi-cf/src/search-tools.ts");
-const { diagnosticsTool, testTool, pmTool } = await import("../packages/pi-cf/src/dev-tools.ts");
+const { diagnosticsCompilerTool: diagnosticsTool } = await import("../packages/pi-cf/src/ts-tools.ts");
+const { testTool, pmTool } = await import("../packages/pi-cf/src/dev-tools.ts");
 const { editTool } = await import("../packages/pi-cf/src/tools.ts");
 const [BASE, WS, OUT, SUITE, NEEDLE] = process.argv.slice(2);
 if (!BASE || !WS || !OUT || (SUITE !== "search" && SUITE !== "ready" && SUITE !== "ts")) {
@@ -132,7 +127,7 @@ if (SUITE === "search") {
   if (!brk.ok) fail("edit-break", "success", brk.out);
   const diag = await run(diagnosticsTool, env, { path: "verify-ready/app.ts" });
   if (!diag.ok) fail("diag-broken", "success", diag.out);
-  has("diag-broken", diag.out, 'verify-ready/app.ts:1: unclosed "{" opened at line 1');
+  has("diag-broken", diag.out, "TS1005");
   console.log("PASS ready-edit-break-diagnostics");
   const t = await run(testTool, env, { file: "verify-ready/fail.sh" });
   if (!t.ok) fail("test-fail", "success", t.out);
