@@ -209,7 +209,11 @@ export function recordTurnWithOpen(
 }
 
 function parseResultUsage(body: string): Omit<SessionUsage, "tokensPerSec"> {
-  const zero = { inTokens: 0, outTokens: 0, cacheRead: 0, costTotal: 0, elapsedMs: 0 };
+  // Timing split staging: per-turn result bodies carry sqlMs/inferenceMs/
+  // frameMs as integers >= 0. session_totals gains no columns in this lane
+  // (no migration), so totals rows do not aggregate the split; the live
+  // per-turn usage payload is the source of truth for the census.
+  const zero = { inTokens: 0, outTokens: 0, cacheRead: 0, costTotal: 0, elapsedMs: 0, sqlMs: 0, inferenceMs: 0, frameMs: 0 };
   const parsed = parseJsonObject(body);
   if (parsed === null || !("usage" in parsed)) return zero;
   const usage = parsed.usage;
@@ -221,13 +225,19 @@ function parseResultUsage(body: string): Omit<SessionUsage, "tokensPerSec"> {
     cacheRead: numField(record, "cacheRead"),
     costTotal: numField(record, "costTotal"),
     elapsedMs: numField(record, "elapsedMs"),
+    sqlMs: numField(record, "sqlMs"),
+    inferenceMs: numField(record, "inferenceMs"),
+    frameMs: numField(record, "frameMs"),
     ...("retention" in record && record.retention === "long" ? { retention: "long" as const } : {}),
   };
 }
 
 export function sumResultUsage(sql: EntriesSql, sid: string): SessionUsage {
+  // No timing columns on session_totals in this lane: sums report a zero
+  // split. Per-turn result bodies (parseResultUsage) carry the live split.
+  const zeroSplit = { sqlMs: 0, inferenceMs: 0, frameMs: 0 };
   const row = readSingleRow(sql, "SELECT inTokens, outTokens, cacheRead, costTotal, elapsedMs FROM session_totals WHERE sid = ? LIMIT 1", sid);
-  if (row === null) return { inTokens: 0, outTokens: 0, cacheRead: 0, costTotal: 0, elapsedMs: 0, tokensPerSec: null };
+  if (row === null) return { inTokens: 0, outTokens: 0, cacheRead: 0, costTotal: 0, elapsedMs: 0, tokensPerSec: null, ...zeroSplit };
   return {
     inTokens: numField(row, "inTokens"),
     outTokens: numField(row, "outTokens"),
@@ -235,6 +245,7 @@ export function sumResultUsage(sql: EntriesSql, sid: string): SessionUsage {
     costTotal: numField(row, "costTotal"),
     elapsedMs: numField(row, "elapsedMs"),
     tokensPerSec: null,
+    ...zeroSplit,
   };
 }
 
