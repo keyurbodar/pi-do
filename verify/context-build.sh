@@ -107,10 +107,34 @@ const runB = JSON.parse(fs.readFileSync(`${out}/tail-run-2.json`, "utf8"));
 if (typeof leaf !== "number" || leaf <= 0) throw new Error("meta leaf must be a positive cursor");
 if (leaf !== rows[rows.length - 1].cursor) throw new Error("leaf " + leaf + " must equal the last cursor");
 const at = rows.map((e, i) => (e.type === "compaction" ? i : -1)).filter((i) => i >= 0);
-if (at.length !== 1) throw new Error("expected exactly one compaction entry, got " + at.length);
-const ci = at[0];
-if (ci <= 0 || ci >= rows.length - 1) throw new Error("compaction entry must sit mid-chain, got index " + ci + " of " + rows.length);
-console.log("chain ok: " + rows.length + " entries, compaction at index " + ci + " (cursor " + rows[ci].cursor + ")");
+// Slow inference lets the alarm compact more than once mid-setup. Stacked
+// summaries are legal, and the builder windows from the latest compaction it
+// can reach by walking parents back from the leaf, so the check walks the
+// same chain instead of assuming id order.
+if (at.length < 1) throw new Error("expected at least one compaction entry, got 0");
+const byCursor = new Map(rows.map((e) => [e.cursor, e]));
+const chain = [];
+{
+  let c = leaf;
+  const seen = new Set();
+  while (Number.isInteger(c) && c > 0 && !seen.has(c)) {
+    const e = byCursor.get(c);
+    if (!e) break;
+    seen.add(c);
+    chain.push(e);
+    const p = e.parent;
+    if (typeof p !== "number" || !Number.isInteger(p) || p <= 0) break;
+    c = p;
+  }
+  chain.reverse();
+}
+let ws = -1;
+chain.forEach((e, i) => { if (e.type === "compaction") ws = i; });
+if (ws < 0) throw new Error("no compaction reachable from the leaf");
+if (chain[ws].cursor !== rows[at[at.length - 1]].cursor) throw new Error("chain windows on cursor " + chain[ws].cursor + ", latest fetched summary is " + rows[at[at.length - 1]].cursor);
+if (ws >= chain.length - 1) throw new Error("compaction must sit mid-chain, nothing after it");
+const ci = at[at.length - 1];
+console.log("chain ok: " + rows.length + " entries, " + at.length + " summaries, window at cursor " + chain[ws].cursor + " with " + (chain.length - ws - 1) + " tail rows");
 const ctx = buildSessionContextFromEntries(rows, leaf);
 const first = ctx.messages[0];
 if (first.role !== "compactionSummary") throw new Error("first message must be the compaction summary, got " + first.role);
@@ -120,39 +144,40 @@ console.log("--- summary text ---");
 console.log(first.text);
 console.log("--- tail ---");
 const tail = ctx.messages.slice(1);
-const summaryCursor = rows[ci].cursor;
-// The chain is leaf -> ... -> first-retained-tail -> summary -> stop, so the
-// tail is every fetched row except the compaction entry itself: retained seed
-// turns sit BEFORE the summary in id order, the measured turns after it.
-const tailRows = rows.filter((_, i) => i !== ci);
+const summaryCursor = chain[ws].cursor;
+// The tail is the walked chain after the window: retained seed turns (which
+// sit before the summary in id order) plus the measured turns after it.
+const tailRows = chain.slice(ws + 1);
 if (tail.length !== tailRows.length) {
   throw new Error("every tail entry must project, messages " + tail.length + " rows " + tailRows.length);
 }
 let seenPrompt = 0;
 let seenResult = 0;
-let measuredPrompt = 0;
-let measuredResult = 0;
+const gotMeasuredPrompts = [];
+const gotMeasuredResults = [];
+// Turns are atomic: a compaction never splits one, so every result in the
+// window shares it with its turn prompt. A result belongs to a measured turn
+// exactly when that prompt carries a live measured text. Seed and measured
+// results are text-identical stubs, so cursor order, not text, decides.
+let turnPrompt = null;
 for (let i = 0; i < tailRows.length; i++) {
   const row = tailRows[i];
   const body = JSON.parse(row.body);
   const msg = tail[i];
   if (msg.cursor !== row.cursor) throw new Error("tail[" + i + "] cursor " + msg.cursor + " want " + row.cursor);
-  const measured = row.cursor > summaryCursor;
   if (row.type === "prompt") {
     seenPrompt++;
-    const wantText = measured
-      ? (measuredPrompt++ === 0 ? prompt1 : prompt2)
-      : "seed turn " + Math.ceil(row.cursor / 6) + " " + runId;
-    if (msg.role !== "user" || msg.text !== wantText) throw new Error("tail[" + i + "] prompt projects as user with the live text");
+    if (msg.role !== "user") throw new Error("tail[" + i + "] prompt projects as user");
+    if (msg.text === prompt1 || msg.text === prompt2) gotMeasuredPrompts.push(msg.text);
+    else if (msg.text !== "seed turn " + Math.ceil(row.cursor / 6) + " " + runId) throw new Error("tail[" + i + "] seed prompt keeps its live text");
+    turnPrompt = msg.text;
   } else if (row.type === "result") {
     seenResult++;
-    if (measured) {
-      const wantText = measuredResult++ === 0 ? runA.result : runB.result;
-      if (msg.role !== "assistant" || msg.text !== wantText) throw new Error("tail[" + i + "] result projects as assistant with the live text");
-    } else {
-      if (msg.role !== "assistant" || typeof msg.text !== "string" || msg.text.length === 0) throw new Error("tail[" + i + "] result projects as assistant with non-empty text");
-    }
-  } else if (row.type === "toolCall") {
+    if (msg.role !== "assistant") throw new Error("tail[" + i + "] result projects as assistant");
+    if (turnPrompt === null) throw new Error("tail[" + i + "] result precedes its turn prompt");
+    if (turnPrompt === prompt1 || turnPrompt === prompt2) gotMeasuredResults.push(msg.text);
+    else if (typeof msg.text !== "string" || msg.text.length === 0) throw new Error("tail[" + i + "] seed result is non-empty text");
+    } else if (row.type === "toolCall") {
     if (msg.role !== "toolCall") throw new Error("tail[" + i + "] role " + msg.role + " want toolCall");
     if (typeof body.tool !== "string" || !msg.text.startsWith(body.tool)) throw new Error("tail[" + i + "] toolCall text starts with the live tool name");
   } else if (row.type === "toolResult") {
@@ -169,6 +194,12 @@ for (let i = 0; i < tailRows.length; i++) {
 for (let i = 1; i < tail.length; i++) {
   if (!(tail[i].cursor > tail[i - 1].cursor)) throw new Error("messages must run in cursor order");
 }
+// The window may cut a prefix off the measured turns. What remains must be
+// the ordered suffix of the two live prompts and results.
+const wantPrompts = [prompt1, prompt2].slice(2 - gotMeasuredPrompts.length);
+const wantResults = [runA.result, runB.result].slice(2 - gotMeasuredResults.length);
+if (JSON.stringify(gotMeasuredPrompts) !== JSON.stringify(wantPrompts)) throw new Error("measured prompts must be the live suffix, got " + JSON.stringify(gotMeasuredPrompts));
+if (JSON.stringify(gotMeasuredResults) !== JSON.stringify(wantResults)) throw new Error("measured results must be the live suffix, got " + gotMeasuredResults.length + " rows");
 console.log("tail ok: " + seenPrompt + " turns project in cursor order (retained seed turns plus the two measured turns), tools paired");
 if (!Array.isArray(ctx.skipped) || ctx.skipped.length !== 0) throw new Error("skipped must be empty, got " + JSON.stringify(ctx.skipped));
 console.log("skipped ok: empty, every entry projected");
