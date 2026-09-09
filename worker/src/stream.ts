@@ -1,4 +1,5 @@
-import { appendEntry, bumpSessionTotals, closeRun, getEntry, listEntries, openRun, sessionLeaf, type EntriesSql } from "pi-cf/store/entries";
+import { appendEntry, bumpSessionTotals, closeRun, getEntry, listEntries, openRun, runInSyncTx, sessionLeaf, type EntriesSql } from "pi-cf/store/entries";
+import { appendChunk } from "pi-cf/store/chunks";
 import { enforceFence } from "pi-cf/store/fence";
 import type { FileStore } from "pi-cf/store/vfs-dofs";
 import { clampThinkingLevel, defaultTurnModel, keyedProviders, resolveCatalogModel, resolveKeyedModel, resolveProviderKey, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
@@ -27,10 +28,23 @@ export interface StreamHost {
   sessionKnown: boolean;
   readFence(): { fence: string | null; revision: number } | null;
   casRotateFence(oldFence: string, oldRevision: number, next: { fence: string; revision: number }): boolean;
-  live: Map<string, { controller: AbortController; agent?: Agent }>;
+  live: Map<string, LiveTurn>;
   sockets(): WebSocket[];
   enqueue: <T>(fn: () => Promise<T>) => Promise<T>;
   scheduleAlarm(): Promise<void>;
+}
+
+// Turn-scoped live state, shared across the host objects that span one
+// session turn (prompt message, steer messages, alarm callbacks all build
+// their own StreamHost over this same map). The chunk cursor lives here so
+// every emitEntry during the turn — including a mid-turn steer on a fresh
+// host — tags the same turn identity with a gapless sequence. The entry is
+// deleted at turn end; the cursor never outlives the turn and is never
+// global.
+export interface LiveTurn {
+  controller: AbortController;
+  agent?: Agent;
+  chunkTurn: { turnId: string; seq: number } | null;
 }
 
 export interface StreamAttachment {
@@ -141,9 +155,17 @@ function broadcast(host: StreamHost, frame: unknown): void {
 }
 
 function emitEntry(host: StreamHost, sock: StreamSocket, type: string, body: unknown): void {
-  let cursor: number;
+  const chunk = host.live.get(host.sid)?.chunkTurn ?? null;
+  let cursor = -1;
   try {
-    cursor = appendEntry(host.sql, host.sid, type, body);
+    // Chunk row and entry row land in one synchronous transaction, so a
+    // failed frame leaves neither an orphan chunk nor an unmirrored entry.
+    // One extra INSERT per delta; packing is a later phase with census data.
+    runInSyncTx(host.sql, () => {
+      if (chunk !== null) appendChunk(host.sql, host.sid, chunk.turnId, chunk.seq, body);
+      cursor = appendEntry(host.sql, host.sid, type, body);
+    });
+    if (chunk !== null) chunk.seq += 1;
   } catch {
     sock.send({ error: "entry persistence failed", hint: "the frame could not be stored; check DO storage health and retry the turn" });
     return;
@@ -314,6 +336,9 @@ export interface TurnInput {
   catalog: RuntimeModel | null;
   thinking: string | null;
   runId: string;
+  // Turn identity for pi_chunks rows. Minted at turn start alongside runId;
+  // the per-turn seq counter lives on the session's LiveTurn entry, not here.
+  turnId: string;
   signal?: AbortSignal;
   budgets?: SessionRunBudgets;
 }
@@ -407,13 +432,15 @@ async function startTurn(
   budgets?: SessionRunBudgets,
 ): Promise<void> {
   const runId = crypto.randomUUID();
+  const turnId = crypto.randomUUID();
   const turnController = new AbortController();
-  host.live.set(host.sid, { controller: turnController });
+  host.live.set(host.sid, { controller: turnController, chunkTurn: null });
   await host.enqueue(async () => {
+    const armed = host.live.get(host.sid);
+    if (armed !== undefined && armed.controller.signal === turnController.signal) armed.chunkTurn = { turnId, seq: 0 };
     const emit = (type: string, body: unknown): void => emitEntry(host, sock, type, body);
     try {
       if (turnController.signal.aborted) {
-        host.sql.exec("UPDATE runs SET status = ? WHERE sid = ? AND runId = ?", "interrupted", host.sid, runId);
         emit("interrupted", { runId });
         sock.send({ aborted: true, runId });
         return;
@@ -449,8 +476,8 @@ async function startTurn(
               sock.close(CLOSE_CONFLICT, "concurrent rotation mid-turn");
               return;
             }
-            sock.send({ done: true, fence: next.fence, revision: next.revision, result: turn.result, runtime, usage: turn.usage, ...(turn.halt ? { halt: turn.halt } : {}) });
-          } else sock.send({ done: true, result: turn.result, runtime, usage: turn.usage, ...(turn.halt ? { halt: turn.halt } : {}) });
+            sock.send({ done: true, turnId, fence: next.fence, revision: next.revision, result: turn.result, runtime, usage: turn.usage, ...(turn.halt ? { halt: turn.halt } : {}) });
+          } else sock.send({ done: true, turnId, result: turn.result, runtime, usage: turn.usage, ...(turn.halt ? { halt: turn.halt } : {}) });
         },
         fail: (failId, error, hint) => {
           try {
@@ -480,7 +507,7 @@ async function startTurn(
         return;
       }
       const effThinking = host.thinking === null ? null : clampThinkingLevel(catalog ?? {}, host.thinking);
-      await executeTurn(host, { prompt, catalog, thinking: effThinking, runId, signal: turnController.signal, budgets }, sink);
+      await executeTurn(host, { prompt, catalog, thinking: effThinking, runId, turnId, signal: turnController.signal, budgets }, sink);
     } catch (e) {
       const out = shaped(e, "turn failed", "retry the prompt with a simpler request");
       try {

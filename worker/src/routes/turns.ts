@@ -82,12 +82,13 @@ const run: RouteHandler = async (ctx, request, url) => {
     const rotated = rot;
     const sql = ctx.state.storage.sql;
     const runId = crypto.randomUUID();
+    const turnId = crypto.randomUUID();
     let response: Response | null = null;
     const sink: TurnSink = {
       push() {},
       done(doneId, turn, runtime) {
         recordTurnWithOpen(sql, sid, doneId, prompt, turn.toolCalls, turn.result, turn.usage, turn.halt ?? null);
-        const out = { result: turn.result, toolCalls: turn.toolCalls, runtime, usage: turn.usage, ...(turn.halt ? { halt: turn.halt } : {}) };
+        const out = { result: turn.result, toolCalls: turn.toolCalls, runtime, usage: turn.usage, turnId, ...(turn.halt ? { halt: turn.halt } : {}) };
         response = rotated !== null ? json({ ...out, fence: rotated.fence, revision: rotated.revision }) : json(out);
       },
       fail(failId, error, hint, status, opened) {
@@ -99,7 +100,7 @@ const run: RouteHandler = async (ctx, request, url) => {
       },
       aborted() {},
     };
-    await executeTurn(ctx.streamHost(ws, sid), { prompt, catalog, thinking: effThinking, runId, budgets: budgets.budgets }, sink);
+    await executeTurn(ctx.streamHost(ws, sid), { prompt, catalog, thinking: effThinking, runId, turnId, budgets: budgets.budgets }, sink);
     return response ?? json({ error: "run failed", hint: "retry the run with a simpler prompt" }, 500);
   });
 };
