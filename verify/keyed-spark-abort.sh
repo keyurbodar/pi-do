@@ -70,12 +70,14 @@ let settled = false;
 let abortSent = false;
 let followSent = false;
 let finishedTurn = false;
+let sawDone = false;
 function finish(code, note) {
   if (settled) return;
   settled = true;
   clearTimeout(timer);
   clearTimeout(abortTimer);
-  writeFileSync(OUTFILE, JSON.stringify({ frames, close, note: note || null }, null, 2));
+  writeFileSync(OUTFILE, JSON.stringify({ frames, close, note: note || null }, null, 2) + "
+");
   process.exit(code);
 }
 const timer = setTimeout(() => finish(1, "client timeout waiting for frames"), 120000);
@@ -110,7 +112,10 @@ sock.onmessage = (event) => {
       sock.send(JSON.stringify(next));
     }
   } else if (frame.done === true) {
+    sawDone = true;
     closeAndFinish();
+  } else if (typeof frame.error === "string" && !sawDone) {
+    finish(3, "error frame received: " + String(frame.error));
   }
 };
 sock.onclose = (event) => {
@@ -129,11 +134,15 @@ EOF
 echo "client written"
 
 echo "### 5 long prompt, abort ~1s later, follow-up completes"
+CLIENT_CODE=0
 STREAM="${WS_BASE}/workspaces/${WS}/sessions/${SID}/stream?fence=${F0}&expected=${R0}"
 WS_URL="${STREAM}" FENCE="${F0}" EXPECTED="${R0}" OUTFILE="${OUT}/frames.json" \
   LONG_PROMPT="Write a story of about 300 words about a lighthouse keeper who discovers a door in the cliff that was never there before. Take your time and be vivid." \
   FOLLOW_PROMPT="say OK" \
-  node "${OUT}/ws-client.mjs" || exit 1
+  node "${OUT}/ws-client.mjs" || CLIENT_CODE=$?
+if [ "${CLIENT_CODE}" != "0" ] && [ "${CLIENT_CODE}" != "3" ]; then
+  exit 1
+fi
 cat "${OUT}/frames.json"
 
 echo "### 6 block gate: a 429/quota or provider refusal (403/opt-in) on the abort path reports blocked, not failed"
@@ -150,6 +159,10 @@ process.exit(1);
   exit 0
 fi
 echo "no block: frames carry no 429/refusal signal"
+if [ "${CLIENT_CODE}" != "0" ]; then
+  echo "abort path failed without a 429/refusal signal"
+  exit 1
+fi
 
 echo "### 7 aborted turn plus a completing follow-up on the same session"
 node -e "

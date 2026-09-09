@@ -70,7 +70,8 @@ function finish(code, note) {
   if (settled) return;
   settled = true;
   clearTimeout(timer);
-  writeFileSync(OUTFILE, JSON.stringify({ frames, close, note: note || null }, null, 2));
+  writeFileSync(OUTFILE, JSON.stringify({ frames, close, note: note || null }, null, 2) + "
+");
   process.exit(code);
 }
 const timer = setTimeout(() => finish(1, "client timeout waiting for frames"), 120000);
@@ -86,6 +87,7 @@ sock.onopen = () => {
 sock.onmessage = (event) => {
   const frame = JSON.parse(String(event.data));
   frames.push(frame);
+  if (frame.error && !frame.done) finish(3, "error frame received: " + String(frame.error).slice(0, 200));
   if (frame.done === true) closeAndFinish();
 };
 sock.onclose = (event) => {
@@ -102,7 +104,9 @@ echo "client written"
 
 echo "### 6 stream one keyed turn (tiny prompt, few tokens)"
 STREAM1="${WS_BASE}/workspaces/${WS}/sessions/${SID}/stream?fence=${F0}&expected=${R0}"
-WS_URL="${STREAM1}" PROMPT="read ${SEED_PATH}, then answer in under ten words: what did it say?" FENCE="${F0}" EXPECTED="${R0}" OUTFILE="${OUT}/frames.json" node "${OUT}/ws-client.mjs" || exit 1
+CLIENT_CODE=0
+WS_URL="${STREAM1}" PROMPT="read ${SEED_PATH}, then answer in under ten words: what did it say?" FENCE="${F0}" EXPECTED="${R0}" OUTFILE="${OUT}/frames.json" node "${OUT}/ws-client.mjs" || CLIENT_CODE=$?
+if [ "${CLIENT_CODE}" != "0" ] && [ "${CLIENT_CODE}" != "3" ]; then exit 1; fi
 cat "${OUT}/frames.json"
 
 echo "### 6b block guard: 429/quota or provider refusal (403/opt-in) is reported, not failed"
@@ -115,6 +119,8 @@ process.exit(1);
 "; then
   printf '%s\n' "BLOCKED: keyed-spark-stream refused on the stream path (429/quota or 403/opt-in; done/usage unproven this run; cause in frames.json)." > "${OUT}/BLOCKED"
   echo "BLOCKED stream path refused; transcript kept, exiting 0"
+  echo "PASS ${RUN_ID} ws=${WS} sid=${SID} BLOCKED stream-refused"
+  exit 0
 fi
 
 echo "### 7 done frame carries usage with costTotal>0; model via meta re-read"

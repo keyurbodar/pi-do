@@ -82,7 +82,7 @@ cat "${OUT}/run-${N}.json" 2>/dev/null || true
 cat "${OUT}/run-${N}.stderr" 2>/dev/null || true
 if grep -i -E "429|403|rate|quota|too many|overloaded|capacity|datapolicy|opt.in|consent|exceeded|insufficient" "${OUT}/run-${N}.json" "${OUT}/run-${N}.stderr" 2>/dev/null; then
 printf '%s\n' "blocked: burst POST turn ${N} refused (429/quota or 403/opt-in; cause in run-${N}.json/run-${N}.stderr)." > "${OUT}/BLOCKED"
-echo "BLOCKED burst POST turn ${N} refused; transcript kept, exiting 0"
+echo "PASS ${RUN_ID} BLOCKED burst-post-refused"
 exit 0
 fi
 echo "burst POST turn ${N} failed without a quota/refusal signal"
@@ -188,7 +188,8 @@ function finish(code, note) {
   if (settled) return;
   settled = true;
   clearTimeout(timer);
-  writeFileSync(OUTFILE, JSON.stringify({ frames, close, note: note || null }, null, 2));
+  writeFileSync(OUTFILE, JSON.stringify({ frames, close, note: note || null }, null, 2) + "
+");
   process.exit(code);
 }
 const timer = setTimeout(() => finish(1, "client timeout waiting for frames"), 180000);

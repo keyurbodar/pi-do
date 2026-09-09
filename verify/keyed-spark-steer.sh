@@ -79,7 +79,8 @@ function finish(code, note) {
   if (settled) return;
   settled = true;
   clearTimeout(timer);
-  writeFileSync(OUTFILE, JSON.stringify({ frames, close, note: note || null }, null, 2));
+  writeFileSync(OUTFILE, JSON.stringify({ frames, close, note: note || null }, null, 2) + "
+");
   process.exit(code);
 }
 const timer = setTimeout(() => finish(1, "client timeout waiting for frames"), 120000);
@@ -99,6 +100,7 @@ sock.onmessage = (event) => {
     steerSent = true;
     sock.send(JSON.stringify({ steer: true, text: STEER }));
   }
+  if (frame.error && !frame.done) finish(3, "error frame received: " + String(frame.error).slice(0, 200));
   if (frame.done === true) closeAndFinish();
 };
 sock.onclose = (event) => {
@@ -122,7 +124,9 @@ STEER="Mid-turn note: make sure the poem includes the exact word \"${MARKER}\"."
 printf '%s' "${PROMPT}" > "${OUT}/prompt.txt"
 printf '%s' "${STEER}" > "${OUT}/steer.txt"
 STREAM1="${WS_BASE}/workspaces/${WS}/sessions/${SID}/stream?fence=${F0}&expected=${R0}"
-WS_URL="${STREAM1}" PROMPT="${PROMPT}" STEER="${STEER}" FENCE="${F0}" EXPECTED="${R0}" OUTFILE="${OUT}/frames.json" node "${OUT}/ws-client.mjs" || exit 1
+CLIENT_CODE=0
+WS_URL="${STREAM1}" PROMPT="${PROMPT}" STEER="${STEER}" FENCE="${F0}" EXPECTED="${R0}" OUTFILE="${OUT}/frames.json" node "${OUT}/ws-client.mjs" || CLIENT_CODE=$?
+if [ "${CLIENT_CODE}" != "0" ] && [ "${CLIENT_CODE}" != "3" ]; then exit 1; fi
 cat "${OUT}/frames.json"
 
 echo "### 6b block guard: 429/quota or provider refusal (403/opt-in) is reported, not failed"
@@ -135,6 +139,8 @@ process.exit(1);
 "; then
   printf '%s\n' "BLOCKED: keyed-spark-steer refused on the steer path (429/quota or 403/opt-in; steer entry/done unproven this run; cause in frames.json)." > "${OUT}/BLOCKED"
   echo "BLOCKED steer path refused; transcript kept, exiting 0"
+  echo "PASS ${RUN_ID} ws=${WS} sid=${SID} BLOCKED steer-refused"
+  exit 0
 fi
 
 echo "### 7 steer entry frame landed mid-turn; marker in result or a file the turn wrote; usage costTotal>0"

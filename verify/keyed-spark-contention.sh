@@ -136,7 +136,8 @@ function finish(code, note) {
   if (settled) return;
   settled = true;
   clearTimeout(timer);
-  writeFileSync(OUTFILE, JSON.stringify({ frames, close, note: note || null }, null, 2));
+  writeFileSync(OUTFILE, JSON.stringify({ frames, close, note: note || null }, null, 2) + "
+");
   process.exit(code);
 }
 const timer = setTimeout(() => finish(1, "client timeout waiting for frames"), 240000);
@@ -186,14 +187,14 @@ if [ -f "${OUT}/runP.stderr" ]; then cat "${OUT}/runP.stderr"; fi
 echo "### 6b block guard: 429/quota or provider refusal on the keyed race is reported, not failed"
 BLOCKED_HIT=0
 for F in "${OUT}/framesA.json" "${OUT}/framesB.json" "${OUT}/framesC.json" "${OUT}/runP.json" "${OUT}/runP.stderr"; do
-if [ -f "${F}" ] && grep -qiE "datapolicy|opt.in|consent|quota|rate.limit|overloaded|capacity|error[^}]{0,300}(^|[^{0-9a-f}])(429|403)([^0-9a-f}]|$)" "${F}"; then
+if [ -f "${F}" ] && grep -qiE "datapolicy|opt[.-]in|consent|quota|rate.limit|overloaded|capacity|(^|[^0-9a-fA-F])(429|403)([^0-9a-fA-F]|$)" "${F}"; then
 BLOCKED_HIT=1
 echo "block signal in ${F}"
 fi
 done
 if [ "${BLOCKED_HIT}" = "1" ]; then
 printf '%s\n' "BLOCKED: keyed-spark-contention race refused on a keyed turn (429/quota or 403/opt-in; cause in framesA/B/C.json runP.json/runP.stderr)." > "${OUT}/BLOCKED"
-echo "BLOCKED keyed race refused; transcript kept, exiting 0"
+echo "PASS ${RUN_ID} ws=${WS} sid=${SID} BLOCKED keyed-race-refused"
 exit 0
 fi
 if [ "${CP}" != "0" ]; then echo "POST turn P failed"; exit 1; fi

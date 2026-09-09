@@ -102,7 +102,7 @@ console.log('usage: in=' + u.inTokens + ' out=' + u.outTokens + ' cacheRead=' + 
   TURNS_OK=$((TURNS_OK + 1))
 else
   cat "${OUT}/run-low.json" "${OUT}/run-low.stderr"
-  if grep -qiE "datapolicy|opt.in|consent|quota|rate.limit|overloaded|capacity|error[^}]{0,300}(^|[^{0-9a-f}])(429|403)([^0-9a-f}]|$)" "${OUT}/run-low.json" "${OUT}/run-low.stderr"; then
+  if grep -qiE "datapolicy|opt[.-]in|consent|quota|rate.limit|overloaded|capacity|(^|[^0-9a-fA-F])(429|403)([^0-9a-fA-F]|$)" "${OUT}/run-low.json" "${OUT}/run-low.stderr"; then
     echo "blocked: quota/refusal on the thinking-low turn; keeping green remainder"
     printf '%s\n' "blocked: thinking-low (off-requested, applied low) turn refused (429/quota or 403/opt-in; cause in run-low.json/run-low.stderr)." > "${OUT}/BLOCKED"
   else
@@ -151,7 +151,7 @@ console.log('usage: in=' + u.inTokens + ' out=' + u.outTokens + ' cacheRead=' + 
   TURNS_OK=$((TURNS_OK + 1))
 else
   cat "${OUT}/run-high.json" "${OUT}/run-high.stderr"
-  if grep -qiE "datapolicy|opt.in|consent|quota|rate.limit|overloaded|capacity|error[^}]{0,300}(^|[^{0-9a-f}])(429|403)([^0-9a-f}]|$)" "${OUT}/run-high.json" "${OUT}/run-high.stderr"; then
+  if grep -qiE "datapolicy|opt[.-]in|consent|quota|rate.limit|overloaded|capacity|(^|[^0-9a-fA-F])(429|403)([^0-9a-fA-F]|$)" "${OUT}/run-high.json" "${OUT}/run-high.stderr"; then
     echo "blocked: quota/refusal on the thinking-high turn; keeping green remainder"
     printf '%s\n' "blocked: thinking-high turn refused (429/quota or 403/opt-in; cause in run-high.json/run-high.stderr)." > "${OUT}/BLOCKED"
   else

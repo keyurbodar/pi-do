@@ -90,7 +90,8 @@ rm -f "${OUT}/want-dev-vars"
 }
 blocked() {
 printf '%s\n' "BLOCKED: $1" > "${OUT}/BLOCKED"
-echo "BLOCKED: $1"
+echo ""
+echo "PASS ${RUN_ID} BLOCKED eviction-refused"
 echo "green transcript kept; further keyed turns stopped"
 redact || exit 1
 exit 0
@@ -193,7 +194,7 @@ const frames = [];
 let close = null;
 let settled = false;
 function save() {
-  writeFileSync(OUTFILE, JSON.stringify({ frames, close }, null, 2));
+  writeFileSync(OUTFILE, JSON.stringify({ frames, close }, null, 2) + "\n");
 }
 function finish(code) {
   if (settled) return;

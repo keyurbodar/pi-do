@@ -1,13 +1,13 @@
 #!/bin/sh
 # context-build.sh — proves MEM-02 summary-before-tail over the real path:
 # mint a session, seed past the compact floor (a stub turn persists 6
-# entries: prompt, 2x toolCall/toolResult, result; the manual compact is a
-# no-op at 26 live or fewer), run the CLI compact down the same force path
+# entries: prompt, 2x toolCall/toolResult, result; the turn-atomic compact
+# is a no-op at 30 live or fewer), run the CLI compact down the same force path
 # the alarm runs, append two stub runs with distinct prompts, then feed the
 # fetched rows plus the meta leaf into buildSessionContextFromEntries and
 # assert the context opens with the compactionSummary followed verbatim by
-# the two-turn tail with toolCall/toolResult projected in cursor order
-# (MEM-04) and nothing left in skipped.
+# the retained seed turns plus the two measured turns, toolCall/toolResult
+# projected in cursor order (MEM-04) and nothing left in skipped.
 # Keyless stub only: every run must report runtime provider/model stub/stub.
 # Exit 0 on pass, 1 otherwise. Writes artifacts/RUN_ID/context-build/.
 set -u
@@ -20,7 +20,7 @@ SEED_BODY="seeded-body-${RUN_ID}"
 SEED_PATH="seed.txt"
 PROMPT1="tail prompt alpha ${RUN_ID}"
 PROMPT2="tail prompt beta ${RUN_ID}"
-export OUT PROMPT1 PROMPT2
+export OUT PROMPT1 PROMPT2 RUN_ID
 
 {
 echo "### 1 workspace create"
@@ -38,19 +38,19 @@ echo "${SESS_JSON}"
 SID="$(node -p "JSON.parse(process.argv[1]).sessionId" "${SESS_JSON}")"
 echo "SID=${SID}"
 
-echo "### 4 seed past the compact floor: 5 stub turns hold 30 live entries"
+echo "### 4 seed past the compact floor: 6 stub turns hold 36 live entries"
 I=1
-while [ "${I}" -le 5 ]; do
+while [ "${I}" -le 6 ]; do
   ${CLI} run --ws "${WS}" --sid "${SID}" --prompt "seed turn ${I} ${RUN_ID}" --base "${BASE}" --json > "${OUT}/seed-run-${I}.json" || exit 1
   I=$((I + 1))
 done
 node -e "
 const fs = require('node:fs');
-for (let i = 1; i <= 5; i++) {
+for (let i = 1; i <= 6; i++) {
   const r = JSON.parse(fs.readFileSync('${OUT}/seed-run-' + i + '.json', 'utf8'));
   if (r.runtime.model !== 'stub' || r.runtime.provider !== 'stub') throw new Error('keyless stub only: seed run ' + i + ' model=' + r.runtime.provider + '/' + r.runtime.model);
 }
-console.log('seed ok: 5 stub turns');
+console.log('seed ok: 6 stub turns');
 " || exit 1
 
 echo "### 5 CLI compact on the manual force path (same code the alarm runs)"
@@ -58,7 +58,7 @@ ${CLI} compact --ws "${WS}" --sid "${SID}" --base "${BASE}" --json > "${OUT}/com
 cat "${OUT}/compact.json"
 node -e "
 const c = require('${OUT}/compact.json');
-if (!c.compacted) throw new Error('compact must fire on 30 live entries');
+if (!c.compacted) throw new Error('compact must fire on 36 live entries');
 console.log('compact ok: archived ' + c.archived + ' live ' + c.live + ' summary ' + c.summaryCursor);
 " || exit 1
 
@@ -90,6 +90,7 @@ import { buildSessionContextFromEntries } from "../../../packages/pi-cf/src/agen
 const out = process.env.OUT;
 const prompt1 = process.env.PROMPT1;
 const prompt2 = process.env.PROMPT2;
+const runId = process.env.RUN_ID;
 const rows = JSON.parse(fs.readFileSync(`${out}/entries.json`, "utf8")).entries;
 const leaf = JSON.parse(fs.readFileSync(`${out}/meta.json`, "utf8")).leaf;
 const runA = JSON.parse(fs.readFileSync(`${out}/tail-run-1.json`, "utf8"));
@@ -110,25 +111,38 @@ console.log("--- summary text ---");
 console.log(first.text);
 console.log("--- tail ---");
 const tail = ctx.messages.slice(1);
-const tailRows = rows.slice(ci + 1);
+const summaryCursor = rows[ci].cursor;
+// The chain is leaf -> ... -> first-retained-tail -> summary -> stop, so the
+// tail is every fetched row except the compaction entry itself: retained seed
+// turns sit BEFORE the summary in id order, the measured turns after it.
+const tailRows = rows.filter((_, i) => i !== ci);
 if (tail.length !== tailRows.length) {
   throw new Error("every tail entry must project, messages " + tail.length + " rows " + tailRows.length);
 }
 let seenPrompt = 0;
 let seenResult = 0;
+let measuredPrompt = 0;
+let measuredResult = 0;
 for (let i = 0; i < tailRows.length; i++) {
   const row = tailRows[i];
   const body = JSON.parse(row.body);
   const msg = tail[i];
   if (msg.cursor !== row.cursor) throw new Error("tail[" + i + "] cursor " + msg.cursor + " want " + row.cursor);
+  const measured = row.cursor > summaryCursor;
   if (row.type === "prompt") {
     seenPrompt++;
-    const wantText = seenPrompt === 1 ? prompt1 : prompt2;
+    const wantText = measured
+      ? (measuredPrompt++ === 0 ? prompt1 : prompt2)
+      : "seed turn " + Math.ceil(row.cursor / 6) + " " + runId;
     if (msg.role !== "user" || msg.text !== wantText) throw new Error("tail[" + i + "] prompt projects as user with the live text");
   } else if (row.type === "result") {
     seenResult++;
-    const wantText = seenResult === 1 ? runA.result : runB.result;
-    if (msg.role !== "assistant" || msg.text !== wantText) throw new Error("tail[" + i + "] result projects as assistant with the live text");
+    if (measured) {
+      const wantText = measuredResult++ === 0 ? runA.result : runB.result;
+      if (msg.role !== "assistant" || msg.text !== wantText) throw new Error("tail[" + i + "] result projects as assistant with the live text");
+    } else {
+      if (msg.role !== "assistant" || typeof msg.text !== "string" || msg.text.length === 0) throw new Error("tail[" + i + "] result projects as assistant with non-empty text");
+    }
   } else if (row.type === "toolCall") {
     if (msg.role !== "toolCall") throw new Error("tail[" + i + "] role " + msg.role + " want toolCall");
     if (typeof body.tool !== "string" || !msg.text.startsWith(body.tool)) throw new Error("tail[" + i + "] toolCall text starts with the live tool name");
@@ -140,10 +154,13 @@ for (let i = 0; i < tailRows.length; i++) {
   }
   console.log("tail[" + i + "] " + msg.role + " cursor=" + msg.cursor + ": " + JSON.stringify(msg.text).slice(0, 160));
 }
-for (let i = 1; i < ctx.messages.length; i++) {
-  if (!(ctx.messages[i].cursor > ctx.messages[i - 1].cursor)) throw new Error("messages must run in cursor order");
+// The re-root puts the summary (parent 0) before the retained tail in message
+// order, so monotonic cursor order is asserted across the tail itself; the
+// per-row check above already pins each message to its row cursor.
+for (let i = 1; i < tail.length; i++) {
+  if (!(tail[i].cursor > tail[i - 1].cursor)) throw new Error("messages must run in cursor order");
 }
-console.log("tail ok: two turns project verbatim in cursor order, tools paired");
+console.log("tail ok: " + seenPrompt + " turns project in cursor order (retained seed turns plus the two measured turns), tools paired");
 if (!Array.isArray(ctx.skipped) || ctx.skipped.length !== 0) throw new Error("skipped must be empty, got " + JSON.stringify(ctx.skipped));
 console.log("skipped ok: empty, every entry projected");
 if (ctx.model !== null) throw new Error("keyless stub path must leave model null");

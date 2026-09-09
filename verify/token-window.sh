@@ -63,19 +63,19 @@ echo "${SESS_JSON}"
 SID="$(node -p "JSON.parse(process.argv[1]).sessionId" "${SESS_JSON}")"
 echo "SID=${SID}"
 
-echo "### 4 seed past the compact floor: 5 stub turns hold 30 live entries"
+echo "### 4 seed past the compact floor: 6 stub turns hold 36 live entries"
 I=1
-while [ "${I}" -le 5 ]; do
+while [ "${I}" -le 6 ]; do
 ${CLI} run --ws "${WS}" --sid "${SID}" --prompt "seed turn ${I} ${RUN_ID}" --base "${BASE}" --json > "${OUT}/seed-run-${I}.json" || exit 1
 I=$((I + 1))
 done
 node -e "
 const fs = require('node:fs');
-for (let i = 1; i <= 5; i++) {
+for (let i = 1; i <= 6; i++) {
   const r = JSON.parse(fs.readFileSync('${OUT}/seed-run-' + i + '.json', 'utf8'));
   if (r.runtime.model !== 'stub' || r.runtime.provider !== 'stub') throw new Error('keyless stub only: seed run ' + i + ' model=' + r.runtime.provider + '/' + r.runtime.model);
 }
-console.log('seed ok: 5 stub turns');
+console.log('seed ok: 6 stub turns');
 " || exit 1
 
 echo "### 5 CLI compact on the manual force path (same code the alarm runs)"
@@ -83,7 +83,7 @@ ${CLI} compact --ws "${WS}" --sid "${SID}" --base "${BASE}" --json > "${OUT}/com
 cat "${OUT}/compact.json"
 node -e "
 const c = require('${OUT}/compact.json');
-if (!c.compacted) throw new Error('compact must fire on 30 live entries');
+if (!c.compacted) throw new Error('compact must fire on 36 live entries');
 console.log('compact ok: archived ' + c.archived + ' live ' + c.live + ' summary ' + c.summaryCursor);
 " || exit 1
 

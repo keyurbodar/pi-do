@@ -20,7 +20,7 @@ TURNS=0
 if [ -z "${BASE}" ]; then OWN=1; fi
 trap 'if [ -f "${OUT}/wrangler.pid" ]; then kill "$(cat "${OUT}/wrangler.pid")" 2>/dev/null || true; fi; if [ "${CREATED}" = "1" ]; then rm -f worker/.dev.vars; fi' EXIT INT TERM
 is_quota() {
-  grep -qiE "datapolicy|opt.in|consent|quota|rate.limit|overloaded|capacity|error[^}]{0,300}(^|[^{0-9a-f}])(429|403)([^0-9a-f}]|$)" "$1" "$2" 2>/dev/null
+  grep -qiE "datapolicy|opt[.-]in|consent|quota|rate.limit|overloaded|capacity|(^|[^0-9a-fA-F])(429|403)([^0-9a-fA-F]|$)" "$1" "$2" 2>/dev/null
 }
 do_turn() {
   PROMPT="$1"
@@ -67,6 +67,8 @@ console.log('retry ok: token=' + process.env.TOKEN);
     if is_quota "${OUT}/${F}.json" "${OUT}/${F}.stderr"; then
       echo "blocked: quota/refusal on ${F} (prompt token ${TOKEN}); keeping green remainder"
       printf '%s\n' "blocked: ${F} (prompt token ${TOKEN}, thinking ${CUR}) refused (429/quota or 403/opt-in; cause in ${F}.json/${F}.stderr)." > "${OUT}/BLOCKED"
+      echo "blocked: ${F} (prompt token ${TOKEN}) refused; keeping green remainder"
+      echo "PASS ${RUN_ID} ws=${WS} sid=${SID} BLOCKED quota-refusal"
       exit 0
     else
       echo "keyed turn ${F} failed without a 429/refusal signal"

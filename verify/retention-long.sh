@@ -14,7 +14,7 @@ record_blocked() {
   node -e "
 const fs = require('node:fs');
 let b = {};
-try { b = JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); } catch { b = {}; }
+try { b = JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); } catch { b = { raw: fs.readFileSync(process.argv[1], 'utf8') }; }
 const text = JSON.stringify(b).toLowerCase();
 if (!/429|403|rate|quota|too many|overloaded|capacity|datapolicy|opt.in|consent/.test(text)) {
   console.error('run failed without a quota/provider-refusal signal: ' + JSON.stringify(b).slice(0, 300));
@@ -100,20 +100,14 @@ if (!b.usage || b.usage.retention !== 'short') throw new Error('usage.retention 
 if (typeof b.result !== 'string' || b.result.length === 0) throw new Error('result must be a non-empty string');
 console.log('turn ok: keyed ${KEYED_PROVIDER}/${KEYED_MODEL} with usage.retention short');
 " || exit 1
-node -e "
-const fs = require('node:fs');
-const src = fs.readFileSync('cli/bin/pi-do.mjs', 'utf8');
-const start = src.indexOf('function formatCount(');
-const end = src.indexOf('function printEntriesPayload(');
-if (start < 0 || end < 0 || end <= start) throw new Error('shipped formatter block not found');
-const formatUsageRow = new Function(src.slice(start, end) + '; return formatUsageRow;')();
-const b = JSON.parse(fs.readFileSync('${OUT}/run-short.json', 'utf8'));
-const line = 'usage ' + formatUsageRow(b.usage);
-console.log(line);
-if (!line.includes('ret short')) throw new Error('pretty footer missing ret short: ' + line);
-console.log('footer ok: pretty usage line shows ret short');
-" || exit 1
-
+if ! ${CLI} run --ws "${WS}" --sid "${SID_SHORT}" --prompt "${PROMPT}" --base "${BASE}" > "${OUT}/run-short-pretty.stdout" 2> "${OUT}/run-short-pretty.stderr"; then
+  record_blocked "${OUT}/run-short-pretty.stderr" "short-pretty"
+fi
+if ! grep -E -q '^usage .+ret short' "${OUT}/run-short-pretty.stderr"; then
+  echo "pretty usage footer missing ret short in ${OUT}/run-short-pretty.stderr"
+  exit 1
+fi
+echo "footer ok: pretty usage line shows ret short"
 echo "### 6 mint the long session with --retention long"
 LONG_JSON="$(${CLI} session create --ws "${WS}" --retention long --base "${BASE}" --json 2>"${OUT}/session-long.stderr")" || exit 1
 echo "${LONG_JSON}"
@@ -163,19 +157,14 @@ if (!b.usage || b.usage.retention !== 'long') throw new Error('usage.retention m
 if (typeof b.result !== 'string' || b.result.length === 0) throw new Error('result must be a non-empty string');
 console.log('turn ok: keyed ${KEYED_PROVIDER}/${KEYED_MODEL} with usage.retention long');
 " || exit 1
-node -e "
-const fs = require('node:fs');
-const src = fs.readFileSync('cli/bin/pi-do.mjs', 'utf8');
-const start = src.indexOf('function formatCount(');
-const end = src.indexOf('function printEntriesPayload(');
-if (start < 0 || end < 0 || end <= start) throw new Error('shipped formatter block not found');
-const formatUsageRow = new Function(src.slice(start, end) + '; return formatUsageRow;')();
-const b = JSON.parse(fs.readFileSync('${OUT}/run-long.json', 'utf8'));
-const line = 'usage ' + formatUsageRow(b.usage);
-console.log(line);
-if (!line.includes('ret long')) throw new Error('pretty footer missing ret long: ' + line);
-console.log('footer ok: pretty usage line shows ret long');
-" || exit 1
+if ! ${CLI} run --ws "${WS}" --sid "${SID_LONG}" --prompt "${PROMPT}" --base "${BASE}" > "${OUT}/run-long-pretty.stdout" 2> "${OUT}/run-long-pretty.stderr"; then
+  record_blocked "${OUT}/run-long-pretty.stderr" "long-pretty"
+fi
+if ! grep -E -q '^usage .+ret long' "${OUT}/run-long-pretty.stderr"; then
+  echo "pretty usage footer missing ret long in ${OUT}/run-long-pretty.stderr"
+  exit 1
+fi
+echo "footer ok: pretty usage line shows ret long"
 
 echo "### 9 entries re-read shows both persisted results carry their retention (second view)"
 ENTRIES_SHORT_JSON="$(${CLI} entries --ws "${WS}" --sid "${SID_SHORT}" --after 0 --limit 1000 --base "${BASE}" --json)" || exit 1

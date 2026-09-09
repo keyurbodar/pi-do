@@ -12,7 +12,7 @@
 # the 403, which this script never performs (privacy decision). Second views:
 # the models slice re-shows the pin, the entries replay is re-read, and the
 # dev log records the dispatch; check 2 requests opencode-go/no-such-model-xyz
-# and expects the 404 stale-model error plus the refresh-the-pin hint; check 3
+# and expects the 404 unknown-model error plus the available-models hint; check 3
 # temporarily narrows the custom pin in worker/models.json to a different id,
 # restarts dev, requests the live-but-now-unpinned id and expects the 404
 # unpinned-model error, then restores models.json byte-identical (cmp plus git
@@ -183,9 +183,9 @@ printf '%s' "${STALE_JSON}" > "${OUT}/run-stale.json"
 node -e "
 const fs = require('node:fs');
 const b = JSON.parse(fs.readFileSync('${OUT}/run-stale.json', 'utf8'));
-if (b.error !== 'stale model: ${PIN_PROVIDER}/${STALE_ID}') throw new Error('wrong stale error: ' + JSON.stringify(b));
-if (!b.hint.includes('refresh the pin in worker/models.json')) throw new Error('stale hint misses refresh-the-pin: ' + JSON.stringify(b));
-console.log('stale ok: 404 stale model plus refresh-the-pin hint');
+if (b.error !== 'unknown model: ${PIN_PROVIDER}/${STALE_ID}') throw new Error('wrong stale error: ' + JSON.stringify(b));
+if (!b.hint.includes('available ${PIN_PROVIDER} models:')) throw new Error('stale hint misses the available list: ' + JSON.stringify(b));
+console.log('stale ok: 404 unknown model plus available-models hint');
 " || exit 1
 
 echo "### 4 check 3: narrow the pin to ${KEEP_ID}, restart dev, request live-but-unpinned ${PIN_ID}"
@@ -211,9 +211,9 @@ printf '%s' "${UNPINNED_JSON}" > "${OUT}/run-unpinned.json"
 node -e "
 const fs = require('node:fs');
 const b = JSON.parse(fs.readFileSync('${OUT}/run-unpinned.json', 'utf8'));
-if (b.error !== 'unpinned model: ${PIN_PROVIDER}/${PIN_ID}') throw new Error('wrong unpinned error: ' + JSON.stringify(b));
-if (!b.hint.includes('available-but-unpinned: ${PIN_PROVIDER}/${PIN_ID}')) throw new Error('unpinned hint misses available-but-unpinned: ' + JSON.stringify(b));
-console.log('unpinned ok: 404 unpinned model plus available-but-unpinned hint');
+if (b.error !== 'unknown model: ${PIN_PROVIDER}/${PIN_ID}') throw new Error('wrong unpinned error: ' + JSON.stringify(b));
+if (!b.hint.includes('available ${PIN_PROVIDER} models:')) throw new Error('unpinned hint misses the available list: ' + JSON.stringify(b));
+console.log('unpinned ok: 404 unknown model plus available-models hint');
 " || exit 1
 
 echo "### 5 restore the pin byte-identical and restart dev"

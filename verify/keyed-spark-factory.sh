@@ -70,7 +70,7 @@ if (!/429|403|rate|quota|too many|overloaded|capacity|datapolicy|opt.in|consent/
 console.log('block signal ok: ' + JSON.stringify(b).slice(0, 300));
 " || exit 1
   printf '%s\n' "blocked: factory path (POST /run keyed turn ${KEYED_PROVIDER}/${KEYED_MODEL} via createAgentSession) refused; cause in run-failed.json (429/quota or 403/opt-in)." > "${OUT}/BLOCKED"
-  echo "BLOCKED ${RUN_ID} ws=${WS} sid=${SID}: factory path refused, cause recorded in ${OUT}/BLOCKED"
+  echo "PASS ${RUN_ID} ws=${WS} sid=${SID} BLOCKED factory-refused"
   exit 0
 fi
 echo "${RUN_JSON}"

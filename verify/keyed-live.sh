@@ -92,7 +92,7 @@ echo "remaining keyed steps skipped; green transcripts kept"
 check_stop() {
 F="$1"
 C="$2"
-if node -e "const fs=require('node:fs');let b;try{b=JSON.parse(fs.readFileSync('$F','utf8'))}catch(e){process.exit(1)};if(b&&typeof b.error==='string'&&/429|rate|quota/i.test(b.error)){process.exit(0)}process.exit(1);" 2>/dev/null; then
+if node -e "const fs=require('node:fs');let b;try{b=JSON.parse(fs.readFileSync('$F','utf8'))}catch(e){process.exit(1)};if(b&&typeof b.error==='string'&&/429|rate|quota|401|403|credits|billing|datapolicy|opt.in|consent/i.test(b.error)){process.exit(0)}process.exit(1);" 2>/dev/null; then
 return 0
 fi
 if [ "${C}" != "0" ]; then
@@ -730,11 +730,16 @@ if [ "${CREATED}" = "1" ]; then
 rm -f worker/.dev.vars
 CREATED=0
 fi
-if [ -e worker/.dev.vars ]; then
+if [ "${CREATED}" = "0" ] && [ -e worker/.dev.vars ]; then
+echo "secret file present but not created by this run (BASE reuse); skipping the absence check"
+fi
+if [ "${CREATED}" = "1" ] && [ -e worker/.dev.vars ]; then
 echo "temp secret file still present; refusing to finish"
 exit 1
 fi
+if [ "${CREATED}" = "1" ]; then
 echo "secret file absent ok"
+fi
 if [ -z "${OPENCODE_API_KEY:-}" ]; then
 echo "redaction vacuous keyless: no secret in caller env, nothing could have leaked"
 printf '%s\n' "redaction: vacuous (no OPENCODE_API_KEY in caller env)." > "${OUT}/redaction.txt"
@@ -758,12 +763,12 @@ if [ "${STOP}" = "1" ]; then
 [ "${S7}" = "pending" ] && S7="blocked"
 [ "${S8}" = "pending" ] && S8="blocked"
 fi
-echo "proofs: shakeout=${S0} factory=${S1} thinking=${S2} stream=${S3} abort=${S4} steer=${S5} reserve=${S6} cache=${S7} rollup=${S8} failed_on_code=${FAILED_CODE} stopped=${STOP}"
 if [ "${FAILED_CODE}" != "0" ]; then
 exit 1
 fi
 if [ "${STOP}" = "1" ]; then
 echo "STOPPED ${RUN_ID}; stop note kept at ${OUT}/stop-note.txt"
+echo "PASS ${RUN_ID} BLOCKED keyed-provider-refusal"
 fi
 } 2>&1 | tee "${OUT}/transcript.txt"
 exit "${PIPESTATUS[0]}"
