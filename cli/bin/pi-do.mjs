@@ -158,13 +158,23 @@ function fenceExpected(opts, what, help) {
   return checkedUint(opts.expected, `${what} needs --expected N (a non-negative integer).`, help);
 }
 async function doFetch(base, json, url, init) {
+  const secs = Number(process.env.PI_DO_TIMEOUT_SECS || 300);
+  const ms = Number.isFinite(secs) && secs > 0 ? secs * 1000 : 300000;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(new Error(`timed out after ${Math.round(ms / 1000)}s`)), ms);
   let res;
   try {
-    res = await fetch(url, init);
+    res = await fetch(url, { ...init, signal: ctrl.signal });
   } catch (e) {
-    R.note(`error: cannot reach server at ${base}`); R.note(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
-    if (json) R.json({ error: "cannot reach server", base });
+    const timedOut = e && (e.name === "AbortError" || /timed out/.test(e.message || ""));
+    if (timedOut) R.note(`error: no response in ${Math.round(ms / 1000)}s (override: PI_DO_TIMEOUT_SECS=N)`);
+    else R.note(`error: cannot reach server at ${base}`);
+    R.note(`hint: the turn may still complete server-side; check entries before retrying`);
+    if (!timedOut) R.note(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
+    if (json) R.json({ error: timedOut ? "request timed out" : "cannot reach server", base });
     process.exit(1);
+  } finally {
+    clearTimeout(timer);
   }
   if (!res.ok) {
     const text = await res.text();
