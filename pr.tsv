@@ -33,3 +33,4 @@ pr	title	branch	worktree	complexity	time_min	depends_on	parallel_group	scope	com
 33	usage-footer	pr/33-usage-footer	.worktrees/pr-33	2	12	32	W9	per-turn usage row plus session rates	100%	✅ merged (OMP row rules, keyed sums proven, zeros keyless)
 34	backend-lean-drive	main	.	5	300	33	W13	Backend 10400 to 7503 LOC via upstream absorption plus unification, wire shapes frozen	100%	✅ committed 69061ab (19 batteries green, step 13 needs funded key)
 35	structural-cuts	main	.	4	120	34	W13	Worker proxy folded into DO, schema DDL single-sourced, CLI renderer diet, 7503 to 7289 LOC	100%	✅ committed 88b0d12 (full battery green, step 13 needs funded key)
+36	monorepo-layout	main	.	3	60	35	W13	pi-cf into agent/tools/store/runtime/vendor with exports map, worker on pi-cf specifiers, workspace-do split into routes/	100%	✅ committed 39c0bce (full battery green incl bg PASS, step 13 needs funded key)
