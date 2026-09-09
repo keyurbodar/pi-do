@@ -40,6 +40,11 @@ export interface SessionToolCall {
 export interface SessionUsage {
   inTokens: number; outTokens: number; cacheRead: number;
   costTotal: number; elapsedMs: number; tokensPerSec: number | null; retention?: "short" | "long";
+  // Wave-1 proof staging: wall-time split of the turn. sqlMs covers history/
+  // context storage reads, inferenceMs the model call, frameMs the sink/
+  // socket-frame callbacks. Optional so older persisted rows still typecheck;
+  // every turn shaped here always carries all three as integers >= 0.
+  sqlMs?: number; inferenceMs?: number; frameMs?: number;
 }
 
 export interface SessionTurn {
@@ -156,12 +161,25 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
 
   async function run(prompt: string, runOptions?: SessionRunOptions): Promise<SessionTurn> {
     const signal = runOptions?.signal;
-    const onUpdate = runOptions?.onUpdate;
     const apiKey = options.apiKey;
     const retention = options.cacheRetention ?? "short";
     const tools: Record<string, AgentHarnessTool<ToolContext, any, any>> = { ...sessionTools, ...options.tools };
+    // Timing split staging: sqlMs accumulates history storage reads below,
+    // frameMs accumulates wall time inside the sink/socket-frame callbacks.
+    // inferenceMs is measured around the model call inside each turn runner.
+    const timing = { sqlMs: 0, frameMs: 0 };
+    const innerUpdate = runOptions?.onUpdate;
+    const onUpdate = innerUpdate === undefined ? undefined : (event: SessionToolEvent): void => {
+      const t0 = Date.now();
+      try {
+        innerUpdate(event);
+      } finally {
+        timing.frameMs += Date.now() - t0;
+      }
+    };
     let history: ContextMessage[] = [];
     if (options.history !== undefined) {
+      const tSql = Date.now();
       try {
         const entries: EntryRow[] = [];
         let after = 0;
@@ -176,6 +194,8 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
         history = buildSessionContextFromEntries(entries, options.history.leaf).messages;
       } catch {
         history = [];
+      } finally {
+        timing.sqlMs += Date.now() - tSql;
       }
     }
     const contextWindow = options.model.contextWindow;
@@ -193,14 +213,16 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
           : base.messages.filter((message) => message.role === "compactionSummary");
     }
     const keyed = model.api !== "stub" && typeof apiKey === "string" && apiKey.length > 0;
-    if (keyed) return runModelTurn(prompt, apiKey, signal, onUpdate, runOptions?.thinking ?? null, tools, history, runOptions?.budgets, retention, runOptions?.onAgent);
-    return runStubTurn(prompt, signal, onUpdate, tools, retention);
+    if (keyed) return runModelTurn(prompt, apiKey, signal, onUpdate, runOptions?.thinking ?? null, tools, history, runOptions?.budgets, retention, runOptions?.onAgent, timing);
+    return runStubTurn(prompt, signal, onUpdate, tools, retention, timing);
   }
 
   async function runStubTurn(
     prompt: string, signal: AbortSignal | undefined, onUpdate: ((event: SessionToolEvent) => void) | undefined,
     tools: Record<string, AgentHarnessTool<ToolContext, any, any>>, retention: "short" | "long",
+    timing: { sqlMs: number; frameMs: number },
   ): Promise<SessionTurn> {
+    const t0 = Date.now();
     const modelId = model.id;
     const readFn = tools.read;
     const bashFn = tools.bash;
@@ -222,9 +244,10 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
       outputs.push(output);
       onUpdate?.({ kind: "toolResult", id, tool, args, output });
     }
+    const inferenceMs = Date.now() - t0;
     return {
       result: outputs.join("\n"), toolCalls, via: "createAgentSession", model: modelId,
-      usage: { inTokens: 0, outTokens: 0, cacheRead: 0, costTotal: 0, elapsedMs: 0, tokensPerSec: null, retention },
+      usage: { inTokens: 0, outTokens: 0, cacheRead: 0, costTotal: 0, elapsedMs: 0, tokensPerSec: null, retention, sqlMs: timing.sqlMs, inferenceMs, frameMs: timing.frameMs },
     };
   }
 
@@ -234,8 +257,10 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
     tools: Record<string, AgentHarnessTool<ToolContext, any, any>>, history: ContextMessage[],
     budgets: SessionRunBudgets | undefined, retention: "short" | "long",
     onAgent: ((agent: Agent) => void) | undefined,
+    timing: { sqlMs: number; frameMs: number },
   ): Promise<SessionTurn> {
     const openedAt = Date.now();
+    let inferenceMs = 0;
     const modelId = model.id;
     const source = model as SessionModel & Partial<PiModel<Api>>;
     const piModel: PiModel<Api> = {
@@ -294,9 +319,10 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
     const finish = (halt: HaltReason | undefined): SessionTurn => {
       const elapsedMs = Date.now() - openedAt;
       const tokensPerSec = elapsedMs < MIN_TURN_MS || outTokens <= 0 ? null : (outTokens * 1000) / elapsedMs;
+      const split = { sqlMs: timing.sqlMs, inferenceMs, frameMs: timing.frameMs };
       const usage = halt === undefined
-        ? { inTokens, outTokens, cacheRead, costTotal, elapsedMs, tokensPerSec, retention }
-        : { inTokens, outTokens, cacheRead, costTotal, elapsedMs, tokensPerSec };
+        ? { inTokens, outTokens, cacheRead, costTotal, elapsedMs, tokensPerSec, retention, ...split }
+        : { inTokens, outTokens, cacheRead, costTotal, elapsedMs, tokensPerSec, ...split };
       const result = turnTexts.join("\n\n");
       return halt === undefined
         ? { result, toolCalls, via: "createAgentSession", model: modelId, usage }
@@ -420,9 +446,11 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
         });
       }, HARD_ABORT_GRACE_MS);
     }, limits.maxDurationMs);
+    const tInfer = Date.now();
     try {
       await Promise.race([agent.prompt({ role: "user", content: prompt, timestamp: Date.now() }), hardDeadline]);
     } finally {
+      inferenceMs += Date.now() - tInfer;
       settled = true;
       clearTimeout(idleTimer);
       clearTimeout(hardTimer);

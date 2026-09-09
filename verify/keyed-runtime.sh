@@ -156,6 +156,18 @@ if (!results.some((e) => e.body.includes(process.env.SEED_BODY))) throw new Erro
 console.log('entries ok: ' + results.length + ' result(s), seeded read persisted');
 " || exit 1
 
+echo "### 9b usage timing split (sqlMs/inferenceMs/frameMs integers on the turn payload)"
+node -e "
+const fs = require('node:fs');
+const b = JSON.parse(fs.readFileSync('${OUT}/run.json', 'utf8'));
+const u = b.usage;
+if (!u || typeof u !== 'object') throw new Error('run.json missing usage payload');
+for (const k of ['sqlMs', 'inferenceMs', 'frameMs']) {
+  if (typeof u[k] !== 'number' || !Number.isInteger(u[k]) || u[k] < 0) throw new Error('usage.' + k + ' must be an integer >= 0: ' + JSON.stringify(u));
+}
+console.log('timing split: sqlMs=' + u.sqlMs + ' inferenceMs=' + u.inferenceMs + ' frameMs=' + u.frameMs + ' elapsedMs=' + u.elapsedMs);
+" || exit 1
+
 echo "### 10 redaction grep over the artifacts"
 if [ -z "${OPENCODE_API_KEY:-}" ]; then
   echo "redaction vacuous keyless: no secret in caller env, nothing could have leaked"
