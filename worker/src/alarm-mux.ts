@@ -1,12 +1,16 @@
 // alarm-mux.ts — single-alarm multiplexer for WorkspaceDO.
 //
 // A Durable Object has one alarm slot, but several subsystems each want a
-// wakeup: a running turn holds a keepalive heartbeat, and compaction retries
-// re-arm a short fuse. The mux persists named jobs with deadlines in
-// pi_alarm_jobs and always arms the single slot at the earliest deadline, so
-// an earlier job (e.g. a compaction re-arm) preempts a later keepalive
-// re-arm instead of being overwritten by it.
+// wakeup: a running turn holds a keepalive heartbeat, compaction retries
+// re-arm a short fuse, and the recovery scan sweeps orphaned pi_runs rows.
+// The mux persists named jobs with deadlines in pi_alarm_jobs and always
+// arms the single slot at the earliest deadline, so an earlier job (e.g. a
+// compaction re-arm) preempts a later keepalive re-arm instead of being
+// overwritten by it.
 import type { EntriesSql } from "pi-cf/store/entries";
+import { RECOVERY_JOB, RECOVERY_SCAN_MS } from "pi-cf/store/recovery";
+
+export { RECOVERY_JOB, RECOVERY_SCAN_MS };
 
 export const KEEPALIVE_JOB = "keepalive";
 export const COMPACTION_JOB = "compaction";

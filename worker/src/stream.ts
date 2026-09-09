@@ -1,5 +1,8 @@
-import { appendEntry, bumpSessionTotals, closeRun, getEntry, listEntries, openRun, runInSyncTx, sessionLeaf, type EntriesSql } from "pi-cf/store/entries";
-import { appendChunk } from "pi-cf/store/chunks";
+import { appendEntry, bumpSessionTotals, closeRun, entryHead, getEntry, listEntries, openRun, runInSyncTx, sessionLeaf, type EntriesSql } from "pi-cf/store/entries";
+import { appendChunk, listChunksForTurn } from "pi-cf/store/chunks";
+import { commitPiRun, openPiRun, touchPiRun } from "pi-cf/store/runs";
+import type { RedriveInput } from "pi-cf/store/recovery";
+import { RECOVERY_JOB, RECOVERY_SCAN_MS, scheduleJob } from "./alarm-mux";
 import { enforceFence } from "pi-cf/store/fence";
 import type { FileStore } from "pi-cf/store/vfs-dofs";
 import { clampThinkingLevel, defaultTurnModel, keyedProviders, resolveCatalogModel, resolveKeyedModel, resolveProviderKey, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
@@ -32,6 +35,10 @@ export interface StreamHost {
   sockets(): WebSocket[];
   enqueue: <T>(fn: () => Promise<T>) => Promise<T>;
   scheduleAlarm(): Promise<void>;
+  pokeAlarm(): Promise<void>;
+  // Reflect the job table in the real alarm slot without adding jobs: used
+  // after arming the recovery scan so a row written pre-crash still wakes
+  // the DO post-restart. A bare row with no setAlarm never fires.
   holdKeepalive(): Promise<void>;
   releaseKeepalive(): Promise<void>;
 }
@@ -160,12 +167,16 @@ function emitEntry(host: StreamHost, sock: StreamSocket, type: string, body: unk
   const chunk = host.live.get(host.sid)?.chunkTurn ?? null;
   let cursor = -1;
   try {
-    // Chunk row and entry row land in one synchronous transaction, so a
-    // failed frame leaves neither an orphan chunk nor an unmirrored entry.
-    // One extra INSERT per delta; packing is a later phase with census data.
+    // Entry row first so the chunk row can pin its mirrored cursor; chunk,
+    // entry, and the ledger touch land in one synchronous transaction, so a
+    // failed frame leaves neither an orphan chunk nor an unmirrored entry
+    // nor an updatedAt running ahead of durable data. One extra INSERT per
+    // delta plus one indexed PK touch; packing is a later phase with census
+    // data.
     runInSyncTx(host.sql, () => {
-      if (chunk !== null) appendChunk(host.sql, host.sid, chunk.turnId, chunk.seq, body);
       cursor = appendEntry(host.sql, host.sid, type, body);
+      if (chunk !== null) appendChunk(host.sql, host.sid, chunk.turnId, chunk.seq, body, cursor);
+      if (chunk !== null) touchPiRun(host.sql, chunk.turnId);
     });
     if (chunk !== null) chunk.seq += 1;
   } catch {
@@ -368,12 +379,104 @@ function shaped(e: unknown, fallbackError: string, fallbackHint: string): { erro
   return { error: error.slice(0, 300), hint: typeof rec?.hint === "string" ? rec.hint : fallbackHint };
 }
 
+// executeTurn is the turn boundary for the pi_runs ledger: one row opens
+// here (fence plus the head cursor as the turn found it) and the row is
+// deleted only after the caller's commit landed inside sink.done. Failures
+// and aborts forward untouched so the row survives for the recovery scan,
+// which re-drives via recordAttempt and never re-opens.
 export async function executeTurn(host: StreamHost, input: TurnInput, sink: TurnSink): Promise<void> {
-  await host.holdKeepalive();
+  const fence = host.readFence();
+  openPiRun(host.sql, host.sid, input.turnId, fence?.fence ?? "", entryHead(host.sql, host.sid).head);
+  // Arm the first recovery scan for this turn: without it, an orphaned row
+  // would sit until some unrelated wake re-arms the scan. Earliest-deadline
+  // mux keeps this to one row; the scan owns re-arming from here. pokeAlarm
+  // reflects the row in the real slot so the wake survives a restart.
+  scheduleJob(host.sql, RECOVERY_JOB, Date.now() + RECOVERY_SCAN_MS);
+  await host.pokeAlarm();
+  // Test-only chaos seam: PI_TEST_HOLD_TURN_MS parks the turn open (row plus
+  // prompt committed, no model output yet) so kill -9 proofs can land
+  // mid-turn deterministically instead of racing a ~25ms stub turn. Never
+  // set in production; capped so a stray value cannot wedge the DO.
+  const holdMs = Number((host.runtimeEnv as unknown as Record<string, unknown>).PI_TEST_HOLD_TURN_MS ?? 0);
+  if (Number.isFinite(holdMs) && holdMs > 0) {
+    const gate = Promise.withResolvers<void>();
+    setTimeout(() => gate.resolve(), Math.min(holdMs, 120000));
+    await gate.promise;
+  }
   try {
-    await executeTurnInner(host, input, sink);
+    await executeTurnInner(host, input, {
+      push: (type, body) => sink.push(type, body),
+      live: sink.live === undefined ? undefined : (frame) => sink.live?.(frame),
+      done: (doneId, turn, runtime) => {
+        sink.done(doneId, turn, runtime);
+        try {
+          commitPiRun(host.sql, input.turnId);
+        } catch {
+          // Commit already landed; a leftover row reads as a
+          // fully-committed orphan whose suffix merge emits zero deltas.
+        }
+      },
+      fail: (failId, error, hint, status, opened) => sink.fail(failId, error, hint, status, opened),
+      aborted: (abortId) => sink.aborted(abortId),
+    });
   } finally {
     await host.releaseKeepalive();
+  }
+}
+// Re-drives an orphaned turn to completion under its original turnId. The
+// fresh model run regenerates the turn's bytes; the first skipDeltas pushes
+// are dropped (prompt plus already-committed prefix, never re-emitted), the
+// rest land as entries with chunk seqs continuing at startSeq. Exact under
+// deterministic output, best-effort otherwise. Runs inside the session queue
+// so it never interleaves a live turn; rotates no fence and sends no socket
+// frames (alarm context has neither). Failures throw so the scan records the
+// attempt; success closes the ledger row via executeTurn's done wrapper.
+export async function redriveTurn(host: StreamHost, input: RedriveInput & { skipDeltas: number }): Promise<void> {
+  if (input.prompt === null) throw new Error("redrive needs the turn prompt");
+  const dummySock: StreamSocket = { send() {}, close() {} };
+  const turnController = new AbortController();
+  host.live.set(host.sid, { controller: turnController, chunkTurn: null });
+  try {
+    await host.enqueue(async () => {
+      const armed = host.live.get(host.sid);
+      if (armed !== undefined && armed.controller.signal === turnController.signal) {
+        armed.chunkTurn = { turnId: input.turnId, seq: input.nextSeq };
+      }
+      let seen = 0;
+      const emit = (type: string, body: unknown): void => {
+        seen += 1;
+        if (seen > input.skipDeltas) emitEntry(host, dummySock, type, body);
+      };
+      const catalog = host.model === null ? null : resolveCatalogModel(host.model.provider, host.model.id);
+      const effThinking = host.thinking === null ? null : clampThinkingLevel(catalog ?? {}, host.thinking);
+      await executeTurn(
+        host,
+        { prompt: input.prompt as string, catalog, thinking: effThinking, runId: input.turnId, turnId: input.turnId, signal: turnController.signal },
+        {
+          push: emit,
+          done: (doneId, turn, runtime) => {
+            emit("result", { runId: input.turnId, result: turn.result, usage: turn.usage, runtime, ...(turn.halt ? { halt: turn.halt } : {}) });
+            void doneId;
+            try {
+              closeRun(host.sql, host.sid, input.turnId);
+            } catch {
+            }
+            try {
+              bumpSessionTotals(host.sql, host.sid, turn.usage);
+            } catch {
+            }
+          },
+          fail: () => {
+            throw new Error("re-drive failed");
+          },
+          aborted: () => {
+            throw new Error("re-drive aborted");
+          },
+        },
+      );
+    });
+  } finally {
+    if (host.live.get(host.sid)?.controller === turnController) host.live.delete(host.sid);
   }
 }
 
@@ -507,6 +610,13 @@ async function startTurn(
           sock.send({ aborted: true, runId: abortId });
         },
       };
+      // Ledger row opens before the first entry lands: a kill between the
+      // prompt commit and executeTurn must still leave a row for the scan.
+      // executeTurn repeats all three calls as a backstop (redrive path has
+      // no startTurn); INSERT OR IGNORE plus job idempotence keep both safe.
+      openPiRun(host.sql, host.sid, turnId, host.readFence()?.fence ?? "", entryHead(host.sql, host.sid).head);
+      scheduleJob(host.sql, RECOVERY_JOB, Date.now() + RECOVERY_SCAN_MS);
+      await host.pokeAlarm();
       openRun(host.sql, host.sid, runId);
       emit("prompt", { runId, prompt });
       let catalog: RuntimeModel | null;

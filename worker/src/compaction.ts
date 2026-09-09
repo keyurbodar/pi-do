@@ -139,7 +139,7 @@ export interface CompactionResult {
   pages: number;
 }
 
-export function runCompaction(sql: EntriesSql, sid: string, force = false): CompactionResult {
+export function runCompaction(sql: EntriesSql, sid: string, force = false, liveTurnIds: readonly string[] = []): CompactionResult {
   const live = readAllLive(sql, sid);
   if (live.length <= COMPACTION_KEEP_TAIL + 1 || (!force && !shouldCompact(live.length))) {
     sql.exec("INSERT INTO compaction_marks(sid, pending) VALUES (?, 0) ON CONFLICT(sid) DO UPDATE SET pending = 0", sid);
@@ -166,6 +166,17 @@ export function runCompaction(sql: EntriesSql, sid: string, force = false): Comp
       sql.exec("INSERT INTO pi_archive(sid, page, entries) VALUES (?, ?, ?)", sid, nextPage++, JSON.stringify(old.slice(i, i + ARCHIVE_PAGE_SIZE)));
     }
     sql.exec("DELETE FROM pi_entries WHERE sid = ? AND id <= ?", sid, body.toCursor);
+    // Reap exactly the durability rows the archived prefix covers, same
+    // transaction: chunk deltas whose mirrored entry cursor archived, plus
+    // ledger rows whose start cursor archived. Excluded: live turns handed
+    // in by the caller (a long streaming turn's own early deltas can fall
+    // below the cutoff while it still runs), live-tail rows above the
+    // cutoff, and chunks without a cursor (predating the column, since NULL
+    // never satisfies <=).
+    const excluded = liveTurnIds.filter((id) => typeof id === "string" && id.length > 0);
+    const keep = excluded.length > 0 ? ` AND turnId NOT IN (${excluded.map(() => "?").join(", ")})` : "";
+    sql.exec(`DELETE FROM pi_chunks WHERE sid = ? AND cursor <= ?${keep}`, sid, body.toCursor, ...excluded);
+    sql.exec(`DELETE FROM pi_runs WHERE sid = ? AND cursor <= ?${keep}`, sid, body.toCursor, ...excluded);
     summaryCursor = appendEntry(sql, sid, "compaction", body);
     // Re-root the chain: summary -> first tail entry, leaf back on the last
     // tail entry, so the walk from leaf reads tail then summary then stops.
@@ -190,10 +201,10 @@ export function runCompaction(sql: EntriesSql, sid: string, force = false): Comp
 // Alarm body helper: compacts every pending session; a failure is recorded as
 // an error entry and the alarm is always rescheduled so compaction retries
 // instead of stalling the session forever.
-export function runPendingCompactions(sql: EntriesSql, reschedule: () => void): void {
+export function runPendingCompactions(sql: EntriesSql, reschedule: () => void, liveTurnIds: (sid: string) => readonly string[] = () => []): void {
   for (const sid of pendingSessions(sql)) {
     try {
-      runCompaction(sql, sid);
+      runCompaction(sql, sid, false, liveTurnIds(sid));
     } catch (e) {
       appendEntry(sql, sid, "error", { error: e instanceof Error ? e.message : String(e ?? "compaction failed") });
     } finally {

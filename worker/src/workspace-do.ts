@@ -1,10 +1,14 @@
 import { createDofsVfs, type FileStore } from "pi-cf/store/vfs-dofs";
 import { ensureEntriesSchema } from "pi-cf/store/entries";
 import { ensureChunksSchema } from "pi-cf/store/chunks";
+import { ensureRunsSchema } from "pi-cf/store/runs";
 import { ensureWorkspaceSchema } from "pi-cf/store/sql-util";
 import { ensureCompactionSchema, runPendingCompactions } from "./compaction";
-import { COMPACTION_JOB, COMPACTION_REARM_MS, KEEPALIVE_JOB, KEEPALIVE_MS, cancelJob, earliestDeadline, ensureAlarmMuxSchema, runDueJobs, scheduleJob } from "./alarm-mux";
-import { readAttachment, socketMessage, wrapSocket, type LiveTurn, type StreamHost } from "./stream";
+import { COMPACTION_JOB, COMPACTION_REARM_MS, KEEPALIVE_JOB, KEEPALIVE_MS, cancelJob, earliestDeadline, runDueJobs, scheduleJob } from "./alarm-mux";
+import { makeSidLiveCheck, RECOVERY_JOB, scanTurns } from "pi-cf/store/recovery";
+import { nextRunAtMin } from "pi-cf/store/runs";
+import { listChunksForTurn } from "pi-cf/store/chunks";
+import { readAttachment, redriveTurn, socketMessage, wrapSocket, type LiveTurn, type StreamHost } from "./stream";
 import type { Agent } from "@earendil-works/pi-agent-core";
 import { resolveCatalogModel, type RuntimeEnv } from "./model-runtime";
 import { err, UNKNOWN_SESSION_HINT, type Env, type FenceNext, type FenceRead, type ModelTriple, type RouteCtx, type RouteHandler, type WorkspaceSettings } from "./routes/_shared";
@@ -98,8 +102,8 @@ export class WorkspaceDO implements DurableObject {
     this.files.ensureSchema();
     ensureEntriesSchema(sql);
     ensureChunksSchema(sql);
+    ensureRunsSchema(sql);
     ensureCompactionSchema(sql);
-    ensureAlarmMuxSchema(sql);
     sql.exec("DROP TABLE IF EXISTS pi_owners");
   }
 
@@ -234,12 +238,61 @@ export class WorkspaceDO implements DurableObject {
     const now = Date.now();
     await runDueJobs(sql, now, {
       [COMPACTION_JOB]: () => {
-        runPendingCompactions(sql, () => {
-          scheduleJob(sql, COMPACTION_JOB, Date.now() + COMPACTION_REARM_MS);
-        });
+        runPendingCompactions(
+          sql,
+          () => {
+            scheduleJob(sql, COMPACTION_JOB, Date.now() + COMPACTION_REARM_MS);
+          },
+          (sid) => {
+            // A live turn streams entries while the alarm fires, so its own
+            // early deltas can sit below the archive cutoff. Hand its turnId
+            // in so the cutover keeps its ledger row and chunks.
+            const turnId = this.live.get(sid)?.chunkTurn?.turnId;
+            return turnId === undefined ? [] : [turnId];
+          },
+        );
       },
       [KEEPALIVE_JOB]: () => {
         if (this.live.size > 0) scheduleJob(sql, KEEPALIVE_JOB, Date.now() + KEEPALIVE_MS);
+      },
+      // Orphan-turn recovery: scan due ledger rows and re-drive them through
+      // redriveTurn (same turnId, prompt replayed, committed prefix skipped).
+      // Re-arm only while rows remain: earliest future backoff, or the scan's
+      // rearm when rows are still due now (scan cap). No rows means silence;
+      // the next turn open re-arms the scan by itself.
+      [RECOVERY_JOB]: async () => {
+        const summary = await scanTurns(sql, Date.now(), {
+          isLive: makeSidLiveCheck(this.live),
+          redrive: async (input) => {
+            let ws = "";
+            for (const row of sql.exec("SELECT ws FROM sessions WHERE sid = ? LIMIT 1", input.sid)) {
+              if (typeof row === "object" && row !== null && typeof (row as Record<string, unknown>).ws === "string") {
+                ws = (row as Record<string, unknown>).ws as string;
+              }
+              break;
+            }
+            if (ws === "") throw new Error("redrive needs a live session");
+            let skip: number;
+            if (input.fresh) {
+              // No safe resume point: skip the leading pinned run (chunk and
+              // entry land together, so a surviving pin is committed) and
+              // regenerate the rest.
+              skip = 0;
+              for (const c of listChunksForTurn(sql, input.sid, input.turnId)) {
+                if (c.cursor === null) break;
+                skip += 1;
+              }
+            } else {
+              // Prompt occupies chunk seq 0 but is never re-pushed, so the
+              // committed delta count is one less than the resume length.
+              skip = input.nextSeq - input.suffix.length - 1;
+            }
+            if (skip < 0) skip = 0;
+            await redriveTurn(this.streamHost(ws, input.sid), { ...input, prompt: input.prompt, skipDeltas: skip });
+          },
+        });
+        const nxt = nextRunAtMin(sql);
+        if (nxt !== null) scheduleJob(sql, RECOVERY_JOB, nxt <= Date.now() ? summary.rearmAt : Math.min(nxt, summary.rearmAt));
       },
     });
     const next = earliestDeadline(sql);
@@ -270,6 +323,11 @@ export class WorkspaceDO implements DurableObject {
         scheduleJob(this.state.storage.sql, COMPACTION_JOB, Date.now() + COMPACTION_REARM_MS);
         const next = earliestDeadline(this.state.storage.sql);
         if (next !== null) await this.state.storage.setAlarm(next);
+      },
+      pokeAlarm: async () => {
+        const next = earliestDeadline(this.state.storage.sql);
+        if (next === null) await this.state.storage.deleteAlarm();
+        else await this.state.storage.setAlarm(next);
       },
       holdKeepalive: async () => {
         scheduleJob(this.state.storage.sql, KEEPALIVE_JOB, Date.now() + KEEPALIVE_MS);
