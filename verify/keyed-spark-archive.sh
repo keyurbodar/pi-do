@@ -1,6 +1,6 @@
 #!/bin/sh
 # keyed-spark-archive.sh — proves stacked keyed compactions plus the compacted follow-up on opencode-go/muse-spark-1.3-contributor over the real server.
-# One session runs many tiny keyed turns with the thinking level varied across turns until the compact floor is passed twice and two compactions stack (the alarm plus the manual route, same code path): the live replay holds the latest summary, the archive pages re-read the compacted prefix including the first summary, the context build opens with the latest compaction summary and projects the tail verbatim, the tail stays byte-stable across storage re-reads, and a thinking switch mid-history is stored with a follow-up keyed turn resolving from the compacted path (runtime.thinking reflected, result non-empty, usage positive).
+# Eight keyed turns with varied thinking plus instant thinking toggles fill the ledger past the force floor; then the manual floor plus the alarm-path manual stack two compactions (same runCompaction code path). The live replay holds the latest summary, the archive pages re-read the compacted prefix, the context build opens with the latest summary and projects the tail verbatim, the tail stays byte-stable across storage re-reads, and keyed turns before and after resolve from the compacted path (runtime.thinking reflected, result non-empty, usage positive).
 # Keyed env needed: with no BASE the script boots its own wrangler dev on an isolated port with a temp single-line worker/.dev.vars carrying OPENCODE_API_KEY from the caller env (byte-identical to keyed-live.sh); with BASE it reuses that server and never writes a secret file. The secret never enters any artifact (redaction grep at the end proves it).
 # Usage: sh verify/keyed-spark-archive.sh [BASE]
 # Exit 0 on pass, or on quota-blocked (OUT/BLOCKED names the stuck turn); 1 otherwise. Writes artifacts/RUN_ID/keyed-spark-archive/.
@@ -43,7 +43,7 @@ if (b.runtime.thinking !== process.env.CUR) throw new Error('turn thinking ' + b
 const u = b.usage;
 if (!u || typeof u.inTokens !== 'number' || typeof u.outTokens !== 'number') throw new Error('usage missing: ' + JSON.stringify(u));
 if (!(u.costTotal > 0)) throw new Error('expected nonzero costTotal, got ' + JSON.stringify(u));
-if (typeof b.result !== 'string' || b.result.length === 0) throw new Error('result must be a non-empty string');
+if (b.toolCalls && b.toolCalls.length > 0) throw new Error('turn must stay tool-free, used ' + b.toolCalls.length + ' tools');
 if (typeof b.result !== 'string' || b.result.length < 4) throw new Error('result too short to be a model reply for ' + process.env.TOKEN);
 console.log('turn ok: keyed ${KEYED_MODEL} thinking=' + b.runtime.thinking + ' token=' + process.env.TOKEN);
 console.log('usage: in=' + u.inTokens + ' out=' + u.outTokens + ' cacheRead=' + u.cacheRead + ' costTotal=' + u.costTotal + ' elapsedMs=' + u.elapsedMs);
@@ -164,14 +164,14 @@ const b = JSON.parse(require('node:fs').readFileSync('${OUT}/meta-after-model.js
 if (b.model.provider !== '${KEYED_PROVIDER}' || b.model.id !== '${KEYED_MODEL}') throw new Error('row triple wrong: ' + JSON.stringify(b.model));
 console.log('row ok: meta re-read shows ${KEYED_PROVIDER}/${KEYED_MODEL}');
 " || exit 1
-
-echo "### 4 seed 20 tiny keyed turns, thinking varied (a manual compact floors the prefix; faster and deterministic than the alarm)"
+echo "### 4 four tool-free keyed turns, thinking varied, then instant thinking toggles top the ledger past the force floor"
 I=1
-while [ "${I}" -le 20 ]; do
+CUR=""
+while [ "${I}" -le 4 ]; do
   LV=""
   case "${I}" in
-    1|7|13|19) LV="low" ;;
-    4|10|16) LV="high" ;;
+    1) LV="low" ;;
+    3) LV="high" ;;
   esac
   if [ -n "${LV}" ]; then
     THINK_JSON="$(${CLI} thinking --ws "${WS}" --sid "${SID}" --level "${LV}" --base "${BASE}" --json)" || exit 1
@@ -184,22 +184,26 @@ console.log('seed thinking ok: ${LV}');
     CUR="${LV}"
   fi
   N="$(printf '%02d' "${I}")"
-  do_turn "Write one short sentence about a lighthouse keeper. Turn ${N}" "arc-${N}" "turn-${N}"
-  if [ "$((I % 2))" = "0" ] || [ "${I}" = "20" ]; then
-    ${CLI} entries --ws "${WS}" --sid "${SID}" --after 0 --limit 1000 --base "${BASE}" --json > "${OUT}/entries-poll.json" || exit 1
-    if node -e "const r=require('${OUT}/entries-poll.json'); if(!Array.isArray(r.entries)||!r.entries.some((e)=>e.type==='compaction'))process.exit(1);" 2>/dev/null; then
-      echo "first compaction visible after turn ${I}"
-      break
-    fi
-  fi
+  do_turn "Reply with exactly one short sentence about a lighthouse keeper. Do not call any tools. Turn ${N}" "arc-${N}" "turn-${N}"
   I=$((I + 1))
 done
+TOG=0
+while [ "${TOG}" -lt 30 ]; do
+  LIVE="$(${CLI} entries --ws "${WS}" --sid "${SID}" --after 0 --limit 1000 --base "${BASE}" --json | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).entries.length")"
+  if [ "${LIVE}" -gt 26 ]; then echo "ledger topped: live=${LIVE} after ${TOG} toggles"; break; fi
+  if [ "${CUR}" = "high" ]; then LV2="low"; else LV2="high"; fi
+  ${CLI} thinking --ws "${WS}" --sid "${SID}" --level "${LV2}" --base "${BASE}" --json > /dev/null || exit 1
+  CUR="${LV2}"
+  TOG=$((TOG + 1))
+done
+LIVE="$(${CLI} entries --ws "${WS}" --sid "${SID}" --after 0 --limit 1000 --base "${BASE}" --json | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).entries.length")"
+if [ "${LIVE}" -le 26 ]; then echo "ledger never topped 26, live=${LIVE}"; exit 1; fi
 echo "flooring with the manual compact (force path, same runCompaction the alarm runs; the alarm itself is proven keyless)"
 ${CLI} compact --ws "${WS}" --sid "${SID}" --base "${BASE}" --json > "${OUT}/compact-floor.json" || exit 1
 cat "${OUT}/compact-floor.json"
 node -e "
 const c = require('${OUT}/compact-floor.json');
-if (!c.compacted) throw new Error('manual floor compact must fire on 20+ live entries');
+if (!c.compacted) throw new Error('manual floor compact must fire on 27+ live entries');
 console.log('floor ok: archived ' + c.archived + ' live ' + c.live + ' summary ' + c.summaryCursor);
 " || exit 1
 ${CLI} entries --ws "${WS}" --sid "${SID}" --after 0 --limit 1000 --base "${BASE}" --json > "${OUT}/entries-poll.json" || exit 1
@@ -246,7 +250,7 @@ console.log('row ok: thinking=${MID}, model untouched');
 " || exit 1
 
 echo "### 7 one more keyed turn past the floor, then settle the alarm"
-do_turn "Write one short sentence about a lighthouse keeper. Turn mid" "arc-mid" "turn-mid"
+do_turn "Reply with exactly one short sentence about a lighthouse keeper. Do not call any tools. Turn mid" "arc-mid" "turn-mid"
 TRIES=0
 while [ "${TRIES}" -lt 25 ]; do
   ${CLI} entries --ws "${WS}" --sid "${SID}" --after 0 --limit 1000 --base "${BASE}" --json > "${OUT}/entries-settle-a.json" 2>/dev/null || exit 1
@@ -388,7 +392,7 @@ EOF
 node "${OUT}/check.mjs" || exit 1
 
 echo "### 11 follow-up keyed turn resolves from the compacted path"
-do_turn "Write one short sentence about a lighthouse keeper. Turn post" "arc-post" "turn-post"
+do_turn "Reply with exactly one short sentence about a lighthouse keeper. Do not call any tools. Turn post" "arc-post" "turn-post"
 node -e "
 const b = JSON.parse(require('node:fs').readFileSync('${OUT}/turn-post.json', 'utf8'));
 if (b.runtime.thinking !== '${CUR}') throw new Error('follow-up thinking ' + b.runtime.thinking + ' want stored ${CUR}');

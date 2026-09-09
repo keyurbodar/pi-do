@@ -13,6 +13,6 @@ mkdir -p "${OUTDIR}"
 set -- doctor git-smoke git-writes cli-proof entries-replay entry-parents \
   session-persist store-proof files-roundtrip exec-smoke fence-cas \
   stream-protocol context-build retention-long model-switch shell-caps \
-  tools-smoke queue-order compaction-proof
+  tools-smoke queue-order compaction-proof keyed-runtime
 export OUTDIR BASE
 printf '%s\n' "$@" | xargs -P 8 -I{} sh -c 'n="$1"; sh verify/"$n".sh "$BASE" > "$OUTDIR/$n.txt" 2>&1; code=$?; if [ "$n" = "doctor" ]; then if [ "$code" = "0" ]; then echo "PASS $n"; else echo "FAIL $n"; fi; elif grep -qm1 "^PASS" "$OUTDIR/$n.txt"; then echo "PASS $n"; else echo "FAIL $n"; fi' sh {}
