@@ -1,8 +1,8 @@
-import { appendEntry, closeRun, getEntry, openRun, sessionLeaf, type EntriesSql } from "../../packages/pi-cf/src/entries";
-import { enforceFence } from "../../packages/pi-cf/src/fence";
-import type { FileStore } from "../../packages/pi-cf/src/vfs-dofs";
+import { appendEntry, closeRun, getEntry, openRun, sessionLeaf, type EntriesSql } from "pi-cf/store/entries";
+import { enforceFence } from "pi-cf/store/fence";
+import type { FileStore } from "pi-cf/store/vfs-dofs";
 import { clampThinkingLevel, defaultTurnModel, keyedProviders, resolveCatalogModel, resolveKeyedModel, resolveProviderKey, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
-import { createAgentSession, type SessionTurn } from "../../packages/pi-cf/src/session";
+import { createAgentSession, type SessionTurn } from "pi-cf/agent/session";
 import { compactionPending, maybeMarkForCompaction } from "./compaction";
 
 export interface StreamShell {

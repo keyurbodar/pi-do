@@ -5,12 +5,12 @@ import {
   ComputerExecutionEnv,
   type FileStoreLike,
   type ShellLike,
-} from "./env.ts";
-import { bashTool, editTool, listTool, readTool, removeTool, textOf, writeTool, type ToolContext } from "./tools.ts";
-import { pmTool, testTool } from "./dev-tools.ts";
-import { definitionTool, diagnosticsCompilerTool, referencesTool } from "./ts-tools.ts";
-import { bgTool } from "./bg-tools.ts";
-import { findTool, grepTool } from "./search-tools.ts";
+} from "../runtime/env.ts";
+import { bashTool, editTool, listTool, readTool, removeTool, textOf, writeTool, type ToolContext } from "../tools/tools.ts";
+import { pmTool, testTool } from "../tools/dev-tools.ts";
+import { definitionTool, diagnosticsCompilerTool, referencesTool } from "../tools/ts-tools.ts";
+import { bgTool } from "../tools/bg-tools.ts";
+import { findTool, grepTool } from "../tools/search-tools.ts";
 import { planStubTurn } from "./stub-plan.ts";
 import { buildSessionContext, capSessionContext, estimateTokens, type ContextMessage, type EntryReader } from "./context.ts";
 export const sessionTools = {

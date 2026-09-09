@@ -2,15 +2,15 @@
 // store. Proves write-then-read round-trip, edit patch plus diff output,
 // list recursive plus cap, remove plus traversal rejection, read ranges plus
 // bound, and serialized overlapping writes. Exit nonzero on the first gap.
-import { ComputerExecutionEnv } from "./src/env.ts";
+import { ComputerExecutionEnv } from "./src/runtime/env.ts";
 import {
   editTool,
   listTool,
   readTool,
   removeTool,
   writeTool,
-} from "./src/tools.ts";
-import { sessionTools } from "./src/session.ts";
+} from "./src/tools/tools.ts";
+import { sessionTools } from "./src/agent/session.ts";
 
 function fail(step, want, got) {
   console.error(`FAIL ${step}: want ${want} got ${got}`);

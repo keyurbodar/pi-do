@@ -1,4 +1,4 @@
-import { createDofsVfs, type FileStore } from "./vfs-dofs.ts";
+import { createDofsVfs, type FileStore } from "./store/vfs-dofs.ts";
 import {
   ensureEntriesSchema,
   entryHead,
@@ -10,17 +10,17 @@ import {
   sumResultUsage,
   withSessionRates,
   type EntriesSql,
-} from "./entries.ts";
-import { ensureWorkspaceSchema } from "./sql-util.ts";
-import { enforceFence } from "./fence.ts";
+} from "./store/entries.ts";
+import { ensureWorkspaceSchema } from "./store/sql-util.ts";
+import { enforceFence } from "./store/fence.ts";
 import {
   createAgentSession,
   sessionTools,
   type SessionModel,
   type SessionTools,
-} from "./session.ts";
-import type { ShellLike } from "./env.ts";
-import { normalizeWorkspacePath } from "./tools.ts";
+} from "./agent/session.ts";
+import type { ShellLike } from "./runtime/env.ts";
+import { normalizeWorkspacePath } from "./tools/tools.ts";
 
 export { createAgentSession, sessionTools };
 export type { SessionModel, SessionTools, ShellLike };

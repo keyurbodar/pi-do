@@ -661,13 +661,13 @@ fi
 
 if [ "${STOP}" = "0" ]; then
 echo "### 11 proof 7: CACHE-01 SKIP asserted by grepping the source, not by traffic"
-CS_LINE="$(grep -n "completeSimple(" "${ROOT}/packages/pi-cf/src/session.ts" | head -1 | cut -d: -f1)"
+CS_LINE="$(grep -n "completeSimple(" "${ROOT}/packages/pi-cf/src/agent/session.ts" | head -1 | cut -d: -f1)"
 [ -n "${CS_LINE}" ] || { echo "completeSimple call site gone; re-examine the cache path"; exit 1; }
 FROM=$((CS_LINE - 30))
 TO=$((CS_LINE + 12))
 echo "completeSimple call site at session.ts:${CS_LINE}; scanning lines ${FROM}-${TO} for a session id"
-sed -n "${FROM},${TO}p" "${ROOT}/packages/pi-cf/src/session.ts"
-if sed -n "${FROM},${TO}p" "${ROOT}/packages/pi-cf/src/session.ts" | grep -i -q "sessionId\|session_id"; then
+sed -n "${FROM},${TO}p" "${ROOT}/packages/pi-cf/src/agent/session.ts"
+if sed -n "${FROM},${TO}p" "${ROOT}/packages/pi-cf/src/agent/session.ts" | grep -i -q "sessionId\|session_id"; then
 echo "session id now threads near completeSimple; the SKIP reason is stale"
 exit 1
 fi

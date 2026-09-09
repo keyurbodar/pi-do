@@ -1,6 +1,6 @@
 // verify-env.mjs — drives ComputerExecutionEnv against an in-memory fake store.
 // Exit nonzero on the first mismatch.
-import { ComputerExecutionEnv } from "./src/env.ts";
+import { ComputerExecutionEnv } from "./src/runtime/env.ts";
 
 function fail(step, want, got) {
   console.error(`FAIL ${step}: want ${want} got ${got}`);

@@ -7,7 +7,7 @@ import { minimatch } from "minimatch";
 import {
   type ToolContext,
 } from "./tools.ts";
-import { CAPS, cappedLimit, decodeUtf8, failKey, resolveScope } from "./validate.ts";
+import { CAPS, cappedLimit, decodeUtf8, failKey, resolveScope } from "../runtime/validate.ts";
 
 export const FIND_DEFAULT_LIMIT = CAPS.findDefault;
 export const FIND_HARD_MAX_LIMIT = CAPS.findHard;

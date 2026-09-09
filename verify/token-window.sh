@@ -111,7 +111,7 @@ node -p "'entries=' + require('${OUT}/entries.json').entries.length + ' leaf=' +
 echo "### 8 capSessionContext over the real rows: oldest-first drops, summary intact"
 cat > "${OUT}/check.mjs" <<'EOF'
 import fs from "node:fs";
-import { buildSessionContextFromEntries, capSessionContext, estimateTokens } from "../../../packages/pi-cf/src/context.ts";
+import { buildSessionContextFromEntries, capSessionContext, estimateTokens } from "../../../packages/pi-cf/src/agent/context.ts";
 const out = process.env.OUT;
 const rows = JSON.parse(fs.readFileSync(`${out}/entries.json`, "utf8")).entries;
 const leaf = JSON.parse(fs.readFileSync(`${out}/meta.json`, "utf8")).leaf;

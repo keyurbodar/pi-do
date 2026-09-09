@@ -5,11 +5,11 @@ import { fileURLToPath } from "node:url";
 import { Bash } from "just-bash";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const { ComputerExecutionEnv } = await import("../packages/pi-cf/src/env.ts");
-const { findTool, grepTool } = await import("../packages/pi-cf/src/search-tools.ts");
-const { diagnosticsCompilerTool: diagnosticsTool } = await import("../packages/pi-cf/src/ts-tools.ts");
-const { testTool, pmTool } = await import("../packages/pi-cf/src/dev-tools.ts");
-const { editTool } = await import("../packages/pi-cf/src/tools.ts");
+const { ComputerExecutionEnv } = await import("../packages/pi-cf/src/runtime/env.ts");
+const { findTool, grepTool } = await import("../packages/pi-cf/src/tools/search-tools.ts");
+const { diagnosticsCompilerTool: diagnosticsTool } = await import("../packages/pi-cf/src/tools/ts-tools.ts");
+const { testTool, pmTool } = await import("../packages/pi-cf/src/tools/dev-tools.ts");
+const { editTool } = await import("../packages/pi-cf/src/tools/tools.ts");
 const [BASE, WS, OUT, SUITE, NEEDLE] = process.argv.slice(2);
 if (!BASE || !WS || !OUT || (SUITE !== "search" && SUITE !== "ready" && SUITE !== "ts")) {
   console.error("usage: node verify/tools-harness.mjs BASE WS OUT search|ready|ts [NEEDLE]");
@@ -145,7 +145,7 @@ if (SUITE === "search") {
   has("pm-unknown", unknown.out, "unknown script: nope");
   console.log("PASS ready-pm-unknown-script-closed");
 } else {
-  const { diagnosticsCompilerTool, definitionTool, referencesTool } = await import("../packages/pi-cf/src/ts-tools.ts");
+  const { diagnosticsCompilerTool, definitionTool, referencesTool } = await import("../packages/pi-cf/src/tools/ts-tools.ts");
   const env = new ComputerExecutionEnv(
     liveStore(["verify-ts/clean.ts", "verify-ts/spot.ts", "verify-ts/util.ts", "verify-ts/main.ts", "verify-ts/notes.txt"]),
     WS,

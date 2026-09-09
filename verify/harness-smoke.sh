@@ -92,7 +92,7 @@ console.log('404 hint ok: ' + b.error);
 echo "### 8 bash description names backend limits"
 node -e "
 const fs = require('node:fs');
-const src = fs.readFileSync('packages/pi-cf/src/tools.ts', 'utf8');
+const src = fs.readFileSync('packages/pi-cf/src/tools/tools.ts', 'utf8');
 const m = src.match(/name: \"bash\"[\s\S]*?description: \"([^\"]+)\"/);
 if (!m) throw new Error('bash description not found');
 const d = m[1];

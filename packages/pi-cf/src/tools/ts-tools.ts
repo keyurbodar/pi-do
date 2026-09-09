@@ -3,12 +3,12 @@ import type {
   AgentToolResult,
 } from "@earendil-works/pi-agent-core";
 import { normalizeWorkspacePath, type ToolContext } from "./tools.ts";
-import { ComputerExecutionEnv } from "./env.ts";
-import { CAPS, cappedLimit, checkedTextOffset, decodeUtf8, failKey, readTextOrNull, resolveScope } from "./validate.ts";
+import { ComputerExecutionEnv } from "../runtime/env.ts";
+import { CAPS, cappedLimit, checkedTextOffset, decodeUtf8, failKey, readTextOrNull, resolveScope } from "../runtime/validate.ts";
 import {
   TS_LIB_FILE_NAMES,
   TS_LIB_TEXTS,
-} from "./ts-libs.generated.ts";
+} from "../vendor/ts-libs.generated.ts";
 import type * as ts from "typescript";
 
 type TypeScript = typeof import("typescript");

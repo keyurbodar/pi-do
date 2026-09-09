@@ -3,6 +3,14 @@
   "private": true,
   "type": "module",
   "version": "0.0.0",
+  "exports": {
+    ".": "./src/index.ts",
+    "./agent/*": "./src/agent/*.ts",
+    "./tools/*": "./src/tools/*.ts",
+    "./store/*": "./src/store/*.ts",
+    "./runtime/*": "./src/runtime/*.ts",
+    "./vendor/*": "./src/vendor/*.ts"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "verify": "node verify-env.mjs",

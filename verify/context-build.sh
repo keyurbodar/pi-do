@@ -86,7 +86,7 @@ node -p "'entries=' + require('${OUT}/entries.json').entries.length + ' leaf=' +
 echo "### 8 buildSessionContextFromEntries over the real rows: summary before tail"
 cat > "${OUT}/check.mjs" <<'EOF'
 import fs from "node:fs";
-import { buildSessionContextFromEntries } from "../../../packages/pi-cf/src/context.ts";
+import { buildSessionContextFromEntries } from "../../../packages/pi-cf/src/agent/context.ts";
 const out = process.env.OUT;
 const prompt1 = process.env.PROMPT1;
 const prompt2 = process.env.PROMPT2;

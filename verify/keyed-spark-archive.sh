@@ -316,7 +316,7 @@ echo "### 10 context build opens with the latest summary, tail verbatim"
 export OUT
 cat > "${OUT}/check.mjs" <<'EOF'
 import fs from "node:fs";
-import { buildSessionContextFromEntries } from "../../../packages/pi-cf/src/context.ts";
+import { buildSessionContextFromEntries } from "../../../packages/pi-cf/src/agent/context.ts";
 const out = process.env.OUT;
 const rows = JSON.parse(fs.readFileSync(`${out}/entries-second.json`, "utf8")).entries;
 const leaf = JSON.parse(fs.readFileSync(`${out}/meta-second.json`, "utf8")).leaf;

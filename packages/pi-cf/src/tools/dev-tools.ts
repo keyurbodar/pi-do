@@ -3,7 +3,7 @@ import type {
   AgentToolResult,
 } from "@earendil-works/pi-agent-core";
 import { normalizeWorkspacePath, type ToolContext } from "./tools.ts";
-import { CAPS, capText, failKey, joinOutput } from "./validate.ts";
+import { CAPS, capText, failKey, joinOutput } from "../runtime/validate.ts";
 
 export const TEST_MAX_OUTPUT_CHARS = CAPS.testChars;
 

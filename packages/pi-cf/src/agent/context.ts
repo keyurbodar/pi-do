@@ -1,5 +1,5 @@
-import type { EntryRow } from "./entries.ts";
-import { ENTRY_PROJECTION, parseJsonObject, strField } from "./sql-util.ts";
+import type { EntryRow } from "../store/entries.ts";
+import { ENTRY_PROJECTION, parseJsonObject, strField } from "../store/sql-util.ts";
 
 export type ContextRole = "user" | "assistant" | "compactionSummary" | "toolCall" | "toolResult";
 

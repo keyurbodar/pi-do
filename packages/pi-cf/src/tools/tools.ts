@@ -15,8 +15,8 @@ import {
   err,
   ok,
 } from "@earendil-works/pi-agent-core";
-import { ComputerExecutionEnv } from "./env.ts";
-import type { Edit } from "./edit-diff.ts";
+import { ComputerExecutionEnv } from "../runtime/env.ts";
+import type { Edit } from "../vendor/edit-diff.ts";
 import {
   CAPS,
   cappedLimit,
@@ -25,7 +25,7 @@ import {
   decodeUtf8,
   failKey,
   normalizeWorkspacePath,
-} from "./validate.ts";
+} from "../runtime/validate.ts";
 export { normalizeWorkspacePath };
 
 export interface ToolContext {

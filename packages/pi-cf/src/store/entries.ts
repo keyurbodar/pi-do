@@ -1,4 +1,4 @@
-import type { SessionHalt, SessionUsage } from "./session";
+import type { SessionHalt, SessionUsage } from "../agent/session";
 import type { EntryRow } from "./sql-util.ts";
 import { CREATE_TABLES, drainPages, ensureTables, mapEntryRows, numField, parseJsonObject, readScalar, readSingleRow, toEntryRow } from "./sql-util.ts";
 

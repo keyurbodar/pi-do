@@ -9,7 +9,7 @@ import {
   listEntries,
   openRun,
   recordTurn,
-} from "./src/entries.ts";
+} from "./src/store/entries.ts";
 
 function fail(step, want, got) {
   console.error(`FAIL ${step}: want ${want} got ${got}`);
