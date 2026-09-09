@@ -113,8 +113,10 @@ console.log('prefix list ok: ' + paths.join(','));
 " || exit 1
 
 echo "### 10 persisted storage: index present, plans hit indexes"
+# Custom --persist-to dirs (lane and merge servers) live outside the repo.
+# Pass STORE_SQLITE_DIR=/tmp/<state> to search there too.
 SQLITE=""
-for f in $(find worker/.wrangler .wrangler -name "*.sqlite" 2>/dev/null); do
+for f in $(find ${STORE_SQLITE_DIR:-} worker/.wrangler .wrangler -name "*.sqlite" 2>/dev/null); do
   if sqlite3 "${f}" "SELECT name FROM sqlite_master WHERE type='table' AND name='pi_entries';" | grep -q pi_entries; then
     if sqlite3 "${f}" "SELECT 1 FROM files WHERE ws = '${WS}' LIMIT 1;" 2>/dev/null | grep -q 1; then
       SQLITE="${f}"
