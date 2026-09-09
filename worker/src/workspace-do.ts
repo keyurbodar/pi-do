@@ -1,9 +1,10 @@
 import { createDofsVfs, type FileStore } from "pi-cf/store/vfs-dofs";
 import { ensureEntriesSchema } from "pi-cf/store/entries";
+import { ensureChunksSchema } from "pi-cf/store/chunks";
 import { ensureWorkspaceSchema } from "pi-cf/store/sql-util";
 import { ensureCompactionSchema, runPendingCompactions } from "./compaction";
 import { COMPACTION_JOB, COMPACTION_REARM_MS, KEEPALIVE_JOB, KEEPALIVE_MS, cancelJob, earliestDeadline, ensureAlarmMuxSchema, runDueJobs, scheduleJob } from "./alarm-mux";
-import { readAttachment, socketMessage, wrapSocket, type StreamHost } from "./stream";
+import { readAttachment, socketMessage, wrapSocket, type LiveTurn, type StreamHost } from "./stream";
 import type { Agent } from "@earendil-works/pi-agent-core";
 import { resolveCatalogModel, type RuntimeEnv } from "./model-runtime";
 import { err, UNKNOWN_SESSION_HINT, type Env, type FenceNext, type FenceRead, type ModelTriple, type RouteCtx, type RouteHandler, type WorkspaceSettings } from "./routes/_shared";
@@ -68,7 +69,7 @@ export class WorkspaceDO implements DurableObject {
   private state: DurableObjectState;
   private files: FileStore;
   private env: Env;
-  private live = new Map<string, { controller: AbortController; agent?: Agent }>();
+  private live = new Map<string, LiveTurn>();
   private sessionQueues = new Map<string, Promise<void>>();
 
   private enqueueSessionTurn<T>(sid: string, fn: () => Promise<T>): Promise<T> {
@@ -96,6 +97,7 @@ export class WorkspaceDO implements DurableObject {
     ensureWorkspaceSchema(sql);
     this.files.ensureSchema();
     ensureEntriesSchema(sql);
+    ensureChunksSchema(sql);
     ensureCompactionSchema(sql);
     ensureAlarmMuxSchema(sql);
     sql.exec("DROP TABLE IF EXISTS pi_owners");
