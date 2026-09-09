@@ -126,10 +126,12 @@ function ToolIcon({ tool }: { tool: string }) {
 }
 
 function CallRow({ call }: { call: ToolCallView }) {
-  // null = no user choice yet: file tools auto-expand their output once done.
+  // null = no user choice yet: file tools auto-expand their output once
+  // done; a running call with live partial output (bash toolUpdate) stays
+  // expanded so the output grows in view.
   const [toggled, setToggled] = useState<boolean | null>(null);
   const detail = detailOf(call);
-  const expanded = toggled ?? (call.done && detail !== null && AUTO_EXPAND.has(call.tool));
+  const expanded = toggled ?? (detail !== null && (call.done ? AUTO_EXPAND.has(call.tool) : true));
   const target = targetOf(call);
   const hasDetail = detail !== null;
   return (

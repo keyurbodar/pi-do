@@ -105,6 +105,8 @@ export const MIGRATIONS: readonly Migration[] = [
   { table: "sessions", column: "thinkingLevel", ddl: "ALTER TABLE sessions ADD COLUMN thinkingLevel TEXT" },
   { table: "sessions", column: "cacheRetention", ddl: "ALTER TABLE sessions ADD COLUMN cacheRetention TEXT" },
   { table: "sessions", column: "leaf", ddl: "ALTER TABLE sessions ADD COLUMN leaf INTEGER NOT NULL DEFAULT 0" },
+  { table: "compaction_marks", column: "pages", ddl: "ALTER TABLE compaction_marks ADD COLUMN pages INTEGER NOT NULL DEFAULT 0" },
+  { table: "compaction_marks", column: "total", ddl: "ALTER TABLE compaction_marks ADD COLUMN total INTEGER NOT NULL DEFAULT 0" },
 ];
 
 export function migrate(sql: Sql, migrations: readonly Migration[] = MIGRATIONS): void {
@@ -121,8 +123,9 @@ export const CREATE_TABLES = {
   piEntries: "CREATE TABLE IF NOT EXISTS pi_entries (id INTEGER PRIMARY KEY AUTOINCREMENT, ws TEXT, sid TEXT, cursor INTEGER, parent INTEGER NOT NULL DEFAULT 0, type TEXT, body TEXT)",
   runs: "CREATE TABLE IF NOT EXISTS runs (sid TEXT, runId TEXT PRIMARY KEY, status TEXT)",
   piEntriesSidId: "CREATE INDEX IF NOT EXISTS pi_entries_sid_id ON pi_entries(sid, id)",
+  compactionMarks: "CREATE TABLE IF NOT EXISTS compaction_marks(sid TEXT PRIMARY KEY, pending INTEGER NOT NULL DEFAULT 0, pages INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL DEFAULT 0)",
+  sessionTotals: "CREATE TABLE IF NOT EXISTS session_totals(sid TEXT PRIMARY KEY, inTokens INTEGER NOT NULL DEFAULT 0, outTokens INTEGER NOT NULL DEFAULT 0, cacheRead INTEGER NOT NULL DEFAULT 0, costTotal REAL NOT NULL DEFAULT 0, elapsedMs INTEGER NOT NULL DEFAULT 0, turns INTEGER NOT NULL DEFAULT 0)",
   files: "CREATE TABLE IF NOT EXISTS files(ws TEXT, path TEXT, body BLOB, updated_at TEXT, PRIMARY KEY(ws, path))",
-  compactionMarks: "CREATE TABLE IF NOT EXISTS compaction_marks(sid TEXT PRIMARY KEY, pending INTEGER NOT NULL DEFAULT 0)",
   piArchive: "CREATE TABLE IF NOT EXISTS pi_archive(sid TEXT, page INTEGER, entries TEXT, PRIMARY KEY(sid, page))",
 } as const;
 

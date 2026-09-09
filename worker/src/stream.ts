@@ -1,8 +1,9 @@
-import { appendEntry, closeRun, getEntry, openRun, sessionLeaf, type EntriesSql } from "pi-cf/store/entries";
+import { appendEntry, closeRun, getEntry, listEntries, openRun, sessionLeaf, type EntriesSql } from "pi-cf/store/entries";
 import { enforceFence } from "pi-cf/store/fence";
 import type { FileStore } from "pi-cf/store/vfs-dofs";
 import { clampThinkingLevel, defaultTurnModel, keyedProviders, resolveCatalogModel, resolveKeyedModel, resolveProviderKey, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
-import { createAgentSession, type SessionTurn } from "pi-cf/agent/session";
+import { createAgentSession, type SessionRunBudgets, type SessionTurn } from "pi-cf/agent/session";
+import type { Agent } from "@earendil-works/pi-agent-core";
 import { compactionPending, maybeMarkForCompaction } from "./compaction";
 
 export interface StreamShell {
@@ -26,7 +27,8 @@ export interface StreamHost {
   sessionKnown: boolean;
   readFence(): { fence: string | null; revision: number } | null;
   casRotateFence(oldFence: string, oldRevision: number, next: { fence: string; revision: number }): boolean;
-  live: Map<string, AbortController>;
+  live: Map<string, { controller: AbortController; agent?: Agent }>;
+  sockets(): WebSocket[];
   enqueue: <T>(fn: () => Promise<T>) => Promise<T>;
   scheduleAlarm(): Promise<void>;
 }
@@ -78,9 +80,31 @@ export function resolveTurnModel(env: RuntimeEnv, catalog: RuntimeModel | null):
     return { model: d, provider: d.provider, stub: true, like: {} };
   }
   const keyed = keyedProviders(env);
-  if (keyed.length === 0) return { model: { id: catalog.id }, provider: catalog.provider, stub: true, like: catalog };
+  if (!keyed.some((provider) => provider.id === catalog.provider)) {
+    return { model: { id: catalog.id }, provider: catalog.provider, stub: true, like: catalog };
+  }
   const m = resolveKeyedModel(env, catalog.provider, catalog.id);
   return { model: m, provider: m.provider, stub: false, like: catalog };
+}
+
+const BUDGET_CAPS = { maxTurns: 200, maxToolCalls: 1000, maxDurationMs: 1800000, maxCost: 100 } as const;
+
+export function parseBudgets(raw: unknown): { ok: true; budgets: SessionRunBudgets | undefined } | { ok: false; error: string; hint: string } {
+  if (raw === undefined) return { ok: true, budgets: undefined };
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return { ok: false, error: "bad budgets", hint: 'retry with {"budgets": {"maxTurns": 25}}; every field must be a finite number > 0' };
+  }
+  const rec = raw as Record<string, unknown>;
+  const budgets: SessionRunBudgets = {};
+  for (const field of ["maxTurns", "maxToolCalls", "maxDurationMs", "maxCost"] as const) {
+    const value = rec[field];
+    if (value === undefined) continue;
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+      return { ok: false, error: `bad budgets.${field}`, hint: `set budgets.${field} to a finite number > 0, capped at ${BUDGET_CAPS[field]}` };
+    }
+    budgets[field] = Math.min(value, BUDGET_CAPS[field]);
+  }
+  return { ok: true, budgets };
 }
 
 const CLOSE_UNKNOWN = 4404;
@@ -108,10 +132,29 @@ export function wrapSocket(ws: WebSocket): StreamSocket {
   };
 }
 
+function broadcast(host: StreamHost, frame: unknown): void {
+  for (const ws of host.sockets()) {
+    const att = readAttachment(ws);
+    if (att === null || att.ws !== host.ws || att.sid !== host.sid) continue;
+    wrapSocket(ws).send(frame);
+  }
+}
+
 function emitEntry(host: StreamHost, sock: StreamSocket, type: string, body: unknown): void {
-  const cursor = appendEntry(host.sql, host.sid, type, body);
-  const row = getEntry(host.sql, host.sid, cursor);
-  if (row !== null) sock.send({ entry: row });
+  let cursor: number;
+  try {
+    cursor = appendEntry(host.sql, host.sid, type, body);
+  } catch {
+    sock.send({ error: "entry persistence failed", hint: "the frame could not be stored; check DO storage health and retry the turn" });
+    return;
+  }
+  let row: ReturnType<typeof getEntry> = null;
+  try {
+    row = getEntry(host.sql, host.sid, cursor);
+  } catch {
+    row = null;
+  }
+  if (row !== null) broadcast(host, { entry: row });
 }
 
 export function readAttachment(ws: WebSocket): StreamAttachment | null {
@@ -197,10 +240,6 @@ export function acceptStream(request: Request, host: StreamHost, state: DurableO
   return new Response(null, { status: 101, webSocket: client });
 }
 
-export function socketClosed(host: StreamHost): void {
-  host.live.get(host.sid)?.abort();
-}
-
 export async function socketMessage(
   host: StreamHost,
   sock: StreamSocket,
@@ -226,7 +265,7 @@ export async function socketMessage(
 
   if (isAbort) {
     const live = host.live.get(host.sid);
-    if (live !== undefined) live.abort();
+    if (live !== undefined) live.controller.abort();
     else {
       sock.send({ error: "no turn in flight", hint: "send {prompt} first; abort only cancels a running turn" });
     }
@@ -244,6 +283,13 @@ export async function socketMessage(
       return;
     }
     emitEntry(host, sock, "steer", { runId, text });
+    const live = host.live.get(host.sid);
+    if (live?.agent !== undefined) {
+      live.agent.steer({ role: "user", content: text, timestamp: Date.now() });
+      sock.send({ steered: true, runId });
+    } else {
+      sock.send({ steered: false, runId, hint: "no live agent to steer mid-turn; the steer text is persisted and applied on the next turn" });
+    }
     return;
   }
   if (promptValue !== undefined) {
@@ -251,8 +297,13 @@ export async function socketMessage(
       sock.send({ error: "missing prompt", hint: 'retry with a non-empty prompt, e.g. {"prompt": "read seed.txt"}' });
       return;
     }
+    const budgets = parseBudgets(msg["budgets"]);
+    if (!budgets.ok) {
+      sock.send({ error: budgets.error, hint: budgets.hint });
+      return;
+    }
     const hasFence = "fence" in msg || "expected" in msg;
-    await startTurn(host, sock, promptValue, msg["fence"], msg["expected"], hasFence);
+    await startTurn(host, sock, promptValue, msg["fence"], msg["expected"], hasFence, budgets.budgets);
     return;
   }
   sock.send({ error: "unknown frame", hint: "send {prompt, fence, expected}, {abort}, or {steer, text}" });
@@ -264,11 +315,22 @@ export interface TurnInput {
   thinking: string | null;
   runId: string;
   signal?: AbortSignal;
+  budgets?: SessionRunBudgets;
+}
+
+export interface TurnRuntime {
+  via: string;
+  model: string;
+  provider: string;
+  thinking: string | null;
+  stub: boolean;
+  hint?: string;
 }
 
 export interface TurnSink {
   push(type: string, body: unknown): void;
-  done(runId: string, turn: SessionTurn, runtime: { via: string; model: string; provider: string; thinking: string | null }): void;
+  live?(frame: unknown): void;
+  done(runId: string, turn: SessionTurn, runtime: TurnRuntime): void;
   fail(runId: string, error: string, hint: string, status: number, opened: boolean): void;
   aborted(runId: string): void;
 }
@@ -288,28 +350,41 @@ export async function executeTurn(host: StreamHost, input: TurnInput, sink: Turn
     sink.fail(input.runId, out.error, out.hint, 404, false);
     return;
   }
-  const session = createAgentSession({
-    files: host.files,
-    ws: host.ws,
-    shell: host.shell,
-    model: resolved.model,
-    apiKey: resolved.stub ? undefined : resolveProviderKey(host.runtimeEnv, resolved.provider),
-    history: { leaf: sessionLeaf(host.sql, host.sid), readEntry: (cursor) => getEntry(host.sql, host.sid, cursor) },
-    sessionId: host.sid,
-    cacheRetention: host.retention,
-  });
   try {
+    const session = createAgentSession({
+      files: host.files,
+      ws: host.ws,
+      shell: host.shell,
+      model: resolved.model,
+      apiKey: resolved.stub ? undefined : resolveProviderKey(host.runtimeEnv, resolved.provider),
+      history: { leaf: sessionLeaf(host.sql, host.sid), readEntries: (after, limit) => listEntries(host.sql, host.sid, { after, limit }) },
+      sessionId: host.sid,
+      cacheRetention: host.retention,
+    });
     const turn = await session.run(input.prompt, {
       signal: input.signal,
       thinking: input.thinking,
+      budgets: input.budgets,
+      onAgent: (agent) => {
+        const live = host.live.get(host.sid);
+        if (live !== undefined && live.controller.signal === input.signal) live.agent = agent;
+      },
       onUpdate: (event) => {
         if (event.kind === "toolCall") sink.push("toolCall", { runId: input.runId, id: event.id, tool: event.tool, args: event.args });
-        else if (event.kind === "toolResult") sink.push("toolResult", { runId: input.runId, id: event.id, tool: event.tool, output: event.output });
+        else if (event.kind === "toolResult") sink.push("toolResult", { runId: input.runId, id: event.id, tool: event.tool, args: event.args, output: event.output });
+        else if (event.kind === "toolUpdate") sink.live?.({ live: { runId: input.runId, kind: "toolUpdate", id: event.id, text: event.text } });
         else if (event.kind === "text") sink.push("text", { runId: input.runId, delta: event.delta });
         else sink.push("thinking", { runId: input.runId, delta: event.delta });
       },
     });
-    sink.done(input.runId, turn, { via: turn.via, model: turn.model, provider: resolved.provider, thinking: input.thinking });
+    sink.done(input.runId, turn, {
+      via: turn.via,
+      model: turn.model,
+      provider: resolved.provider,
+      thinking: input.thinking,
+      stub: resolved.stub,
+      ...(resolved.stub && input.catalog !== null ? { hint: `no key for provider ${resolved.provider}; running the stub model` } : {}),
+    });
     if (maybeMarkForCompaction(host.sql, host.sid)) await host.scheduleAlarm();
     else if (compactionPending(host.sql, host.sid)) await host.scheduleAlarm();
   } catch (e) {
@@ -329,53 +404,70 @@ async function startTurn(
   fence: unknown,
   expected: unknown,
   hasFence: boolean,
+  budgets?: SessionRunBudgets,
 ): Promise<void> {
+  const runId = crypto.randomUUID();
+  const turnController = new AbortController();
+  host.live.set(host.sid, { controller: turnController });
   await host.enqueue(async () => {
-    const rot = checkedRotate(host.readFence(), hasFence ? { fence, expected } : undefined, "retry the turn with both {fence, expected}, or omit both", null);
-    if (rot !== null && "status" in rot) {
-      if (rot.status === 400) {
-        sock.send(rot.body);
+    const emit = (type: string, body: unknown): void => emitEntry(host, sock, type, body);
+    try {
+      if (turnController.signal.aborted) {
+        host.sql.exec("UPDATE runs SET status = ? WHERE sid = ? AND runId = ?", "interrupted", host.sid, runId);
+        emit("interrupted", { runId });
+        sock.send({ aborted: true, runId });
         return;
       }
-      sock.send(rot.body);
-      sock.close(rot.status === 403 ? CLOSE_FENCED : CLOSE_CONFLICT, rot.body.hint);
-      return;
-    }
-    const held: { fence: string; revision: number } | null = rot === null
-      ? null
-      : { fence: fence as string, revision: expected as number };
-    const runId = crypto.randomUUID();
-    const turnController = new AbortController();
-    host.live.set(host.sid, turnController);
-    const emit = (type: string, body: unknown): void => emitEntry(host, sock, type, body);
-    const sink: TurnSink = {
-      push: emit,
-      done: (doneId, turn, runtime) => {
-        emit("result", turn.halt ? { runId: doneId, result: turn.result, usage: turn.usage, halt: turn.halt } : { runId: doneId, result: turn.result, usage: turn.usage });
-        closeRun(host.sql, host.sid, doneId);
-        if (held !== null) {
-          const next = { fence: crypto.randomUUID(), revision: held.revision + 1 };
-          if (!host.casRotateFence(held.fence, held.revision, next)) {
-            const cur = host.readFence();
-            sock.send({ error: "revision conflict", hint: "a concurrent holder rotated mid-turn; re-claim and retry", revision: cur?.revision ?? 0 });
-            sock.close(CLOSE_CONFLICT, "concurrent rotation mid-turn");
-            return;
+      const rot = checkedRotate(host.readFence(), hasFence ? { fence, expected } : undefined, "retry the turn with both {fence, expected}, or omit both", null);
+      if (rot !== null && "status" in rot) {
+        if (rot.status === 400) {
+          sock.send(rot.body);
+          return;
+        }
+        sock.send(rot.body);
+        sock.close(rot.status === 403 ? CLOSE_FENCED : CLOSE_CONFLICT, rot.body.hint);
+        return;
+      }
+      const held: { fence: string; revision: number } | null = rot === null
+        ? null
+        : { fence: fence as string, revision: expected as number };
+      const sink: TurnSink = {
+        push: emit,
+        live: (frame) => broadcast(host, frame),
+        done: (doneId, turn, runtime) => {
+          emit("result", { runId: doneId, result: turn.result, usage: turn.usage, runtime, ...(turn.halt ? { halt: turn.halt } : {}) });
+          try {
+            closeRun(host.sql, host.sid, doneId);
+          } catch {
           }
-          sock.send({ done: true, fence: next.fence, revision: next.revision, result: turn.result, runtime, usage: turn.usage, ...(turn.halt ? { halt: turn.halt } : {}) });
-        } else sock.send({ done: true, result: turn.result, runtime, usage: turn.usage, ...(turn.halt ? { halt: turn.halt } : {}) });
-      },
-      fail: (failId, error, hint) => {
-        emit("error", { runId: failId, error });
-        closeRun(host.sql, host.sid, failId);
-        sock.send({ error, hint });
-      },
-      aborted: (abortId) => {
-        host.sql.exec("UPDATE runs SET status = ? WHERE sid = ? AND runId = ?", "interrupted", host.sid, abortId);
-        emit("interrupted", { runId: abortId });
-        sock.send({ aborted: true, runId: abortId });
-      },
-    };
-    try {
+          if (held !== null) {
+            const next = { fence: crypto.randomUUID(), revision: held.revision + 1 };
+            if (!host.casRotateFence(held.fence, held.revision, next)) {
+              const cur = host.readFence();
+              sock.send({ error: "revision conflict", hint: "a concurrent holder rotated mid-turn; re-claim and retry", revision: cur?.revision ?? 0 });
+              sock.close(CLOSE_CONFLICT, "concurrent rotation mid-turn");
+              return;
+            }
+            sock.send({ done: true, fence: next.fence, revision: next.revision, result: turn.result, runtime, usage: turn.usage, ...(turn.halt ? { halt: turn.halt } : {}) });
+          } else sock.send({ done: true, result: turn.result, runtime, usage: turn.usage, ...(turn.halt ? { halt: turn.halt } : {}) });
+        },
+        fail: (failId, error, hint) => {
+          try {
+            emit("error", { runId: failId, error });
+          } catch {
+          }
+          try {
+            closeRun(host.sql, host.sid, failId);
+          } catch {
+          }
+          sock.send({ error, hint });
+        },
+        aborted: (abortId) => {
+          host.sql.exec("UPDATE runs SET status = ? WHERE sid = ? AND runId = ?", "interrupted", host.sid, abortId);
+          emit("interrupted", { runId: abortId });
+          sock.send({ aborted: true, runId: abortId });
+        },
+      };
       openRun(host.sql, host.sid, runId);
       emit("prompt", { runId, prompt });
       let catalog: RuntimeModel | null;
@@ -387,9 +479,20 @@ async function startTurn(
         return;
       }
       const effThinking = host.thinking === null ? null : clampThinkingLevel(catalog ?? {}, host.thinking);
-      await executeTurn(host, { prompt, catalog, thinking: effThinking, runId, signal: turnController.signal }, sink);
+      await executeTurn(host, { prompt, catalog, thinking: effThinking, runId, signal: turnController.signal, budgets }, sink);
+    } catch (e) {
+      const out = shaped(e, "turn failed", "retry the prompt with a simpler request");
+      try {
+        emitEntry(host, sock, "error", { runId, error: out.error });
+      } catch {
+      }
+      try {
+        closeRun(host.sql, host.sid, runId);
+      } catch {
+      }
+      sock.send({ error: out.error, hint: out.hint });
     } finally {
-      if (host.live.get(host.sid) === turnController) host.live.delete(host.sid);
+      if (host.live.get(host.sid)?.controller === turnController) host.live.delete(host.sid);
     }
   });
 }

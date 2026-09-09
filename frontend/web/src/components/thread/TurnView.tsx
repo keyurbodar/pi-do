@@ -192,6 +192,14 @@ export function TurnView({ turn, onRetry }: { turn: TurnViewState; onRetry: (pro
               onRetry={() => onRetry(turn.prompt)}
             />
           )}
+          {turn.halt !== null && (
+            <TurnError
+              title="Turn halted"
+              message={`Budget reached: ${turn.halt} — the result may be incomplete.`}
+              hint={turn.hint}
+              onRetry={() => onRetry(turn.prompt)}
+            />
+          )}
           {turn.status === "interrupted" && (
             <TurnError
               title="Turn interrupted"

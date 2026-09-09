@@ -7,6 +7,7 @@ export interface ShellExecInput {
   cwd?: string;
   env?: Record<string, string>;
   sid?: string;
+  timeout?: number;
 }
 
 export interface ShellExecResult {
@@ -20,6 +21,8 @@ export interface ShellExecResult {
 export const DEFAULT_CWD = "/workspace";
 export const MAX_OUTPUT_BYTES = 1024 * 1024;
 export const EXEC_TIMEOUT_MS = 10_000;
+export const MAX_EXEC_TIMEOUT_MS = 120_000;
+export const BG_TIMEOUT_MS = 600_000;
 export const MAX_LIVE_SESSIONS = 64;
 export const MAX_BG_PROCESSES = 64;
 const WORKSPACE_ROOT = DEFAULT_CWD;
@@ -70,6 +73,16 @@ function truncate(s: string): string {
   return s.length > MAX_OUTPUT_BYTES ? s.slice(0, MAX_OUTPUT_BYTES) : s;
 }
 
+function resolveTimeoutMs(requested: number | undefined): number {
+  if (typeof requested !== "number" || !Number.isFinite(requested) || requested <= 0) return EXEC_TIMEOUT_MS;
+  return Math.min(requested, MAX_EXEC_TIMEOUT_MS);
+}
+
+
+function callerAborted(scope: TimeoutScope, killRequested: boolean): boolean {
+  return execAborted(scope, killRequested) && !scope.timedOut() && !killRequested;
+}
+
 function freshBash(): Bash {
   return new Bash({ cwd: DEFAULT_CWD, defenseInDepth: { enabled: false }, executionLimits: { maxOutputSize: MAX_OUTPUT_BYTES } });
 }
@@ -97,23 +110,42 @@ export class ShellWorker<Env = unknown> extends WorkerEntrypoint<Env> {
   async exec(input: ShellExecInput): Promise<ShellExecResult> {
     const command = input?.command;
     if (typeof command !== "string" || command.length === 0) throw new Error("exec needs a command string");
-    if (input.sid === undefined) return runOneOff(command, input.cwd, input.env);
+    if (input.sid === undefined) return runOneOff(command, input.cwd, input.env, input.timeout);
     const sid = input.sid;
     if (typeof sid !== "string" || sid.length === 0) throw new Error("exec needs a session id string");
-    return locks.withLock(sid, () => this.runSessionTurn(sid, command, input.cwd, input.env));
+    return locks.withLock(sid, () => this.runSessionTurn(sid, command, input.cwd, input.env, input.timeout));
   }
 
-  private async runSessionTurn(sid: string, command: string, requestedCwd: string | undefined, extraEnv: Record<string, string> | undefined): Promise<ShellExecResult> {
+  private async runSessionTurn(
+    sid: string,
+    command: string,
+    requestedCwd: string | undefined,
+    extraEnv: Record<string, string> | undefined,
+    requestedTimeout: number | undefined,
+  ): Promise<ShellExecResult> {
     let session = this.sessions.get(sid);
-    session ??= mapBounded(this.sessions, sid, () => ({ bash: freshBash(), env: {}, cwd: DEFAULT_CWD, current: null, killRequested: false, lastUsed: Date.now(), stdoutBytes: 0, stderrBytes: 0 }), (s) => (s.current !== null ? null : s.lastUsed), MAX_LIVE_SESSIONS, `exec sessions full (${MAX_LIVE_SESSIONS} live, all running): kill or dispose one first`);
+    if (session === undefined) {
+      if (this.sessions.size >= MAX_LIVE_SESSIONS) {
+        const disposed = this.disposeOldestIdleSession();
+        if (disposed !== undefined) {
+          throw new Error(`exec sessions full (${MAX_LIVE_SESSIONS} live): disposed oldest-idle session ${disposed}; kill or dispose one first`);
+        }
+        throw new Error(`exec sessions full (${MAX_LIVE_SESSIONS} live, all running): kill or dispose one first`);
+      }
+      session = { bash: freshBash(), env: {}, cwd: DEFAULT_CWD, current: null, killRequested: false, lastUsed: Date.now(), stdoutBytes: 0, stderrBytes: 0 };
+      this.sessions.set(sid, session);
+    }
     const cwd = resolveCwd(requestedCwd, session.cwd);
     session.lastUsed = Date.now();
-    const scope = withTimeoutSignal(EXEC_TIMEOUT_MS);
+    const scope = withTimeoutSignal(resolveTimeoutMs(requestedTimeout));
     session.current = scope;
     session.killRequested = false;
     const enc = new TextEncoder();
     try {
       const result = await session.bash.exec(command, { cwd, env: { ...session.env, ...extraEnv }, signal: scope.signal });
+      if (callerAborted(scope, session.killRequested)) {
+        return { stdout: "", stderr: "", exit: 124, timedOut: false, killed: true };
+      }
       if (execAborted(scope, session.killRequested)) return aborted(session);
       session.stdoutBytes += enc.encode(result.stdout).length;
       session.stderrBytes += enc.encode(result.stderr).length;
@@ -130,6 +162,9 @@ export class ShellWorker<Env = unknown> extends WorkerEntrypoint<Env> {
       }
       return { stdout: truncate(result.stdout), stderr: truncate(result.stderr), exit: result.exitCode, timedOut: false, killed: false };
     } catch (error) {
+      if (callerAborted(scope, session.killRequested)) {
+        return { stdout: "", stderr: "", exit: 124, timedOut: false, killed: true };
+      }
       if (execAborted(scope, session.killRequested)) return aborted(session);
       const message = error instanceof Error ? error.message : String(error);
       const stderr = truncate(`${message}\n`);
@@ -162,21 +197,42 @@ export class ShellWorker<Env = unknown> extends WorkerEntrypoint<Env> {
     return { disposed: true, stdoutBytes: session.stdoutBytes, stderrBytes: session.stderrBytes };
   }
 
+  private disposeOldestIdleSession(): string | undefined {
+    let oldestSid: string | undefined;
+    let oldestIdle = Infinity;
+    for (const [key, session] of this.sessions) {
+      if (session.current !== null || session.lastUsed >= oldestIdle) continue;
+      oldestSid = key;
+      oldestIdle = session.lastUsed;
+    }
+    if (oldestSid === undefined) return undefined;
+    const victim = this.sessions.get(oldestSid);
+    victim?.current?.controller.abort(new Error("Session disposed"));
+    this.sessions.delete(oldestSid);
+    return oldestSid;
+  }
+
   async bgStart(input: { command: string; cwd?: string; env?: Record<string, string> }): Promise<{ handle: string }> {
     const command = input?.command;
     if (typeof command !== "string" || command.length === 0) throw new Error("bg needs a command string");
     const cwd = resolveCwd(input.cwd, DEFAULT_CWD);
     const handle = `bg-${crypto.randomUUID()}`;
-    const scope = withTimeoutSignal(EXEC_TIMEOUT_MS);
+    const scope = withTimeoutSignal(BG_TIMEOUT_MS);
     const entry: BgProcess = { bash: freshBash(), scope, done: false, result: null, startedAt: Date.now(), killRequested: false };
     mapBounded(bgProcesses, handle, () => entry, (e) => (e.done ? e.startedAt : null), MAX_BG_PROCESSES, `bg processes full (${MAX_BG_PROCESSES} live, all running): kill one first`);
     void (async () => {
       try {
-        const result = await entry.bash.exec(command, { cwd, env: input.env, signal: scope.signal });
+        const running = entry.bash.exec(command, { cwd, env: input.env, signal: scope.signal });
+        // bgKill aborts this scope and pre-sets entry.result; the rejection of a
+        // pending exec must never float — consume it here on top of the await below.
+        running.catch(() => {});
+        const result = await running;
         entry.result ??= execAborted(scope, entry.killRequested)
           ? execEnd(entry.killRequested)
           : { stdout: truncate(result.stdout), stderr: truncate(result.stderr), exit: result.exitCode, timedOut: false, killed: false };
       } catch (error) {
+        // A just-bash internal throw after abort (poisoned scope reads) lands here
+        // and must surface as the structured killed result, not an uncaught error.
         entry.result ??= execAborted(scope, entry.killRequested)
           ? execEnd(entry.killRequested)
           : { stdout: "", stderr: truncate(`${error instanceof Error ? error.message : String(error)}\n`), exit: 1, timedOut: false, killed: false };
@@ -207,7 +263,14 @@ export class ShellWorker<Env = unknown> extends WorkerEntrypoint<Env> {
     if (!entry.done) {
       entry.killRequested = true;
       entry.scope.dispose();
-      entry.scope.controller.abort(new Error("Execution killed"));
+      // Abort listener dispatch runs just-bash teardown synchronously; a throw there
+      // must not escape bgKill — the signal is already aborted and the killed result
+      // is recorded below regardless.
+      try {
+        entry.scope.controller.abort(new Error("Execution killed"));
+      } catch {
+        // signal is already aborted at this point; nothing to recover
+      }
       entry.result = execEnd(true);
       entry.done = true;
       return { killed: true };
@@ -217,9 +280,14 @@ export class ShellWorker<Env = unknown> extends WorkerEntrypoint<Env> {
   }
 }
 
-async function runOneOff(command: string, cwd?: string, env?: Record<string, string>): Promise<ShellExecResult> {
+async function runOneOff(
+  command: string,
+  cwd?: string,
+  env?: Record<string, string>,
+  requestedTimeout?: number,
+): Promise<ShellExecResult> {
   const resolvedCwd = resolveCwd(cwd, DEFAULT_CWD);
-  const scope = withTimeoutSignal(EXEC_TIMEOUT_MS);
+  const scope = withTimeoutSignal(resolveTimeoutMs(requestedTimeout));
   try {
     const result = await freshBash().exec(command, { cwd: resolvedCwd, env, signal: scope.signal });
     if (execAborted(scope, false)) return execEnd(false);

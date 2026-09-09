@@ -14,7 +14,7 @@
 // never rewritten). A compaction moves the old prefix into pi_archive pages
 // and leaves one "compaction" summary entry plus the live tail, so resume
 // replay equals summary plus tail.
-import { appendEntry, entryHead, listEntries, runInSyncTx, type EntriesSql, type EntryRow } from "pi-cf/store/entries";
+import { advanceSessionLeaf, appendEntry, entryHead, listEntries, runInSyncTx, type EntriesSql, type EntryRow } from "pi-cf/store/entries";
 import { CREATE_TABLES, SUMMARY_FIELDS, drainPages, ensureTables, mapEntryRows, parseJsonObject, readScalar, readSingleRow, strField } from "pi-cf/store/sql-util";
 
 export const LIVE_ENTRY_BUDGET = 50;
@@ -59,7 +59,7 @@ export function maybeMarkForCompaction(sql: EntriesSql, sid: string): boolean {
   const { count } = entryHead(sql, sid);
   if (!shouldCompact(count)) return false;
   if (isPending(sql, sid)) return false;
-  sql.exec("INSERT OR REPLACE INTO compaction_marks(sid, pending) VALUES (?, 1)", sid);
+  sql.exec("INSERT INTO compaction_marks(sid, pending) VALUES (?, 1) ON CONFLICT(sid) DO UPDATE SET pending = 1", sid);
   return true;
 }
 
@@ -70,19 +70,13 @@ export interface ArchivePage {
   total: number;
 }
 
+// pages/total live in the compaction_marks row, maintained by runCompaction's
+// transaction; rows created before the columns existed undercount until the
+// next compaction for that session.
 export function archiveMeta(sql: EntriesSql, sid: string): { pages: number; total: number } {
-  const raw = readScalar<unknown>(sql, "SELECT COUNT(*) AS pages FROM pi_archive WHERE sid = ?", sid);
-  const pages = typeof raw === "number" ? raw : 0;
-  let total = 0;
-  for (const row of sql.exec("SELECT entries FROM pi_archive WHERE sid = ?", sid)) {
-    if (row === null || typeof row !== "object" || !("entries" in row) || typeof row.entries !== "string") continue;
-    try {
-      const parsed: unknown = JSON.parse(row.entries);
-      if (Array.isArray(parsed)) total += parsed.length;
-    } catch {
-      continue;
-    }
-  }
+  const row = readSingleRow(sql, "SELECT pages, total FROM compaction_marks WHERE sid = ? LIMIT 1", sid);
+  const pages = row !== null && typeof row.pages === "number" ? row.pages : 0;
+  const total = row !== null && typeof row.total === "number" ? row.total : 0;
   return { pages, total };
 }
 
@@ -148,11 +142,21 @@ export interface CompactionResult {
 export function runCompaction(sql: EntriesSql, sid: string, force = false): CompactionResult {
   const live = readAllLive(sql, sid);
   if (live.length <= COMPACTION_KEEP_TAIL + 1 || (!force && !shouldCompact(live.length))) {
-    sql.exec("INSERT OR REPLACE INTO compaction_marks(sid, pending) VALUES (?, 0)", sid);
+    sql.exec("INSERT INTO compaction_marks(sid, pending) VALUES (?, 0) ON CONFLICT(sid) DO UPDATE SET pending = 0", sid);
     return { compacted: false, live: live.length, archived: 0, summaryCursor: null, pages: archiveMeta(sql, sid).pages };
   }
-  const cut = live.length - COMPACTION_KEEP_TAIL;
+  let cut = live.length - COMPACTION_KEEP_TAIL;
+  // Walk the cut back to a turn start so a toolCall/toolResult pair or a
+  // prompt/result grouping is never split across the archive boundary.
+  while (cut > 0 && (live[cut].type === "toolCall" || live[cut].type === "toolResult" || live[cut].type === "result")) {
+    cut -= 1;
+  }
+  if (cut <= 0) {
+    sql.exec("INSERT INTO compaction_marks(sid, pending) VALUES (?, 0) ON CONFLICT(sid) DO UPDATE SET pending = 0", sid);
+    return { compacted: false, live: live.length, archived: 0, summaryCursor: null, pages: archiveMeta(sql, sid).pages };
+  }
   const old = live.slice(0, cut);
+  const tail = live.slice(cut);
   const body = summarizePrefix(old);
   let summaryCursor = -1;
   runInSyncTx(sql, () => {
@@ -163,9 +167,37 @@ export function runCompaction(sql: EntriesSql, sid: string, force = false): Comp
     }
     sql.exec("DELETE FROM pi_entries WHERE sid = ? AND id <= ?", sid, body.toCursor);
     summaryCursor = appendEntry(sql, sid, "compaction", body);
-    sql.exec("INSERT OR REPLACE INTO compaction_marks(sid, pending) VALUES (?, 0)", sid);
+    // Re-root the chain: summary -> first tail entry, leaf back on the last
+    // tail entry, so the walk from leaf reads tail then summary then stops.
+    sql.exec("UPDATE pi_entries SET parent = 0 WHERE sid = ? AND id = ?", sid, summaryCursor);
+    sql.exec("UPDATE pi_entries SET parent = ? WHERE sid = ? AND id = ?", summaryCursor, sid, tail[0].cursor);
+    advanceSessionLeaf(sql, sid, tail[tail.length - 1].cursor);
+    const pages = Math.ceil(old.length / ARCHIVE_PAGE_SIZE);
+    sql.exec(
+      "INSERT INTO compaction_marks(sid, pending, pages, total) VALUES (?, 0, ?, ?) ON CONFLICT(sid) DO UPDATE SET pending = 0, pages = pages + ?, total = total + ?",
+      sid,
+      pages,
+      old.length,
+      pages,
+      old.length,
+    );
   });
   if (summaryCursor < 0) throw new Error("runCompaction: summary insert returned no cursor");
   const after = entryHead(sql, sid);
   return { compacted: true, live: after.count, archived: old.length, summaryCursor, pages: archiveMeta(sql, sid).pages };
+}
+
+// Alarm body helper: compacts every pending session; a failure is recorded as
+// an error entry and the alarm is always rescheduled so compaction retries
+// instead of stalling the session forever.
+export function runPendingCompactions(sql: EntriesSql, reschedule: () => void): void {
+  for (const sid of pendingSessions(sql)) {
+    try {
+      runCompaction(sql, sid);
+    } catch (e) {
+      appendEntry(sql, sid, "error", { error: e instanceof Error ? e.message : String(e ?? "compaction failed") });
+    } finally {
+      reschedule();
+    }
+  }
 }

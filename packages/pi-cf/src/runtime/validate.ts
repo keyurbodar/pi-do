@@ -5,11 +5,13 @@ export const CAPS = {
   readBytes: 50 * 1024,
   listDefault: 500,
   listHard: 10000,
-  findDefault: 100,
+  findDefault: 1000,
   findHard: 1000,
   grepDefault: 100,
   grepHard: 1000,
   grepLine: 500,
+  grepFileBytes: 1024 * 1024,
+  grepContextMax: 5,
   diagDefault: 200,
   testChars: 32768,
 } as const;
@@ -21,7 +23,7 @@ export const ERR: Record<string, { error: string; hint: string }> = {
   escapePath: { error: "path escapes workspace", hint: "retry with a path inside the workspace (no leading ..)" },
   badLimit: { error: "bad {what}", hint: "retry with {what} as a positive integer" },
   badOffset: { error: "bad offset", hint: "offset is a 1-indexed line number; retry with offset >= 1" },
-  badTextOffset: { error: "bad offset", hint: "retry with offset as a UTF-16 code-unit index from 0 to {size} for {file}" },
+  absolutePath: { error: "bad path", hint: "use workspace-relative paths (no leading /); retry without the leading slash" },
   offsetBeyond: { error: "offset {start} is beyond end of file", hint: "the file has {total} lines; retry with offset <= {total}" },
   badContent: { error: "bad content", hint: "retry with content as a string" },
   badEdits: { error: "bad edits", hint: "edits must be an array of {oldText, newText}" },
@@ -29,11 +31,13 @@ export const ERR: Record<string, { error: string; hint: string }> = {
   badEditOld: { error: "bad edits[{i}].oldText", hint: "retry with edits[{i}].oldText as a string" },
   badEditNew: { error: "bad edits[{i}].newText", hint: "retry with edits[{i}].newText as a string" },
   badOldText: { error: "bad oldText", hint: "retry with oldText as a string" },
-  badNewText: { error: "bad newText", hint: "retry with newText as a string" },
+  limitLarge: { error: "limit too large", hint: "retry with limit <= {max}" },
+  badTimeout: { error: "bad timeout", hint: "retry with timeout as a positive number of seconds" },
+  timeoutLarge: { error: "timeout too large", hint: "retry with timeout <= {max} seconds" },
+  contextLarge: { error: "context too large", hint: "retry with context <= {max} lines" },
   missingEdits: { error: "missing edits", hint: "retry with edits as a non-empty array of {oldText, newText}" },
   editFailed: { error: "{message}", hint: "keep oldText small but unique; merge overlapping edits into one" },
   entriesLarge: { error: "maxEntries too large", hint: "retry with maxEntries <= {max}" },
-  limitLarge: { error: "limit too large", hint: "retry with limit <= {max}" },
   removeRoot: { error: "bad path", hint: "refusing to remove the workspace root; retry with a file or directory path" },
   noSuchFile: { error: "no such file: {path}", hint: "check the path with list first, then retry" },
   isDirectory: { error: "{path} is a directory", hint: "retry with recursive true to delete the whole tree, or remove files one by one" },
@@ -77,6 +81,7 @@ export function normalizeWorkspacePath(input: unknown): string {
   const raw = input as string;
   if (raw.includes("\0")) failKey("nulPath");
   if (raw.includes("\\")) failKey("slashPath");
+  if (raw.startsWith("/")) failKey("absolutePath");
   const out: string[] = [];
   for (const part of raw.split("/")) {
     if (part === "" || part === ".") continue;
@@ -153,12 +158,21 @@ export function cappedLimit(limit: unknown, def: number, hard: number, what = "l
   return value;
 }
 
+const SKIP_DIRS: Record<string, true> = { node_modules: true, ".git": true, tmp: true };
+
+export function isSkippedPath(path: string): boolean {
+  return path.split("/").some((seg) => SKIP_DIRS[seg] === true);
+}
+
 export function resolveScope(
   env: ComputerExecutionEnv,
   path: unknown,
 ): { root: string; prefix: string; files: string[]; isFile: boolean } {
   const root = path === undefined || path === "" ? "" : normalizeWorkspacePath(path);
-  if (root === "") return { root, prefix: "", files: env.readdir("").map((e) => e.path), isFile: false };
+  if (root === "") {
+    const all = env.readdir("").map((e) => e.path);
+    return { root, prefix: "", files: all.filter((p) => !isSkippedPath(p)), isFile: false };
+  }
   let isFile = false;
   try {
     env.readFile(root);
@@ -168,7 +182,9 @@ export function resolveScope(
   }
   if (isFile) return { root, prefix: root, files: [root], isFile: true };
   const prefix = `${root}/`;
-  const files = env.readdir(prefix).map((e) => e.path);
+  const all = env.readdir(prefix).map((e) => e.path);
+  if (all.length === 0) failKey("noSuchFile", { path: root });
+  const files = SKIP_DIRS[root] === true ? all : all.filter((p) => !isSkippedPath(p));
   if (files.length === 0) failKey("noSuchFile", { path: root });
   return { root, prefix, files, isFile: false };
 }

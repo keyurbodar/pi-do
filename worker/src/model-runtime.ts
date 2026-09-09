@@ -6,7 +6,7 @@ import {
   getSupportedThinkingLevels as piSupportedThinkingLevels,
 } from "@earendil-works/pi-ai";
 import type { Api, AuthContext, Model, ModelThinkingLevel, MutableModels, Provider, ProviderStreams } from "@earendil-works/pi-ai";
-import { ANTHROPIC_AUTH_TOKEN_ENV, findEnvKeys, getApiProvider, getEnvApiKey, registerBuiltInApiProviders } from "@earendil-works/pi-ai/compat";
+import { getApiProvider, getEnvApiKey, registerBuiltInApiProviders } from "@earendil-works/pi-ai/compat";
 import { builtinModels, builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import bundledModelsJson from "../models.json" with { type: "json" };
 
@@ -105,18 +105,7 @@ function usableKey(value: string | undefined): string | undefined {
 }
 
 export function resolveProviderKey(env: RuntimeEnv, providerId: string): string | undefined {
-  const names = maskProcess(() => findEnvKeys(providerId, env as Record<string, string>)) ?? [];
-  for (const name of names) {
-    if (name === ANTHROPIC_AUTH_TOKEN_ENV) continue;
-    const hit = usableKey(env[name]);
-    if (hit !== undefined) return hit;
-  }
-  return usableKey(env[customKeyEnvVar(providerId)]);
-}
-
-function hasProviderKey(env: RuntimeEnv, providerId: string): boolean {
-  const direct = usableKey(maskProcess(() => getEnvApiKey(providerId, env as Record<string, string>)));
-  return (direct ?? usableKey(env[customKeyEnvVar(providerId)])) !== undefined;
+  return usableKey(maskProcess(() => getEnvApiKey(providerId, env as Record<string, string>))) ?? usableKey(env[customKeyEnvVar(providerId)]);
 }
 
 export function loadCustomProviders(doc: unknown): Map<string, ProviderEntry> {
@@ -239,7 +228,7 @@ export function buildAllProviders(customDoc: unknown = bundledModelsJson): Keyed
 }
 
 export function keyedProviders(env: RuntimeEnv, customDoc: unknown = bundledModelsJson): KeyedProvider[] {
-  return buildAllProviders(customDoc).filter((provider) => hasProviderKey(env, provider.id));
+  return buildAllProviders(customDoc).filter((provider) => resolveProviderKey(env, provider.id) !== undefined);
 }
 
 export function providerIdList(providers: KeyedProvider[]): string {

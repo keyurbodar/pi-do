@@ -23,7 +23,7 @@ export const testTool: AgentHarnessTool<ToolContext, any, { passed: boolean; exi
   async execute(
     id,
     params: { file?: string; command?: string },
-    _signal,
+    signal,
     _onUpdate,
     context,
   ): Promise<AgentToolResult<{ passed: boolean; exit: number }>> {
@@ -43,7 +43,7 @@ export const testTool: AgentHarnessTool<ToolContext, any, { passed: boolean; exi
       label = (params.command as string).slice(0, 120);
       script = params.command as string;
     }
-    const out = await context.env.exec(script);
+    const out = await context.env.exec(script, undefined, { abortSignal: signal });
     const capped = capText(joinOutput(out.stdout, out.stderr), TEST_MAX_OUTPUT_CHARS);
     const passed = out.exit === 0;
     const head = passed ? `PASS ${label}` : `FAIL ${label} (exit ${out.exit})`;
@@ -83,7 +83,7 @@ export const pmTool: AgentHarnessTool<
   async execute(
     id,
     params: { action: string; package?: string; script?: string },
-    _signal,
+    signal,
     _onUpdate,
     context,
   ): Promise<AgentToolResult<{ action: string; exit: number; lockfile: string | null }>> {
@@ -132,7 +132,7 @@ export const pmTool: AgentHarnessTool<
       }
       command = `npm run ${script}`;
     }
-    const out = await context.env.exec(command);
+    const out = await context.env.exec(command, undefined, { abortSignal: signal });
     const capped = capText(joinOutput(out.stdout, out.stderr), TEST_MAX_OUTPUT_CHARS);
     const head = `${params.action} (exit ${out.exit}, lockfile: ${lockfile ?? "none"})`;
     return {

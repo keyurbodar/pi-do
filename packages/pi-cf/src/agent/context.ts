@@ -51,17 +51,39 @@ export function capSessionContext(ctx: SessionContext, budgetTokens: number): Se
   const kept = [...ctx.messages];
   let total = kept.reduce((sum, message) => sum + estimateTokens(message.text), 0);
   let dropped = 0;
+  // A group is one prompt plus everything up to its result (toolCall/toolResult
+  // pairs, mid-turn steers). Trimming drops whole groups so a pair or a
+  // prompt/result grouping is never split.
+  const groups: ContextMessage[][] = [];
+  let open = false;
+  for (const message of kept) {
+    if (message.role === "user" && !open) {
+      groups.push([message]);
+      open = true;
+    } else if (message.role === "compactionSummary") {
+      groups.push([message]);
+      open = false;
+    } else if (groups.length === 0) {
+      groups.push([message]);
+    } else {
+      groups[groups.length - 1].push(message);
+      if (message.role === "assistant") open = false;
+    }
+  }
   while (total > budgetTokens) {
-    const index = kept.findIndex((message) => message.role !== "compactionSummary");
-    if (index === -1) {
+    const groupIndex = groups.findIndex((group) => !group.some((message) => message.role === "compactionSummary"));
+    if (groupIndex === -1) {
       break;
     }
-    total -= estimateTokens(kept[index].text);
-    kept.splice(index, 1);
-    dropped += 1;
+    for (const message of groups[groupIndex]) {
+      total -= estimateTokens(message.text);
+    }
+    dropped += groups[groupIndex].length;
+    groups.splice(groupIndex, 1);
   }
+  const messages = groups.flat();
   return {
-    messages: kept,
+    messages,
     model: ctx.model,
     thinking: ctx.thinking,
     toolNames: ctx.toolNames,

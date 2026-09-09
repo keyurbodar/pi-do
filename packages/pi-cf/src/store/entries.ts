@@ -1,6 +1,6 @@
 import type { SessionHalt, SessionUsage } from "../agent/session";
 import type { EntryRow } from "./sql-util.ts";
-import { CREATE_TABLES, drainPages, ensureTables, mapEntryRows, numField, parseJsonObject, readScalar, readSingleRow, toEntryRow } from "./sql-util.ts";
+import { CREATE_TABLES, ensureTables, existsBy, mapEntryRows, numField, parseJsonObject, readScalar, readSingleRow, toEntryRow } from "./sql-util.ts";
 
 export interface EntriesSql {
   exec(query: string, ...bindings: unknown[]): Iterable<unknown>;
@@ -11,7 +11,9 @@ export interface EntriesSql {
 export type { EntryRow };
 
 export function ensureEntriesSchema(sql: EntriesSql): void {
-  ensureTables(sql, [CREATE_TABLES.piEntries, CREATE_TABLES.runs, CREATE_TABLES.piEntriesSidId]);
+  ensureTables(sql, [CREATE_TABLES.piEntries, CREATE_TABLES.runs, CREATE_TABLES.piEntriesSidId, CREATE_TABLES.sessionTotals]);
+  backfillSessionLeafs(sql);
+  backfillSessionTotals(sql);
 }
 
 export function appendEntry(
@@ -21,21 +23,21 @@ export function appendEntry(
   body: unknown,
 ): number {
   const stored = typeof body === "string" ? body : JSON.stringify(body);
-  const head = readScalar<unknown>(sql, "SELECT COALESCE(MAX(id), 0) AS head FROM pi_entries WHERE sid = ?", sid);
-  const parent = typeof head === "number" ? head : 0;
-  sql.exec("INSERT INTO pi_entries(sid, parent, type, body) VALUES (?, ?, ?, ?)", sid, parent, type, stored);
-  const cursor = readScalar<unknown>(sql, "SELECT last_insert_rowid() AS id");
-  if (typeof cursor !== "number" || cursor < 0) throw new Error("appendEntry: last_insert_rowid returned no row");
-  sql.exec("UPDATE pi_entries SET cursor = ? WHERE id = ?", cursor, cursor);
-  advanceSessionLeaf(sql, sid, cursor);
+  let cursor = -1;
+  runInSyncTx(sql, () => {
+    const leaf = readScalar<unknown>(sql, "SELECT leaf FROM sessions WHERE sid = ? LIMIT 1", sid);
+    const parent = typeof leaf === "number" && Number.isInteger(leaf) && leaf > 0 ? leaf : 0;
+    sql.exec("INSERT INTO pi_entries(sid, parent, type, body) VALUES (?, ?, ?, ?)", sid, parent, type, stored);
+    const id = readScalar<unknown>(sql, "SELECT last_insert_rowid() AS id");
+    if (typeof id !== "number" || id < 0) throw new Error("appendEntry: last_insert_rowid returned no row");
+    cursor = id;
+    advanceSessionLeaf(sql, sid, cursor);
+  });
   return cursor;
 }
 
 export function advanceSessionLeaf(sql: EntriesSql, sid: string, cursor: number): void {
-  try {
-    sql.exec("UPDATE sessions SET leaf = ? WHERE sid = ?", cursor, sid);
-  } catch {
-  }
+  sql.exec("UPDATE sessions SET leaf = ? WHERE sid = ?", cursor, sid);
 }
 
 export function listEntries(
@@ -81,10 +83,29 @@ export function sessionLeaf(sql: EntriesSql, sid: string): number {
   return entryHead(sql, sid).head;
 }
 
+// Re-entrant: appendEntry runs its own tx, so callers that already hold the
+// tx (recordTurnWithOpen, routes) must not open a nested SQLite transaction.
+const txActive = new WeakSet<object>();
+
 export function runInSyncTx(sql: EntriesSql, fn: () => void): void {
   const tx = sql.transactionSync;
-  if (typeof tx === "function") tx.call(sql, fn);
-  else fn();
+  if (txActive.has(sql)) {
+    fn();
+    return;
+  }
+  if (typeof tx !== "function") {
+    // SqlStorage has no transactionSync; in the single-threaded DO a fully
+    // synchronous sql.exec sequence cannot interleave with other events,
+    // so running fn() directly is still atomic with respect to DO work.
+    fn();
+    return;
+  }
+  txActive.add(sql);
+  try {
+    tx.call(sql, fn);
+  } finally {
+    txActive.delete(sql);
+  }
 }
 
 function openRunInner(sql: EntriesSql, sid: string, runId: string): void {
@@ -133,17 +154,43 @@ function recordTurnInner(
   usage?: SessionUsage,
   halt?: SessionHalt | null,
 ): void {
-  appendEntry(sql, sid, "prompt", { runId, prompt });
-  for (const call of toolCalls) {
-    appendEntry(sql, sid, "toolCall", { runId, id: call.id, tool: call.tool, args: call.args });
-    appendEntry(sql, sid, "toolResult", { runId, id: call.id, tool: call.tool, output: call.output });
-  }
-  const resultBody: { runId: string; result: string; usage?: SessionUsage; halt?: SessionHalt } = usage === undefined ? { runId, result } : { runId, result, usage };
-  if (halt !== undefined && halt !== null) resultBody.halt = halt;
-  appendEntry(sql, sid, "result", resultBody);
-  closeRun(sql, sid, runId);
+  runInSyncTx(sql, () => {
+    appendEntry(sql, sid, "prompt", { runId, prompt });
+    for (const call of toolCalls) {
+      appendEntry(sql, sid, "toolCall", { runId, id: call.id, tool: call.tool, args: call.args });
+      appendEntry(sql, sid, "toolResult", { runId, id: call.id, tool: call.tool, output: call.output });
+    }
+    const resultBody: { runId: string; result: string; usage?: SessionUsage; halt?: SessionHalt } = usage === undefined ? { runId, result } : { runId, result, usage };
+    if (halt !== undefined && halt !== null) resultBody.halt = halt;
+    appendEntry(sql, sid, "result", resultBody);
+    closeRun(sql, sid, runId);
+    bumpSessionTotals(sql, sid, usage);
+  });
 }
-export const recordTurn = recordTurnInner;
+
+function bumpSessionTotals(sql: EntriesSql, sid: string, usage?: SessionUsage): void {
+  const u = usage ?? { inTokens: 0, outTokens: 0, cacheRead: 0, costTotal: 0, elapsedMs: 0 };
+  sql.exec(
+    `INSERT INTO session_totals(sid, inTokens, outTokens, cacheRead, costTotal, elapsedMs, turns) VALUES (?, ?, ?, ?, ?, ?, 1)
+     ON CONFLICT(sid) DO UPDATE SET
+       inTokens = inTokens + excluded.inTokens,
+       outTokens = outTokens + excluded.outTokens,
+       cacheRead = cacheRead + excluded.cacheRead,
+       costTotal = costTotal + excluded.costTotal,
+       elapsedMs = elapsedMs + excluded.elapsedMs,
+       turns = turns + 1`,
+    sid,
+    finiteOr0(u.inTokens),
+    finiteOr0(u.outTokens),
+    finiteOr0(u.cacheRead),
+    finiteOr0(u.costTotal),
+    finiteOr0(u.elapsedMs),
+  );
+}
+
+function finiteOr0(value: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+}
 
 export function recordTurnWithOpen(
   sql: EntriesSql,
@@ -161,20 +208,6 @@ export function recordTurnWithOpen(
   });
 }
 
-export function sumResultUsage(sql: EntriesSql, sid: string): SessionUsage {
-  const sums: SessionUsage = { inTokens: 0, outTokens: 0, cacheRead: 0, costTotal: 0, elapsedMs: 0, tokensPerSec: null };
-  for (const entry of drainPages((after) => listEntries(sql, sid, { after, limit: 1000 }))) {
-    if (entry.type !== "result") continue;
-    const usage = parseResultUsage(entry.body);
-    sums.inTokens += usage.inTokens;
-    sums.outTokens += usage.outTokens;
-    sums.cacheRead += usage.cacheRead;
-    sums.costTotal += usage.costTotal;
-    sums.elapsedMs += usage.elapsedMs;
-  }
-  return sums;
-}
-
 function parseResultUsage(body: string): Omit<SessionUsage, "tokensPerSec"> {
   const zero = { inTokens: 0, outTokens: 0, cacheRead: 0, costTotal: 0, elapsedMs: 0 };
   const parsed = parseJsonObject(body);
@@ -190,6 +223,61 @@ function parseResultUsage(body: string): Omit<SessionUsage, "tokensPerSec"> {
     elapsedMs: numField(record, "elapsedMs"),
     ...("retention" in record && record.retention === "long" ? { retention: "long" as const } : {}),
   };
+}
+
+export function sumResultUsage(sql: EntriesSql, sid: string): SessionUsage {
+  const row = readSingleRow(sql, "SELECT inTokens, outTokens, cacheRead, costTotal, elapsedMs FROM session_totals WHERE sid = ? LIMIT 1", sid);
+  if (row === null) return { inTokens: 0, outTokens: 0, cacheRead: 0, costTotal: 0, elapsedMs: 0, tokensPerSec: null };
+  return {
+    inTokens: numField(row, "inTokens"),
+    outTokens: numField(row, "outTokens"),
+    cacheRead: numField(row, "cacheRead"),
+    costTotal: numField(row, "costTotal"),
+    elapsedMs: numField(row, "elapsedMs"),
+    tokensPerSec: null,
+  };
+}
+
+// One-time backfill: totals rows only exist for turns recorded after the
+// table landed, so seed from result entries while the table is still empty.
+function backfillSessionTotals(sql: EntriesSql): void {
+  if (existsBy(sql, "SELECT 1 FROM session_totals LIMIT 1")) return;
+  if (!existsBy(sql, "SELECT 1 FROM pi_entries WHERE type = 'result' LIMIT 1")) return;
+  runInSyncTx(sql, () => {
+    const totals = new Map<string, { inTokens: number; outTokens: number; cacheRead: number; costTotal: number; elapsedMs: number; turns: number }>();
+    for (const row of sql.exec("SELECT sid, body FROM pi_entries WHERE type = 'result'")) {
+      if (row === null || typeof row !== "object" || !("sid" in row) || typeof row.sid !== "string" || !("body" in row)) continue;
+      const usage = parseResultUsage(typeof row.body === "string" ? row.body : "");
+      const t = totals.get(row.sid) ?? { inTokens: 0, outTokens: 0, cacheRead: 0, costTotal: 0, elapsedMs: 0, turns: 0 };
+      t.inTokens += usage.inTokens;
+      t.outTokens += usage.outTokens;
+      t.cacheRead += usage.cacheRead;
+      t.costTotal += usage.costTotal;
+      t.elapsedMs += usage.elapsedMs;
+      t.turns += 1;
+      totals.set(row.sid, t);
+    }
+    for (const [sid, t] of totals) {
+      sql.exec(
+        "INSERT INTO session_totals(sid, inTokens, outTokens, cacheRead, costTotal, elapsedMs, turns) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        sid,
+        t.inTokens,
+        t.outTokens,
+        t.cacheRead,
+        t.costTotal,
+        t.elapsedMs,
+        t.turns,
+      );
+    }
+  });
+}
+
+// sessions.leaf defaulted to 0 when the column was added by migration; without
+// this fixup appendEntry would restart the parent chain for legacy sessions.
+function backfillSessionLeafs(sql: EntriesSql): void {
+  sql.exec(
+    "UPDATE sessions SET leaf = (SELECT MAX(id) FROM pi_entries WHERE pi_entries.sid = sessions.sid) WHERE leaf = 0 AND EXISTS (SELECT 1 FROM pi_entries WHERE pi_entries.sid = sessions.sid)",
+  );
 }
 
 export interface SessionUsageMeta extends SessionUsage {

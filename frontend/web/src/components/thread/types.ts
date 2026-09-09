@@ -99,6 +99,12 @@ export interface TurnViewState {
   calls: ToolCallView[];
   status: TurnStatus;
   error: string | null;
+  /**
+   * Budget-halt reason ("turns" | "tool-calls" | "duration" | "cost") when
+   * the run's result entry carried a halt; null for normal completions.
+   * A halted turn is visibly incomplete, not a normal done.
+   */
+  halt: string | null;
   hint: string | null;
   /**
    * True once a turn matches the keyless-plan fingerprint: it ran without

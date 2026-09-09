@@ -1,5 +1,6 @@
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { Api, Model as PiModel, ThinkingLevel } from "@earendil-works/pi-ai";
+import type { EntryRow } from "../store/entries.ts";
 import { Agent, type AgentEvent, type AgentHarnessTool, type AgentMessage, type AgentTool, type AgentToolResult, type StreamFn } from "@earendil-works/pi-agent-core";
 import {
   ComputerExecutionEnv,
@@ -12,7 +13,7 @@ import { definitionTool, diagnosticsCompilerTool, referencesTool } from "../tool
 import { bgTool } from "../tools/bg-tools.ts";
 import { findTool, grepTool } from "../tools/search-tools.ts";
 import { planStubTurn } from "./stub-plan.ts";
-import { buildSessionContext, capSessionContext, estimateTokens, type ContextMessage, type EntryReader } from "./context.ts";
+import { buildSessionContextFromEntries, capSessionContext, estimateTokens, type ContextMessage } from "./context.ts";
 export const sessionTools = {
   read: readTool, write: writeTool, edit: editTool, list: listTool, remove: removeTool, bash: bashTool,
   find: findTool, grep: grepTool, diagnostics: diagnosticsCompilerTool,
@@ -28,7 +29,7 @@ export interface SessionModel {
 
 export interface CreateAgentSessionOptions {
   files: FileStoreLike; ws: string; shell: ShellLike; model: SessionModel; tools?: Partial<SessionTools>;
-  apiKey?: string; history?: { leaf: number; readEntry: EntryReader };
+  apiKey?: string; history?: { leaf: number; readEntries: (after: number, limit: number) => EntryRow[] };
   sessionId?: string; cacheRetention?: "short" | "long";
 }
 
@@ -56,16 +57,17 @@ export interface SessionRunBudgets {
   maxTurns?: number; maxToolCalls?: number; maxDurationMs?: number; maxCost?: number;
 }
 
-
 export type SessionToolEvent =
   | { kind: "toolCall"; id: string; tool: string; args: Record<string, unknown>; output?: string }
   | { kind: "toolResult"; id: string; tool: string; args: Record<string, unknown>; output?: string }
+  | { kind: "toolUpdate"; id: string; tool: string; args: Record<string, unknown>; text: string }
   | { kind: "text"; delta: string }
   | { kind: "thinking"; delta: string };
 
 export interface SessionRunOptions {
   signal?: AbortSignal; onUpdate?: (event: SessionToolEvent) => void;
   thinking?: string | null; budgets?: SessionRunBudgets;
+  onAgent?: (agent: Agent) => void;
 }
 
 function abortablePause(signal: AbortSignal | undefined): Promise<void> {
@@ -83,15 +85,15 @@ function abortablePause(signal: AbortSignal | undefined): Promise<void> {
   signal.addEventListener("abort", onAbort, { once: true });
   return promise;
 }
-const MAX_MODEL_STEPS = 10;
 const MIN_TURN_MS = 100;
-const TOOL_BATCH_CONCURRENCY = 4;
 
-const DEFAULT_RUN_BUDGETS = { maxTurns: MAX_MODEL_STEPS, maxToolCalls: 32, maxDurationMs: 120000, maxCost: 0.5 };
+const DEFAULT_RUN_BUDGETS = { maxTurns: 25, maxToolCalls: 100, maxDurationMs: 600000, maxCost: 5 };
 const SYSTEM_PROMPT =
   'You are a coding assistant inside a Cloudflare Worker workspace. File paths are workspace-relative ("" is the workspace root). Use the tools to inspect and change files, then answer with a short summary of what you did.';
 
-const STREAM_IDLE_TIMEOUT_MS = 120_000;
+const STREAM_IDLE_TIMEOUT_MS = 300_000;
+const HARD_ABORT_GRACE_MS = 10_000;
+const TOOL_UPDATE_THROTTLE_MS = 1000;
 
 function createThinkSplitter(
   onText: (delta: string) => void,
@@ -145,21 +147,6 @@ function failureText(error: unknown): string {
   return String(error ?? "tool failed");
 }
 
-function createPool(width: number): { run: <T>(fn: () => Promise<T>) => Promise<T> } {
-  const running = new Set<Promise<unknown>>();
-  const run = async <T>(fn: () => Promise<T>): Promise<T> => {
-    while (running.size >= width) await Promise.race([...running].map((task) => task.then(() => null, () => null)));
-    const task = fn();
-    running.add(task);
-    try {
-      return await task;
-    } finally {
-      running.delete(task);
-    }
-  };
-  return { run };
-}
-
 export function createAgentSession(options: CreateAgentSessionOptions): {
   run(prompt: string, runOptions?: SessionRunOptions): Promise<SessionTurn>;
 } {
@@ -176,7 +163,17 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
     let history: ContextMessage[] = [];
     if (options.history !== undefined) {
       try {
-        history = buildSessionContext(options.history.leaf, options.history.readEntry).messages;
+        const entries: EntryRow[] = [];
+        let after = 0;
+        for (;;) {
+          const batch = options.history.readEntries(after, 200);
+          if (batch.length === 0) break;
+          entries.push(...batch);
+          const last = batch[batch.length - 1]?.cursor ?? after;
+          if (last <= after) break;
+          after = last;
+        }
+        history = buildSessionContextFromEntries(entries, options.history.leaf).messages;
       } catch {
         history = [];
       }
@@ -196,7 +193,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
           : base.messages.filter((message) => message.role === "compactionSummary");
     }
     const keyed = model.api !== "stub" && typeof apiKey === "string" && apiKey.length > 0;
-    if (keyed) return runModelTurn(prompt, apiKey, signal, onUpdate, runOptions?.thinking ?? null, tools, history, runOptions?.budgets, retention);
+    if (keyed) return runModelTurn(prompt, apiKey, signal, onUpdate, runOptions?.thinking ?? null, tools, history, runOptions?.budgets, retention, runOptions?.onAgent);
     return runStubTurn(prompt, signal, onUpdate, tools, retention);
   }
 
@@ -236,6 +233,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
     onUpdate: ((event: SessionToolEvent) => void) | undefined, thinking: string | null,
     tools: Record<string, AgentHarnessTool<ToolContext, any, any>>, history: ContextMessage[],
     budgets: SessionRunBudgets | undefined, retention: "short" | "long",
+    onAgent: ((agent: Agent) => void) | undefined,
   ): Promise<SessionTurn> {
     const openedAt = Date.now();
     const modelId = model.id;
@@ -247,13 +245,20 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
       cost: source.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: source.contextWindow ?? 0, maxTokens: source.maxTokens ?? 0,
     };
-    const pool = createPool(TOOL_BATCH_CONCURRENCY);
     const agentTools: Array<AgentTool<any>> = Object.values(tools).map((tool) => ({
       ...tool,
-      ...(tool.name === "bash" ? { executionMode: "sequential" as const } : {}),
-      execute: async (id: string, params: any, innerSignal: AbortSignal | undefined): Promise<AgentToolResult<any>> => {
+      execute: async (id: string, params: any, innerSignal: AbortSignal | undefined, onToolUpdate: ((partial: AgentToolResult<any>) => void) | undefined): Promise<AgentToolResult<any>> => {
+        let lastUpdateAt = 0;
+        const forwardUpdate = tool.name === "bash" && onToolUpdate !== undefined
+          ? (partial: AgentToolResult<any>) => {
+              const now = Date.now();
+              if (now - lastUpdateAt < TOOL_UPDATE_THROTTLE_MS) return;
+              lastUpdateAt = now;
+              onToolUpdate(partial);
+            }
+          : undefined;
         try {
-          return await pool.run(() => tool.execute(id, params, innerSignal, undefined, context));
+          return await tool.execute(id, params, innerSignal, forwardUpdate, context);
         } catch (error) {
           if (innerSignal?.aborted === true) throw error;
           throw new Error(failureText(error));
@@ -274,7 +279,6 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
         messages.push({ role: "user", content: item.text, timestamp: Date.now() });
       }
     }
-    let result = "";
     const toolCalls: SessionToolCall[] = [];
     const pending = new Map<string, { id: string; args: Record<string, unknown> }>();
     let pendingTools = 0;
@@ -285,6 +289,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
     let cacheRead = 0;
     let costTotal = 0;
     let halted: HaltReason | undefined;
+    const turnTexts: string[] = [];
     const failures: Array<{ errorMessage?: string }> = [];
     const finish = (halt: HaltReason | undefined): SessionTurn => {
       const elapsedMs = Date.now() - openedAt;
@@ -292,6 +297,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
       const usage = halt === undefined
         ? { inTokens, outTokens, cacheRead, costTotal, elapsedMs, tokensPerSec, retention }
         : { inTokens, outTokens, cacheRead, costTotal, elapsedMs, tokensPerSec };
+      const result = turnTexts.join("\n\n");
       return halt === undefined
         ? { result, toolCalls, via: "createAgentSession", model: modelId, usage }
         : { result, toolCalls, via: "createAgentSession", model: modelId, usage, halt: { reason: halt } };
@@ -335,9 +341,16 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
         return halted !== undefined;
       },
     });
+    onAgent?.(agent);
     let settled = false;
     let stalled = false;
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    let hardTimer: ReturnType<typeof setTimeout> | undefined;
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    let rejectHardDeadline: ((reason: unknown) => void) | undefined;
+    const hardDeadline = new Promise<never>((_resolve, reject) => {
+      rejectHardDeadline = reject;
+    });
     const onIdle = (): void => {
       if (!settled && pendingTools === 0) {
         stalled = true;
@@ -361,6 +374,12 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
         pending.set(event.toolCallId, { id, args });
         pendingTools += 1;
         onUpdate?.({ kind: "toolCall", id, tool: event.toolName, args });
+      } else if (event.type === "tool_execution_update") {
+        const prior = pending.get(event.toolCallId);
+        onUpdate?.({
+          kind: "toolUpdate", id: prior?.id ?? takeId(event.toolCallId), tool: event.toolName,
+          args: (event.args ?? {}) as Record<string, unknown>, text: resultText(event.partialResult),
+        });
       } else if (event.type === "tool_execution_end") {
         const prior = pending.get(event.toolCallId);
         pendingTools -= 1;
@@ -377,7 +396,8 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
           outTokens += message.usage.output;
           cacheRead += message.usage.cacheRead;
           costTotal += message.usage.cost.total;
-          result = message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+          const text = message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+          if (text.length > 0) turnTexts.push(text);
           for (const item of event.toolResults) {
             const prior = pending.get(item.toolCallId);
             toolCalls.push({ id: prior?.id ?? item.toolCallId, tool: item.toolName, args: prior?.args ?? {}, output: resultText(item) });
@@ -389,11 +409,24 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
     const onAbort = (): void => { agent.abort(); };
     signal?.addEventListener("abort", onAbort, { once: true });
     pokeIdle();
+    hardTimer = setTimeout(() => {
+      if (settled) return;
+      agent.abort();
+      graceTimer = setTimeout(() => {
+        if (settled) return;
+        rejectHardDeadline?.({
+          error: "turn exceeded maxDurationMs and did not settle after abort",
+          hint: "retry with a smaller prompt or a larger budgets.maxDurationMs; the agent was force-aborted",
+        });
+      }, HARD_ABORT_GRACE_MS);
+    }, limits.maxDurationMs);
     try {
-      await agent.prompt({ role: "user", content: prompt, timestamp: Date.now() });
+      await Promise.race([agent.prompt({ role: "user", content: prompt, timestamp: Date.now() }), hardDeadline]);
     } finally {
       settled = true;
       clearTimeout(idleTimer);
+      clearTimeout(hardTimer);
+      clearTimeout(graceTimer);
       signal?.removeEventListener("abort", onAbort);
       off();
     }

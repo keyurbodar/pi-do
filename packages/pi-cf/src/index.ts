@@ -2,7 +2,7 @@ import { createDofsVfs, type FileStore } from "./store/vfs-dofs.ts";
 import {
   ensureEntriesSchema,
   entryHead,
-  getEntry,
+  closeRun,
   listEntries,
   openRun,
   recordTurnWithOpen,
@@ -348,7 +348,7 @@ export function createPiCf(options: CreatePiCfOptions = {}): new (
           }
           const runId = crypto.randomUUID();
           try {
-            const session = createAgentSession({ files: this.files, ws, shell, model, tools, apiKey, history: { leaf: sessionLeaf(sql, sid), readEntry: (cursor) => getEntry(sql, sid, cursor) } });
+            const session = createAgentSession({ files: this.files, ws, shell, model, tools, apiKey, history: { leaf: sessionLeaf(sql, sid), readEntries: (after, limit) => listEntries(sql, sid, { after, limit }) } });
             const turn = await session.run(prompt);
             recordTurnWithOpen(sql, sid, runId, prompt, turn.toolCalls, turn.result, turn.usage, turn.halt ?? null);
             const out = {
@@ -361,6 +361,7 @@ export function createPiCf(options: CreatePiCfOptions = {}): new (
             return rotated !== null ? json({ ...out, fence: rotated.fence, revision: rotated.revision }) : json(out);
           } catch (e) {
             openRun(sql, sid, runId);
+            closeRun(sql, sid, runId);
             if (e !== null && typeof e === "object" && "error" in e && typeof e.error === "string") {
               const hint = "hint" in e && typeof e.hint === "string" ? e.hint : "retry the run";
               return json({ error: e.error, hint }, 500);

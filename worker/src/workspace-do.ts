@@ -1,8 +1,9 @@
 import { createDofsVfs, type FileStore } from "pi-cf/store/vfs-dofs";
-import { appendEntry, ensureEntriesSchema } from "pi-cf/store/entries";
+import { ensureEntriesSchema } from "pi-cf/store/entries";
 import { ensureWorkspaceSchema } from "pi-cf/store/sql-util";
-import { ensureCompactionSchema, pendingSessions, runCompaction } from "./compaction";
-import { readAttachment, socketClosed, socketMessage, wrapSocket, type StreamHost } from "./stream";
+import { ensureCompactionSchema, runPendingCompactions } from "./compaction";
+import { readAttachment, socketMessage, wrapSocket, type StreamHost } from "./stream";
+import type { Agent } from "@earendil-works/pi-agent-core";
 import { resolveCatalogModel, type RuntimeEnv } from "./model-runtime";
 import { err, UNKNOWN_SESSION_HINT, type Env, type FenceNext, type FenceRead, type ModelTriple, type RouteCtx, type RouteHandler, type WorkspaceSettings } from "./routes/_shared";
 import { fileRoutes } from "./routes/files";
@@ -64,9 +65,9 @@ const ROUTES: Record<string, RouteHandler> = {
 
 export class WorkspaceDO implements DurableObject {
   private state: DurableObjectState;
-  private env: Env;
   private files: FileStore;
-  private live = new Map<string, AbortController>();
+  private env: Env;
+  private live = new Map<string, { controller: AbortController; agent?: Agent }>();
   private sessionQueues = new Map<string, Promise<void>>();
 
   private enqueueSessionTurn<T>(sid: string, fn: () => Promise<T>): Promise<T> {
@@ -225,14 +226,9 @@ export class WorkspaceDO implements DurableObject {
 
   async alarm(): Promise<void> {
     this.ensureSchema();
-    const sql = this.state.storage.sql;
-    for (const sid of pendingSessions(sql)) {
-      try {
-        runCompaction(sql, sid);
-      } catch (e) {
-        appendEntry(sql, sid, "error", { error: e instanceof Error ? e.message : String(e ?? "compaction failed") });
-      }
-    }
+    runPendingCompactions(this.state.storage.sql, () => {
+      void this.state.storage.setAlarm(Date.now() + 2000);
+    });
   }
 
   private streamHost(ws: string, sid: string): StreamHost {
@@ -252,6 +248,7 @@ export class WorkspaceDO implements DurableObject {
       readFence: () => this.readFence(sid),
       casRotateFence: (oldFence, oldRevision, next) => this.casRotateFence(sid, oldFence, oldRevision, next),
       live: this.live,
+      sockets: () => this.state.getWebSockets(),
       enqueue: (fn) => this.enqueueSessionTurn(sid, fn),
       scheduleAlarm: () => this.state.storage.setAlarm(Date.now() + 2000),
     };
@@ -265,16 +262,14 @@ export class WorkspaceDO implements DurableObject {
       sock.close(4403, "socket carried no session");
       return;
     }
-    await socketMessage(this.streamHost(att.ws, att.sid), wrapSocket(ws), message);
-  }
-
-  async webSocketClose(ws: WebSocket): Promise<void> {
-    const att = readAttachment(ws);
-    if (att !== null) socketClosed(this.streamHost(att.ws, att.sid));
-  }
-
-  async webSocketError(ws: WebSocket): Promise<void> {
-    const att = readAttachment(ws);
-    if (att !== null) socketClosed(this.streamHost(att.ws, att.sid));
+    const sock = wrapSocket(ws);
+    try {
+      await socketMessage(this.streamHost(att.ws, att.sid), sock, message);
+    } catch (e) {
+      sock.send({
+        error: e instanceof Error ? e.message.slice(0, 300) : "unexpected stream failure",
+        hint: "retry the frame; if the turn is stuck, send {abort} and reconnect",
+      });
+    }
   }
 }

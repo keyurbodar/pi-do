@@ -8,7 +8,7 @@ import {
   entryHead,
   listEntries,
   openRun,
-  recordTurn,
+  recordTurnWithOpen,
 } from "./src/store/entries.ts";
 
 function fail(step, want, got) {
@@ -26,7 +26,8 @@ function createFakeSql() {
   let seq = 0;
   const entries = [];
   const runs = new Map();
-  const leaves = new Map();
+  const totals = new Map();
+  const leafFor = (sid) => entries.reduce((max, e) => (e.sid === sid && e.id > max ? e.id : max), 0);
   return {
     exec(query, ...bindings) {
       const q = String(query);
@@ -39,19 +40,40 @@ function createFakeSql() {
         return [];
       }
       if (q.startsWith("SELECT last_insert_rowid")) return [{ id: seq }];
-      if (q.startsWith("SELECT COALESCE(MAX(id)")) {
-        const ids = entries.filter((e) => e.sid === bindings[0]).map((e) => e.id);
-        return [{ head: ids.length === 0 ? 0 : Math.max(...ids) }];
+      if (q.startsWith("SELECT leaf FROM sessions")) {
+        return [{ leaf: leafFor(bindings[0]) }];
       }
-      if (q.startsWith("UPDATE pi_entries SET cursor")) {
-        const row = entries.find((e) => e.id === bindings[1]);
-        if (row) row.cursor = bindings[0];
+      if (q.startsWith("SELECT 1 FROM session_totals")) {
+        return totals.size > 0 ? [{ one: 1 }] : [];
+      }
+      if (q.startsWith("SELECT 1 FROM pi_entries WHERE type")) {
+        return entries.some((e) => e.type === "result") ? [{ one: 1 }] : [];
+      }
+      if (q.startsWith("SELECT sid, body FROM pi_entries WHERE type")) {
+        return entries.filter((e) => e.type === "result").map((e) => ({ sid: e.sid, body: e.body }));
+      }
+      if (q.startsWith("INSERT INTO session_totals")) {
+        const t = totals.get(bindings[0]) ?? { inTokens: 0, outTokens: 0, cacheRead: 0, costTotal: 0, elapsedMs: 0, turns: 0 };
+        if (q.includes("ON CONFLICT")) {
+          t.inTokens += bindings[1];
+          t.outTokens += bindings[2];
+          t.cacheRead += bindings[3];
+          t.costTotal += bindings[4];
+          t.elapsedMs += bindings[5];
+          t.turns += 1;
+        } else {
+          t.inTokens = bindings[1];
+          t.outTokens = bindings[2];
+          t.cacheRead = bindings[3];
+          t.costTotal = bindings[4];
+          t.elapsedMs = bindings[5];
+          t.turns = bindings[6];
+        }
+        totals.set(bindings[0], t);
         return [];
       }
-      if (q.startsWith("UPDATE sessions SET leaf")) {
-        leaves.set(bindings[1], bindings[0]);
-        return [];
-      }
+      if (q.startsWith("UPDATE sessions SET leaf = (SELECT MAX(id)")) return [];
+      if (q.startsWith("UPDATE sessions SET leaf")) return [];
       if (q.startsWith("SELECT id AS cursor")) {
         return entries
           .filter((e) => e.sid === bindings[0] && e.id > bindings[1])
@@ -80,11 +102,14 @@ function createFakeSql() {
       fail("fake-exec", "known query", q);
       return [];
     },
+    transactionSync(fn) {
+      fn();
+    },
     statusOf(runId) {
       return runs.get(runId)?.status;
     },
     leafOf(sid) {
-      return leaves.get(sid) ?? 0;
+      return leafFor(sid);
     },
   };
 }
@@ -92,9 +117,7 @@ function createFakeSql() {
 const sql = createFakeSql();
 ensureEntriesSchema(sql);
 
-openRun(sql, "s1", "r1");
-eq("r1-open", sql.statusOf("r1"), "open");
-recordTurn(
+recordTurnWithOpen(
   sql,
   "s1",
   "r1",

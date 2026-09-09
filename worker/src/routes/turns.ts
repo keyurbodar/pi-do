@@ -1,6 +1,6 @@
-import { entryHead, listEntries, openRun, recordTurnWithOpen } from "pi-cf/store/entries";
-import { buildRuntime, clampThinkingLevel, keyedProviders, resolveCatalogModel, resolveKeyedModelLive, supportedThinkingLevels, THINKING_LEVELS, type RuntimeEnv, type RuntimeModel } from "../model-runtime";
-import { acceptStream, checkedRotate, executeTurn, type TurnSink } from "../stream";
+import { closeRun, entryHead, listEntries, openRun, recordTurnWithOpen } from "pi-cf/store/entries";
+import { buildRuntime, clampThinkingLevel, resolveCatalogModel, supportedThinkingLevels, THINKING_LEVELS, type RuntimeEnv, type RuntimeModel } from "../model-runtime";
+import { acceptStream, checkedRotate, executeTurn, parseBudgets, type TurnSink } from "../stream";
 import { readArchivePage, runCompaction } from "../compaction";
 import { MINT_WS_HINT, err, json, type RouteHandler } from "./_shared";
 
@@ -23,6 +23,8 @@ const run: RouteHandler = async (ctx, request, url) => {
   if (typeof prompt !== "string" || prompt.length === 0) {
     return err("missing prompt", 'retry as POST /workspaces/:id/sessions/:sid/run with JSON {"prompt": "read seed.txt"}', 400);
   }
+  const budgets = parseBudgets(rec["budgets"]);
+  if (!budgets.ok) return err(budgets.error, budgets.hint, 400);
   let overrideProvider: string | null = null;
   let overrideId: string | null = null;
   if (oneShotModel !== undefined) {
@@ -51,10 +53,7 @@ const run: RouteHandler = async (ctx, request, url) => {
   let catalog: RuntimeModel | null = null;
   if (effProvider !== null && effId !== null) {
     try {
-      const keyedHere = keyedProviders(ctx.env as unknown as RuntimeEnv);
-      catalog = keyedHere.some((provider) => provider.id === effProvider)
-        ? await resolveKeyedModelLive(ctx.env as unknown as RuntimeEnv, effProvider, effId)
-        : resolveCatalogModel(effProvider, effId);
+      catalog = resolveCatalogModel(effProvider, effId);
     } catch (e) {
       if (e !== null && typeof e === "object" && "error" in e && typeof e.error === "string") {
         const hint = "hint" in e && typeof e.hint === "string" ? e.hint : "retry with a catalog model";
@@ -92,12 +91,15 @@ const run: RouteHandler = async (ctx, request, url) => {
         response = rotated !== null ? json({ ...out, fence: rotated.fence, revision: rotated.revision }) : json(out);
       },
       fail(failId, error, hint, status, opened) {
-        if (opened) openRun(sql, sid, failId);
+        if (opened) {
+          openRun(sql, sid, failId);
+          closeRun(sql, sid, failId);
+        }
         response = json({ error, hint }, status);
       },
       aborted() {},
     };
-    await executeTurn(ctx.streamHost(ws, sid), { prompt, catalog, thinking: effThinking, runId }, sink);
+    await executeTurn(ctx.streamHost(ws, sid), { prompt, catalog, thinking: effThinking, runId, budgets: budgets.budgets }, sink);
     return response ?? json({ error: "run failed", hint: "retry the run with a simpler prompt" }, 500);
   });
 };

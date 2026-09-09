@@ -76,10 +76,10 @@ const R = {
       else process.stdout.write(`done\n`);
       if (f.result) process.stdout.write(f.result.endsWith("\n") ? f.result : `${f.result}\n`);
       if (f.usage) process.stdout.write(`usage ${R.usage(f.usage)}\n`);
-      if (f.halt) process.stdout.write(`halt: ${f.halt.reason ?? f.halt}\n`);
+      if (f.halt) process.stdout.write(`halted: ${f.halt.reason ?? f.halt} - result may be incomplete\n`);
       return;
     }
-    process.stdout.write(`${f.aborted ? `aborted run=${f.runId ?? ""}` : f.busy ? `busy ${f.hint ?? ""}` : f.ping ? `ping` : f.error ? `error ${f.error} ${f.hint ?? ""}` : f.message !== undefined ? `message ${JSON.stringify(f.message)}` : f.tool !== undefined ? `tool ${JSON.stringify(f.tool)}` : f.agent !== undefined ? `agent ${JSON.stringify(f.agent)}` : JSON.stringify(f)}\n`);
+    process.stdout.write(`${f.aborted ? `aborted run=${f.runId ?? ""}` : f.busy ? `busy ${f.hint ?? ""}` : f.ping ? `ping` : f.error ? `error ${f.error} ${f.hint ?? ""}` : f.live?.kind === "toolUpdate" ? `tool ${f.live.id} ${f.live.text}` : f.message !== undefined ? `message ${JSON.stringify(f.message)}` : f.tool !== undefined ? `tool ${JSON.stringify(f.tool)}` : f.agent !== undefined ? `agent ${JSON.stringify(f.agent)}` : JSON.stringify(f)}\n`);
   },
 };
 
@@ -245,7 +245,7 @@ async function doRun(base, json, opts) {
   if (!json) {
     R.note(note);
     if (data.usage) R.note(`usage ${R.usage(data.usage)}`);
-    if (data.halt) R.note(`halt: ${data.halt.reason ?? data.halt}`);
+    if (data.halt) R.note(`halted: ${data.halt.reason ?? data.halt} - result may be incomplete`);
   }
   process.exit(0);
 }
@@ -447,6 +447,44 @@ async function doStream(base, json, opts) {
     try { sock.close(); } catch { process.exit(code); }
     process.exit(code);
   };
+  // Server close codes map to exit codes: clean 0, fenced 3, conflict 4,
+  // unknown 5, anything else non-zero.
+  const exitForClose = (code) => {
+    if (code === 4403) return 3;
+    if (code === 4409) return 4;
+    if (code === 4404) return 5;
+    if (code === 1000 || code === 1005) return 0;
+    return 1;
+  };
+  // Max entry cursor seen on the socket; the close-time replay fetches
+  // everything after it in case the server persisted rows the socket
+  // never delivered (crash, raced close).
+  let lastCursor = 0;
+  const replayMissed = async () => {
+    if (lastCursor === 0) return;
+    let after = lastCursor;
+    for (;;) {
+      let data;
+      try {
+        data = await fetchEntriesPage(base, json, opts.ws, opts.sid, after, 1000);
+      } catch {
+        if (json) R.json({ error: "replay fetch failed", hint: `retry with GET /workspaces/${opts.ws}/sessions/${opts.sid}/entries?after=${after}&limit=1000` });
+        else { R.note(`error: replay fetch after close failed`); R.note(`hint: run 'pi-do entries --ws ${opts.ws} --sid ${opts.sid} --after ${after} --all' to recover missed rows`); }
+        return;
+      }
+      const rows = Array.isArray(data.entries) ? data.entries : [];
+      for (const row of rows) {
+        if (typeof row.cursor === "number" && row.cursor > lastCursor) lastCursor = row.cursor;
+        if (json) R.json({ replay: row });
+        else process.stdout.write(`replay ${row.cursor} ${row.type} ${row.body}\n`);
+      }
+      if (rows.length < 1000) return;
+      const last = rows[rows.length - 1].cursor;
+      if (typeof last !== "number" || last <= after) return;
+      if (typeof data.head === "number" && last >= data.head) return;
+      after = last;
+    }
+  };
   sock.onopen = () => {
     R.note(`stream open ${url.toString()}`);
     if (process.stdin.isTTY) R.note(`hint: type prompts line by line; Ctrl-D ends stdin, Ctrl-C closes the socket`);
@@ -471,7 +509,11 @@ async function doStream(base, json, opts) {
       finish(1);
       return;
     }
-    if (frame.done === true && typeof frame.fence === "string") { fence = frame.fence; expected = frame.revision; }
+    // Track the freshest revision from any frame carrying one so a fenced
+    // client can re-claim with the current revision after close.
+    if (typeof frame.revision === "number") expected = frame.revision;
+    if (frame.done === true && typeof frame.fence === "string") fence = frame.fence;
+    if (frame.entry && typeof frame.entry.cursor === "number" && frame.entry.cursor > lastCursor) lastCursor = frame.entry.cursor;
     if (frame.error && !frame.entry) R.note(`error: ${frame.error}`);
     if (frame.error && frame.hint) R.note(`hint: ${frame.hint}`);
     R.frame(frame, json);
@@ -479,11 +521,13 @@ async function doStream(base, json, opts) {
   sock.onerror = () => {
     R.note(`error: socket error talking to ${base}`); R.note(`hint: start it first (e.g. run 'wrangler dev' in worker/), then retry`);
     if (json) R.json({ error: "socket error", base });
-    finish(1);
+    // No exit here: the close event always follows and maps the code.
   };
-  sock.onclose = (event) => {
+  sock.onclose = async (event) => {
     R.note(`stream close code=${event.code} reason=${event.reason || "-"}`);
-    finish(0);
+    const code = exitForClose(event.code);
+    await replayMissed();
+    finish(code);
   };
   process.on("SIGINT", () => finish(0));
 }

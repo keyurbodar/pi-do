@@ -46,7 +46,7 @@ export interface BgReadResult {
 }
 
 export interface ShellLike {
-  exec(input: { command: string; cwd?: string }): Promise<ShellExecResult>;
+  exec(input: { command: string; cwd?: string; timeout?: number }): Promise<ShellExecResult>;
   bgStart?(input: BgStartInput): Promise<{ handle: string }>;
   bgRead?(input: { handle: string }): Promise<BgReadResult>;
   bgKill?(input: { handle: string }): Promise<{ killed: boolean }>;
@@ -94,14 +94,24 @@ export class ComputerExecutionEnv {
     return this.store.list(this.ws, dir);
   }
 
-  async exec(command: string, cwd?: string): Promise<{ stdout: string; stderr: string; exit: number }> {
+  async exec(
+    command: string,
+    cwd?: string,
+    options?: { timeout?: number; abortSignal?: AbortSignal },
+  ): Promise<{ stdout: string; stderr: string; exit: number }> {
     if (!this.shell) {
       throw {
         error: "shell unavailable",
         hint: "construct ComputerExecutionEnv with a shell binding to run commands",
       };
     }
-    const result = await this.shell.exec({ command, cwd });
+    // AbortSignal cannot cross the ShellWorker RPC boundary, so it is not
+    // forwarded here; callers race their own signal against the exec locally.
+    const result = await this.shell.exec({
+      command,
+      cwd,
+      timeout: options?.timeout === undefined ? undefined : Math.round(options.timeout * 1000),
+    });
     if (result.timedOut) {
       throw {
         error: "exec timed out",

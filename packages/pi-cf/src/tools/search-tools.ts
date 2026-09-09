@@ -1,19 +1,17 @@
-import type {
-  AgentHarnessTool,
-  AgentToolResult,
-} from "@earendil-works/pi-agent-core";
-import { truncateHead, truncateLine } from "@earendil-works/pi-agent-core";
+import type { AgentHarnessTool, AgentToolResult } from "@earendil-works/pi-agent-core";
+import { truncateLine } from "@earendil-works/pi-agent-core";
 import { minimatch } from "minimatch";
 import {
   type ToolContext,
 } from "./tools.ts";
-import { CAPS, cappedLimit, decodeUtf8, failKey, resolveScope } from "../runtime/validate.ts";
+import { CAPS, cappedLimit, checkedLimit, decodeUtf8, failKey, resolveScope } from "../runtime/validate.ts";
 
-export const FIND_DEFAULT_LIMIT = CAPS.findDefault;
-export const FIND_HARD_MAX_LIMIT = CAPS.findHard;
 export const GREP_DEFAULT_LIMIT = CAPS.grepDefault;
 export const GREP_HARD_MAX_LIMIT = CAPS.grepHard;
+export const FIND_DEFAULT_LIMIT = CAPS.findDefault;
+export const FIND_HARD_MAX_LIMIT = CAPS.findHard;
 export const GREP_MAX_LINE_LENGTH = CAPS.grepLine;
+export const GREP_MAX_CONTEXT = CAPS.grepContextMax;
 
 function basenameOf(path: string): string {
   const slash = path.lastIndexOf("/");
@@ -59,7 +57,7 @@ export const findTool: AgentHarnessTool<ToolContext, any, { count: number; total
   name: "find",
   label: "Find",
   description:
-    "Find workspace files by glob pattern (for example *.ts or **/*.json) or by substring. Paths are workspace-relative posix; path pins the search root (default the workspace root), limit caps the ranked results (default 100). Results rank by match quality then path. Read-only.",
+    "Find workspace files by glob pattern (for example *.ts or **/*.json) or by substring. Paths are workspace-relative posix; path pins the search root (default the workspace root), limit caps the ranked results (default 1000). Results rank by match quality then path. Read-only.",
   parameters: {
     type: "object",
     properties: {
@@ -117,7 +115,7 @@ export const grepTool: AgentHarnessTool<
   name: "grep",
   label: "Grep",
   description:
-    "Search workspace file contents for a regex (or a literal string with literal true). Paths are workspace-relative posix; path pins a file or directory root (default the workspace root), glob filters file names, limit caps the matches (default 100). Output is file:line: match text. Files cap at 2000 lines or 50KB, match lines cap at 500 chars, non-UTF8 files are skipped with a note. Read-only.",
+    "Search workspace file contents for a regex (or a literal string with literal true). Paths are workspace-relative posix; path pins a file or directory root (default the workspace root), glob filters file names, limit caps the matches (default 100), context adds 0-5 lines around each match (default 0). node_modules, .git and tmp are skipped. Output is file:line: match text with context lines marked by -; match lines cap at 500 chars, files cap at 1MiB per file, non-UTF8 files are skipped with a note. Read-only.",
   parameters: {
     type: "object",
     properties: {
@@ -127,6 +125,7 @@ export const grepTool: AgentHarnessTool<
       limit: { type: "number" },
       literal: { type: "boolean" },
       ignoreCase: { type: "boolean" },
+      context: { type: "number" },
     },
     required: ["pattern"],
   },
@@ -139,6 +138,7 @@ export const grepTool: AgentHarnessTool<
       limit?: number;
       literal?: boolean;
       ignoreCase?: boolean;
+      context?: number;
     },
     _signal,
     _onUpdate,
@@ -152,6 +152,11 @@ export const grepTool: AgentHarnessTool<
     }
     const { files } = resolveScope(context.env, params.path);
     const limit = cappedLimit(params.limit, GREP_DEFAULT_LIMIT, GREP_HARD_MAX_LIMIT);
+    const contextLines =
+      params.context === undefined
+        ? 0
+        : (checkedLimit(params.context, "context") ?? 0);
+    if (contextLines > GREP_MAX_CONTEXT) failKey("contextLarge", { max: GREP_MAX_CONTEXT });
     const flags = params.ignoreCase === true ? "i" : "";
     let expr: RegExp;
     try {
@@ -167,32 +172,38 @@ export const grepTool: AgentHarnessTool<
     const lines: string[] = [];
     const skipped: string[] = [];
     let filesSearched = 0;
-    let capped = false;
+    let truncatedLines = false;
+    let matchCount = 0;
     for (const file of candidates) {
-      if (lines.length >= limit) break;
+      if (matchCount >= limit) break;
       if (nameFilter !== null && !globMatch(file, nameFilter)) {
         continue;
       }
       const bytes = context.env.readFile(file);
-      const full = decodeUtf8(bytes);
+      const readBytes = bytes.byteLength > CAPS.grepFileBytes ? bytes.slice(0, CAPS.grepFileBytes) : bytes;
+      const full = decodeUtf8(readBytes);
       if (full === null || full.includes("\0")) {
         skipped.push(file);
         continue;
       }
       filesSearched += 1;
-      const head = truncateHead(full, { maxLines: CAPS.readLines, maxBytes: CAPS.readBytes });
-      if (head.truncated) capped = true;
-      const raw = head.content.split("\n");
+      const raw = full.split("\n");
       for (let n = 0; n < raw.length; n += 1) {
         const row = raw[n] as string;
         if (!expr.test(row)) continue;
-        const match = truncateLine(row, GREP_MAX_LINE_LENGTH);
-        if (match.wasTruncated) capped = true;
-        lines.push(`${file}:${n + 1}: ${match.text}`);
-        if (lines.length >= limit) break;
+        matchCount += 1;
+        const start = contextLines > 0 ? Math.max(0, n - contextLines) : n;
+        const end = contextLines > 0 ? Math.min(raw.length - 1, n + contextLines) : n;
+        for (let i = start; i <= end; i += 1) {
+          const match = truncateLine((raw[i] ?? "").replace(/\r/g, ""), GREP_MAX_LINE_LENGTH);
+          if (match.wasTruncated) truncatedLines = true;
+          const separator = i === n ? ":" : "-";
+          lines.push(`${file}${separator}${i + 1}${separator} ${match.text}`);
+        }
+        if (matchCount >= limit) break;
       }
     }
-    if (lines.length === 0 && skipped.length === 0) {
+    if (matchCount === 0 && skipped.length === 0) {
       return {
         content: [{ type: "text", text: "(no matches)" }],
         details: { matches: 0, filesSearched, filesSkipped: skipped },
@@ -202,15 +213,15 @@ export const grepTool: AgentHarnessTool<
     if (skipped.length > 0) {
       text += `\n\n[skipped non-UTF8: ${skipped.join(", ")}]`;
     }
-    if (capped) {
-      text += `\n\n[output capped at 2000 lines or 50KB per file, 500 chars per match line]`;
+    if (truncatedLines) {
+      text += `\n\n[long lines truncated at ${GREP_MAX_LINE_LENGTH} chars]`;
     }
-    if (lines.length >= limit) {
+    if (matchCount >= limit) {
       text += `\n\n[${limit} matches shown. Use limit=${Math.min(limit * 2, GREP_HARD_MAX_LIMIT)} for more]`;
     }
     return {
       content: [{ type: "text", text }],
-      details: { matches: lines.length, filesSearched, filesSkipped: skipped },
+      details: { matches: matchCount, filesSearched, filesSkipped: skipped },
     };
   },
 };

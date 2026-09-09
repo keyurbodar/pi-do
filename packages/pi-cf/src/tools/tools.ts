@@ -43,12 +43,26 @@ export const MAX_READ_BYTES = CAPS.readBytes;
 export const LIST_DEFAULT_MAX_ENTRIES = CAPS.listDefault;
 export const LIST_HARD_MAX_ENTRIES = CAPS.listHard;
 
+// AbortSignal cannot cross the ShellWorker RPC boundary, so the caller's signal
+// is raced locally: if it aborts first, the exec surfaces as aborted while the
+// orphaned ShellWorker run dies at its own timeout cap.
+function raceExecAbort(
+  inner: Promise<{ stdout: string; stderr: string; exit: number }>,
+  signal: AbortSignal,
+): Promise<{ stdout: string; stderr: string; exit: number } | null> {
+  let onAbort: () => void = () => {};
+  const aborted = new Promise<null>((resolve) => {
+    onAbort = () => resolve(null);
+  });
+  signal.addEventListener("abort", onAbort, { once: true });
+  void inner.catch(() => {});
+  return Promise.race([inner, aborted]).finally(() => signal.removeEventListener("abort", onAbort));
+}
+
 class CfEnv implements ExecutionEnv {
   cwd = "";
   lastFailure: { error: string; hint: string } | undefined;
   private inner: ComputerExecutionEnv;
-  private temps = new Map<string, string>();
-  private tempSeq = 0;
   constructor(inner: ComputerExecutionEnv) {
     this.inner = inner;
   }
@@ -114,10 +128,6 @@ class CfEnv implements ExecutionEnv {
 
   async appendFile(path: string, content: string | Uint8Array, signal?: AbortSignal) {
     const chunk = typeof content === "string" ? content : new TextDecoder().decode(content);
-    if (this.temps.has(path)) {
-      this.temps.set(path, (this.temps.get(path) ?? "") + chunk);
-      return ok<void, FileError>(undefined);
-    }
     const cur = await this.readBinaryFile(path, signal);
     if (!cur.ok) {
       if (cur.error.code === "not_found") return this.writeFile(path, chunk, signal);
@@ -183,9 +193,9 @@ class CfEnv implements ExecutionEnv {
   }
 
   async createTempFile(options?: { prefix?: string; suffix?: string; abortSignal?: AbortSignal }) {
-    this.tempSeq += 1;
-    const name = `tmp/${options?.prefix ?? "tmp-"}${Date.now().toString(36)}-${this.tempSeq}${options?.suffix ?? ""}`;
-    this.temps.set(name, "");
+    const name = `tmp/${crypto.randomUUID()}-${options?.prefix ?? "tmp-"}${options?.suffix ?? ""}`;
+    const created = await this.writeFile(name, "");
+    if (!created.ok) return err<string, FileError>(created.error);
     return ok<string, FileError>(name);
   }
 
@@ -195,9 +205,19 @@ class CfEnv implements ExecutionEnv {
     type ExecOut = { stdout: string; stderr: string; exitCode: number };
     if (options?.abortSignal?.aborted) return err<ExecOut, ExecutionError>(new ExecutionError("aborted", "aborted"));
     try {
-      const out = await this.inner.exec(command, options?.cwd);
+      const signal = options?.abortSignal;
+      const out =
+        signal === undefined
+          ? await this.inner.exec(command, options?.cwd, { timeout: options?.timeout })
+          : await raceExecAbort(this.inner.exec(command, options?.cwd, { timeout: options?.timeout }), signal);
+      if (out === null) {
+        return err<ExecOut, ExecutionError>(new ExecutionError("aborted", "aborted"));
+      }
       options?.onStdout?.(out.stdout);
       options?.onStderr?.(out.stderr);
+      if (options?.abortSignal?.aborted) {
+        return err<ExecOut, ExecutionError>(new ExecutionError("aborted", "aborted"));
+      }
       return ok<ExecOut, ExecutionError>({ stdout: out.stdout, stderr: out.stderr, exitCode: out.exit });
     } catch (e) {
       if (e !== null && typeof e === "object" && "error" in e && typeof (e as { error: unknown }).error === "string") {
@@ -230,22 +250,23 @@ function bridgeFor(env: ComputerExecutionEnv): CfEnv {
 
 type MutationState = { queues: Map<string, Promise<void>>; registration: Promise<void> };
 const mutationStates = new WeakMap<object, MutationState>();
+const bashStates = new WeakMap<object, MutationState>();
 
-export function withFileMutationQueue<T>(env: ComputerExecutionEnv, path: string, fn: () => Promise<T>): Promise<T> {
-  let state = mutationStates.get(env);
+function withKeyedQueue<T>(states: WeakMap<object, MutationState>, env: ComputerExecutionEnv, key: string, fn: () => Promise<T>): Promise<T> {
+  let state = states.get(env);
   if (state === undefined) {
     state = { queues: new Map(), registration: Promise.resolve() };
-    mutationStates.set(env, state);
+    states.set(env, state);
   }
   const current = state;
   const registration = current.registration.then(async () => {
-    const prev = current.queues.get(path) ?? Promise.resolve();
+    const prev = current.queues.get(key) ?? Promise.resolve();
     let release!: () => void;
     const next = new Promise<void>((resolve) => {
       release = resolve;
     });
     const chained = prev.then(() => next);
-    current.queues.set(path, chained);
+    current.queues.set(key, chained);
     return { prev, chained, release };
   });
   current.registration = registration.then(
@@ -255,9 +276,17 @@ export function withFileMutationQueue<T>(env: ComputerExecutionEnv, path: string
   return registration.then(({ prev, chained, release }) =>
     prev.then(fn).finally(() => {
       release();
-      if (current.queues.get(path) === chained) current.queues.delete(path);
+      if (current.queues.get(key) === chained) current.queues.delete(key);
     }),
   );
+}
+
+export function withFileMutationQueue<T>(env: ComputerExecutionEnv, path: string, fn: () => Promise<T>): Promise<T> {
+  return withKeyedQueue(mutationStates, env, path, fn);
+}
+
+function withBashQueue<T>(env: ComputerExecutionEnv, fn: () => Promise<T>): Promise<T> {
+  return withKeyedQueue(bashStates, env, env.workspaceId, fn);
 }
 
 function toolFailure(e: unknown, path: string, env?: CfEnv): never {
@@ -352,7 +381,7 @@ export const readTool: AgentHarnessTool<ToolContext, any, { bytes: number }> = {
     id,
     params: { path: string; offset?: number; limit?: number },
     signal,
-    _onUpdate,
+    onUpdate,
     context,
   ) {
     const path = normalizeWorkspacePath(params.path);
@@ -360,8 +389,15 @@ export const readTool: AgentHarnessTool<ToolContext, any, { bytes: number }> = {
     const limit = checkedLimit(params.limit, "limit");
     const env = bridgeFor(context.env);
     let out: { content: Array<{ type: string; text?: string }> };
+    type ReadExec = (
+      id: string,
+      params: unknown,
+      signal: AbortSignal | undefined,
+      onUpdate: unknown,
+      context: { env: CfEnv },
+    ) => Promise<{ content: Array<{ type: string; text?: string }> }>;
     try {
-      out = (await readInner.execute(id, { path, offset, limit }, signal, undefined, { env })) as unknown as typeof out;
+      out = await (readInner.execute as unknown as ReadExec)(id, { path, offset, limit }, signal, onUpdate, { env });
     } catch (e) {
       toolFailure(e, path, env);
     }
@@ -378,7 +414,7 @@ export const writeTool: AgentHarnessTool<ToolContext, any, { bytes: number }> = 
   label: writeInner.label,
   description: writeInner.description,
   parameters: writeInner.parameters,
-  async execute(id, params: { path: string; content: string }, signal, _onUpdate, context) {
+  async execute(id, params: { path: string; content: string }, signal, onUpdate, context) {
     const path = normalizeWorkspacePath(params.path);
     if (typeof params.content !== "string") {
       failKey("badContent");
@@ -388,12 +424,16 @@ export const writeTool: AgentHarnessTool<ToolContext, any, { bytes: number }> = 
       id: string,
       params: unknown,
       signal: AbortSignal | undefined,
-      onUpdate: undefined,
+      onUpdate: unknown,
       context: { env: CfEnv },
     ) => Promise<unknown>;
     try {
-      await withFileMutationQueue(context.env, path, () =>
-        (writeInner.execute as unknown as WriteExec)(id, { path, content: params.content }, signal, undefined, { env }),
+      await (writeInner.execute as unknown as WriteExec)(
+        id,
+        { path, content: params.content },
+        signal,
+        onUpdate,
+        { env },
       );
     } catch (e) {
       toolFailure(e, path, env);
@@ -405,6 +445,34 @@ export const writeTool: AgentHarnessTool<ToolContext, any, { bytes: number }> = 
   },
 };
 
+function isSingleEditInput(value: unknown): value is { oldText: string; newText: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const edit = value as Record<string, unknown>;
+  return typeof edit["oldText"] === "string" && typeof edit["newText"] === "string";
+}
+
+function prepareEditArguments(input: unknown): unknown {
+  if (!input || typeof input !== "object") return input;
+  const args = { ...(input as Record<string, unknown>) };
+  if (typeof args["edits"] === "string") {
+    try {
+      const parsed: unknown = JSON.parse(args["edits"] as string);
+      if (Array.isArray(parsed)) {
+        args["edits"] = parsed;
+      } else if (isSingleEditInput(parsed)) {
+        args["edits"] = [parsed];
+      }
+    } catch {}
+  } else if (isSingleEditInput(args["edits"])) {
+    args["edits"] = [args["edits"]];
+  }
+  if (typeof args["oldText"] !== "string" || typeof args["newText"] !== "string") return args;
+  const edits = Array.isArray(args["edits"]) ? [...(args["edits"] as unknown[])] : [];
+  edits.push({ oldText: args["oldText"], newText: args["newText"] });
+  const { oldText: _oldText, newText: _newText, ...rest } = args;
+  return { ...rest, edits };
+}
+
 export const editTool: AgentHarnessTool<
   ToolContext,
   any,
@@ -414,26 +482,25 @@ export const editTool: AgentHarnessTool<
   label: editInner.label,
   description: editInner.description,
   parameters: editInner.parameters,
-  async execute(id, params: unknown, signal, _onUpdate, context) {
+  prepareArguments: prepareEditArguments,
+  async execute(id, params: unknown, signal, onUpdate, context) {
     const record = (params ?? {}) as Record<string, unknown>;
     const path = normalizeWorkspacePath(record["path"]);
     const edits = normalizeEdits(params);
     const env = bridgeFor(context.env);
     try {
-      return (await withFileMutationQueue(context.env, path, () =>
-        (
-          editInner.execute as unknown as (
-            id: string,
-            params: unknown,
-            signal: AbortSignal | undefined,
-            onUpdate: undefined,
-            context: { env: CfEnv },
-          ) => Promise<{
-            content: Array<{ type: string; text?: string }>;
-            details: { diff: string; patch: string; firstChangedLine?: number };
-          }>
-        )(id, { path, edits }, signal, undefined, { env }),
-      )) as unknown as {
+      return (await (
+        editInner.execute as unknown as (
+          id: string,
+          params: unknown,
+          signal: AbortSignal | undefined,
+          onUpdate: unknown,
+          context: { env: CfEnv },
+        ) => Promise<{
+          content: Array<{ type: string; text?: string }>;
+          details: { diff: string; patch: string; firstChangedLine?: number };
+        }>
+      )(id, { path, edits }, signal, onUpdate, { env })) as unknown as {
         content: Array<{ type: "text"; text: string }>;
         details: { diff: string; patch: string; firstChangedLine?: number };
       };
@@ -560,39 +627,46 @@ export const removeTool: AgentHarnessTool<ToolContext, any, { removed: string[] 
   },
 };
 
-export const bashTool: AgentHarnessTool<ToolContext, any, { exit: number }> = {
+export const BASH_MAX_TIMEOUT_SECONDS = 120;
+
+export const bashTool: AgentHarnessTool<ToolContext, any, any> = {
   name: "bash",
   label: "Bash",
-  description: "Run a shell command via just-bash in an isolate (no node/python). Each call gets a fresh FS, cwd pinned per call. Output capped at 1 MiB, 10s timeout. Output is captured text.",
+  description:
+    "Run a shell command via just-bash in an isolate (no node/python). Each call gets a fresh FS, cwd pinned per call. Output capped at 1 MiB; if truncated, the full output is saved to a temp file you can read. Optional timeout in seconds (default 10s, max 120). Output is captured text.",
   parameters: {
     type: "object",
-    properties: { command: { type: "string" } },
+    properties: { command: { type: "string" }, timeout: { type: "number" } },
     required: ["command"],
   },
-  async execute(id, params: { command: string; timeout?: number }, signal, _onUpdate, context) {
+  async execute(id, params: { command: string; timeout?: number }, signal, onUpdate, context) {
+    if (params.timeout !== undefined) {
+      if (typeof params.timeout !== "number" || !Number.isFinite(params.timeout) || params.timeout <= 0) {
+        failKey("badTimeout");
+      }
+      if (params.timeout > BASH_MAX_TIMEOUT_SECONDS) failKey("timeoutLarge", { max: BASH_MAX_TIMEOUT_SECONDS });
+    }
     const env = bridgeFor(context.env);
     type BashExec = (
       id: string,
       params: unknown,
       signal: AbortSignal | undefined,
-      onUpdate: undefined,
+      onUpdate: unknown,
       context: { env: CfEnv },
-    ) => Promise<{ content: Array<{ type: "text"; text: string }> }>;
+    ) => Promise<AgentToolResult<any>>;
     try {
-      const out = await (bashInner.execute as unknown as BashExec)(
-        id,
-        { command: params.command, timeout: params.timeout },
-        signal,
-        undefined,
-        { env },
-      );
-      return { content: out.content, details: { exit: 0 } };
+      return (await withBashQueue(context.env, () =>
+        (bashInner.execute as unknown as BashExec)(
+          id,
+          { command: params.command, timeout: params.timeout },
+          signal,
+          onUpdate,
+          { env },
+        ),
+      )) as AgentToolResult<any>;
     } catch (e) {
-      if (e instanceof Error) {
-        const code = e.message.match(/Command exited with code (\d+)/);
-        if (code !== null) {
-          return { content: [{ type: "text", text: e.message }], details: { exit: Number(code[1]) } };
-        }
+      if (e instanceof Error && /Command (exited with code|timed out after|aborted)/.test(e.message)) {
+        throw e;
       }
       toolFailure(e, typeof params.command === "string" ? params.command : "", env);
     }
