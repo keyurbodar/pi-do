@@ -237,14 +237,19 @@ const post = JSON.parse(fs.readFileSync('${OUT}/post-manual.json', 'utf8')).entr
 // Rows the compactions moved: in pre-manual live, gone from post-manual live.
 // Holds under alarm interleavings: no turns run between the two reads, so
 // every row that left live is on the new archive pages, and vice versa.
+// The new pages can also hold rows an interleaved alarm compaction archived
+// (older cursors, same pages), so compare only the manual cursor range.
 const postCursors = new Set(post.map((e) => e.cursor));
 const want = pre.filter((e) => !postCursors.has(e.cursor));
-const got = [];
+const psums = post.filter((e) => e.type === 'compaction');
+const mbody = JSON.parse(psums[psums.length - 1].body);
+const gotAll = [];
 for (let p = t0.archivePages + 1; p <= t1.archivePages; p++) {
-  got.push(...JSON.parse(fs.readFileSync('${OUT}/archive-new-' + p + '.json', 'utf8')).entries);
+  gotAll.push(...JSON.parse(fs.readFileSync('${OUT}/archive-new-' + p + '.json', 'utf8')).entries);
 }
-if (JSON.stringify(got) !== JSON.stringify(want)) throw new Error('new archive pages differ from the compacted prefix: pages hold ' + got.length + ', moved ' + want.length);
-console.log('new archive pages re-readable: ' + got.length + ' entries match the prefix');
+const got = gotAll.filter((e) => e.cursor >= mbody.fromCursor && e.cursor <= mbody.toCursor);
+if (JSON.stringify(got) !== JSON.stringify(want)) throw new Error('manual range differs from the compacted prefix: pages hold ' + got.length + ', moved ' + want.length);
+console.log('new archive pages re-readable: ' + got.length + ' entries match the manual prefix');
 " || exit 1
 fi
 
