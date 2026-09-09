@@ -79,8 +79,17 @@ for (const [n, r] of [['tail-1', a], ['tail-2', b]]) {
 " || exit 1
 
 echo "### 7 fetch entries (limit 100) plus the meta leaf"
-${CLI} entries --ws "${WS}" --sid "${SID}" --after 0 --limit 100 --base "${BASE}" --json > "${OUT}/entries.json" || exit 1
-${CLI} meta --ws "${WS}" --sid "${SID}" --base "${BASE}" --json > "${OUT}/meta.json" || exit 1
+# Two reads are never simultaneous: an alarm compaction between them moves the
+# leaf. Poll until a meta+entries pair is mutually consistent (no turns run
+# here, so the first quiet gap converges; 25 tries bound a wedged alarm).
+TRIES=0
+while [ "${TRIES}" -lt 25 ]; do
+  ${CLI} entries --ws "${WS}" --sid "${SID}" --after 0 --limit 100 --base "${BASE}" --json > "${OUT}/entries.json" || exit 1
+  ${CLI} meta --ws "${WS}" --sid "${SID}" --base "${BASE}" --json > "${OUT}/meta.json" || exit 1
+  if node -e "const e=require('${OUT}/entries.json').entries; const l=require('${OUT}/meta.json').leaf; process.exit(e.length > 0 && l === e[e.length-1].cursor ? 0 : 1);"; then break; fi
+  TRIES=$((TRIES + 1))
+done
+if [ "${TRIES}" -ge 25 ]; then echo "entries/meta never converged"; exit 1; fi
 node -p "'entries=' + require('${OUT}/entries.json').entries.length + ' leaf=' + require('${OUT}/meta.json').leaf"
 
 echo "### 8 buildSessionContextFromEntries over the real rows: summary before tail"
