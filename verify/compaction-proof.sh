@@ -187,15 +187,23 @@ if (!c.compacted) {
   console.log('second compaction ok: alarm converged first, manual no-op, live ' + post.length);
   process.exit(0);
 }
+// The alarm may legally compact during section 9's turns, so an older alarm
+// summary can sit below the manual one. Anchor on the latest: the manual
+// compact is synchronous and leaves live bounded (pending false), so no alarm
+// fires between the manual response and the post read, and the manual summary
+// is deterministically newest.
 const summaries = post.filter((e) => e.type === 'compaction');
-if (summaries.length !== 1) throw new Error('expected exactly one summary entry, got ' + summaries.length);
-const tail = post.filter((e) => e.type !== 'compaction');
-if (tail.length !== 30 || post.length !== 31) throw new Error('expected 1 summary plus 30 tail, got ' + post.length);
-const cut = pre.length - 30;
-const sbody = JSON.parse(summaries[0].body);
-if (sbody.count !== cut || sbody.fromCursor !== pre[0].cursor || sbody.toCursor !== pre[cut - 1].cursor) {
-  throw new Error('summary must cover the archived prefix, got ' + summaries[0].body.slice(0, 160));
-}
+if (summaries.length < 1) throw new Error('expected at least the manual summary, got 0');
+const latest = summaries[summaries.length - 1];
+if (latest.cursor !== c.summaryCursor) throw new Error('manual summary must be newest: want cursor ' + c.summaryCursor + ', got ' + latest.cursor);
+const tail = post.filter((e) => e.cursor > latest.cursor);
+if (tail.some((e) => e.type === 'compaction')) throw new Error('no summary may sit above the manual one');
+const cut = c.archived;
+const sbody = JSON.parse(latest.body);
+if (sbody.count !== cut) throw new Error('manual summary must cover ' + cut + ' archived entries, got ' + sbody.count);
+const k = pre.findIndex((x) => x.cursor === sbody.fromCursor);
+if (k < 0) throw new Error('manual prefix start missing from pre-manual capture: ' + sbody.fromCursor);
+if (sbody.toCursor !== pre[k + cut - 1].cursor) throw new Error('manual prefix end wrong: ' + sbody.toCursor);
 for (const e of tail) {
   const p = pre.find((x) => x.cursor === e.cursor);
   if (!p) throw new Error('tail cursor missing from the pre-manual capture: ' + e.cursor);
@@ -205,10 +213,12 @@ for (const e of tail) {
   const got = JSON.stringify({ cursor: e.cursor, type: e.type, body: e.body });
   if (want !== got) throw new Error('tail cursor not byte-stable: ' + e.cursor);
 }
-if (t1.archiveTotal !== t0.archiveTotal + cut) throw new Error('archive total must grow by ' + cut + ', got ' + t0.archiveTotal + '->' + t1.archiveTotal);
-const newPages = Math.ceil(cut / 25);
-if (t1.archivePages !== t0.archivePages + newPages) throw new Error('archive pages must grow by ' + newPages);
-console.log('second compaction ok: live 31, archive total ' + t1.archiveTotal + ' pages ' + t1.archivePages);
+// Lower bounds: an alarm compaction between the pre-manual meta read and the
+// manual call only adds to the archive, never removes, so exact equality
+// would race. The manual contribution itself is pinned above by sbody.count.
+if (!(t1.archiveTotal >= t0.archiveTotal + cut)) throw new Error('archive total must grow by at least ' + cut + ', got ' + t0.archiveTotal + '->' + t1.archiveTotal);
+if (!(t1.archivePages >= t0.archivePages)) throw new Error('archive pages must not shrink, got ' + t0.archivePages + '->' + t1.archivePages);
+console.log('second compaction ok: live ' + post.length + ' (' + summaries.length + ' summaries, manual newest), archive total ' + t1.archiveTotal + ' pages ' + t1.archivePages);
 " || exit 1
 if node -e "if(!require('${OUT}/manual.json').compacted)process.exit(1);"; then
 TPAGES="$(node -p "require('${OUT}/meta-post-manual.json').compaction.archivePages")"
@@ -223,12 +233,17 @@ const fs = require('node:fs');
 const t0 = require('${OUT}/meta-pre-manual.json').compaction;
 const t1 = require('${OUT}/meta-post-manual.json').compaction;
 const pre = JSON.parse(fs.readFileSync('${OUT}/pre-manual.json', 'utf8')).entries;
-const want = pre.slice(0, pre.length - 30);
+const post = JSON.parse(fs.readFileSync('${OUT}/post-manual.json', 'utf8')).entries;
+// Rows the compactions moved: in pre-manual live, gone from post-manual live.
+// Holds under alarm interleavings: no turns run between the two reads, so
+// every row that left live is on the new archive pages, and vice versa.
+const postCursors = new Set(post.map((e) => e.cursor));
+const want = pre.filter((e) => !postCursors.has(e.cursor));
 const got = [];
 for (let p = t0.archivePages + 1; p <= t1.archivePages; p++) {
   got.push(...JSON.parse(fs.readFileSync('${OUT}/archive-new-' + p + '.json', 'utf8')).entries);
 }
-if (JSON.stringify(got) !== JSON.stringify(want)) throw new Error('new archive pages differ from the compacted prefix');
+if (JSON.stringify(got) !== JSON.stringify(want)) throw new Error('new archive pages differ from the compacted prefix: pages hold ' + got.length + ', moved ' + want.length);
 console.log('new archive pages re-readable: ' + got.length + ' entries match the prefix');
 " || exit 1
 fi
