@@ -29,7 +29,7 @@ examples:
   thinking: T("pi-do thinking — switch the session thinking level", "pi-do thinking --ws WS --sid SID --level L [--fence F --expected N] [--base URL] [--json]"),
   models: T("pi-do models — list catalog models with context windows", "pi-do models [--provider P] [--base URL] [--json]"),
   settings: T("pi-do settings — workspace default model triple for session mint", "pi-do settings --ws WS [--model provider/id] [--level L] [--base URL] [--json]", "No --model/--level reads the defaults (GET); with either it stores them (PUT)."),
-  git: T("pi-do git — narrow git reads and local writes over a session", "pi-do git --ws WS --sid SID [--base URL] [--json] <argv...>", "POSTs {argv} to /workspaces/:id/sessions/:sid/git."),
+  git: T("pi-do git — full git over a session (status, commit, branch, clone https, push, ...)", "pi-do git --ws WS --sid SID [--base URL] [--json] <argv...>", "POSTs {argv} to /workspaces/:id/sessions/:sid/git."),
   files: T("pi-do files — read/write/list/remove workspace files", "pi-do files put|get|ls|rm --ws WS [options]"),
   "files:put": T("pi-do files put — upload raw bytes to a workspace file", "pi-do files put --ws WS --path P (--body STR | --body-file F | piped stdin) [--base URL] [--json]"),
   "files:get": T("pi-do files get — download raw bytes of a workspace file", "pi-do files get --ws WS --path P [--out F] [--base URL] [--json]", "Stdout is the raw bytes (or nothing with --out)."),

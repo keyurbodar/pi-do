@@ -1,5 +1,5 @@
 #!/bin/sh
-# git-smoke.sh — proves session mint + narrow git allowlist over a fresh workspace.
+# git-smoke.sh — proves session mint + full git surface over a fresh workspace.
 # Usage: sh verify/git-smoke.sh [BASE]
 # Exit 0 when every assert passes, 1 otherwise. Writes artifacts/RUN_ID/git-smoke/.
 set -u
@@ -45,14 +45,14 @@ need_hint "${OUT}/status.body" || { echo "FAIL: not-a-repo body needs error+hint
 grep -q "not a git repository" "${OUT}/status.body" || { echo "FAIL: body must say not a git repository"; exit 1; }
 echo "PASS not-a-repo"
 
-echo "### 4 git push is 403 and nothing executes"
+echo "### 4 git push without a repo is structured not-a-repo (never 500)"
 CODE="$(curl -s -o "${OUT}/push.body" -w '%{http_code}' --max-time 10 -X POST \
   "${BASE}/workspaces/${WS}/sessions/${SID}/git" \
   -H 'content-type: application/json' -d '{"argv":["push","origin","main"]}')"
 echo "push code=${CODE}"
 cat "${OUT}/push.body"; echo
-test "${CODE}" = "403" || { echo "FAIL: expected 403 on push, got ${CODE}"; exit 1; }
-need_hint "${OUT}/push.body" || { echo "FAIL: 403 body needs error+hint"; exit 1; }
+test "${CODE}" = "404" || { echo "FAIL: expected 404 on push without repo, got ${CODE}"; exit 1; }
+need_hint "${OUT}/push.body" || { echo "FAIL: 404 body needs error+hint"; exit 1; }
 LS_BEFORE="$(curl -s --max-time 10 "${BASE}/workspaces/${WS}/files?list=")"
 CODE2="$(curl -s -o "${OUT}/status2.body" -w '%{http_code}' --max-time 10 -X POST \
   "${BASE}/workspaces/${WS}/sessions/${SID}/git" \
@@ -60,7 +60,7 @@ CODE2="$(curl -s -o "${OUT}/status2.body" -w '%{http_code}' --max-time 10 -X POS
 LS_AFTER="$(curl -s --max-time 10 "${BASE}/workspaces/${WS}/files?list=")"
 test "${CODE2}" = "404" || { echo "FAIL: status after push must stay 404, got ${CODE2}"; exit 1; }
 test "${LS_BEFORE}" = "${LS_AFTER}" || { echo "FAIL: files changed after rejected push"; exit 1; }
-echo "PASS push 403, nothing executed"
+echo "PASS push 404, nothing executed"
 
 echo "### 5 commit without a repo is structured not-a-repo (never 501/500)"
 CODE="$(curl -s -o "${OUT}/commit.body" -w '%{http_code}' --max-time 10 -X POST \

@@ -1,6 +1,6 @@
 import { runInSyncTx } from "pi-cf/store/entries";
 import { keyedProviders, listCatalogModels, type RuntimeEnv } from "../model-runtime";
-import { createWorkspaceFs, gateArgv, hasGitDir, notARepoBody, NotARepoError, runGitRead, runGitWrite, WRITE_SUBCOMMANDS } from "../git";
+import { createWorkspaceFs, gateArgv, hasGitDir, notARepoBody, NotARepoError, runGitArgv } from "../git";
 import { bgSchema, execSchema, handleSchema, sidSchema } from "../schemas";
 import { EXEC_TIMEOUT_MS } from "../shell-exec";
 import { MINT_WS_HINT, err, json, readValidated, type RouteHandler } from "./_shared";
@@ -30,15 +30,13 @@ const git: RouteHandler = async (ctx, request, url) => {
       path: r.path,
       body: r.body instanceof Uint8Array ? r.body : new Uint8Array(r.body),
     }));
-    if (gate.sub !== "init" && !hasGitDir(files)) return json(notARepoBody(), 404);
-    const fs = createWorkspaceFs(files);
-    if (gate.sub in WRITE_SUBCOMMANDS) {
-      const result = await runGitWrite(fs, gate.sub, gate.rest);
+    if (gate.argv[0] !== "init" && gate.argv[0] !== "clone" && !hasGitDir(files)) return json(notARepoBody(), 404);
+    const result = await runGitArgv(files, gate.argv);
+    if (result.upserts.length > 0 || result.deletes.length > 0) {
       const now = new Date().toISOString();
-      const dirty = fs.dirty();
       const sql = ctx.state.storage.sql;
       runInSyncTx(sql, () => {
-        for (const up of dirty.upserts) {
+        for (const up of result.upserts) {
           sql.exec(
             "INSERT OR REPLACE INTO files(ws, path, body, updated_at) VALUES (?, ?, ?, ?)",
             ws,
@@ -47,19 +45,20 @@ const git: RouteHandler = async (ctx, request, url) => {
             now,
           );
         }
-        for (const del of dirty.deletes) {
+        for (const del of result.deletes) {
           sql.exec("DELETE FROM files WHERE ws = ? AND path = ?", ws, del);
         }
       });
-      return json({ ...result, exitCode: 0 });
     }
-    const result = await runGitRead(fs, gate.sub, gate.rest);
-    return json({ ...result, exitCode: 0 });
+    if (result.exitCode === 0) return json({ stdout: result.stdout, stderr: result.stderr, exitCode: 0 });
+    if (/not a git repository/i.test(result.stderr)) return json(notARepoBody(), 404);
+    const msg = (result.stderr || result.stdout || "git failed").trim().split("\n")[0].slice(0, 300);
+    return err(msg, `git ${gate.argv[0]} exited ${result.exitCode}`, 400);
   } catch (e) {
     if (e instanceof NotARepoError) return json(notARepoBody(), 404);
     const msg = e instanceof Error ? e.message : String(e ?? "git failed");
     if (/not a git repository/i.test(msg)) return json(notARepoBody(), 404);
-    return err(msg.slice(0, 300), "retry with argv [status|log|diff|show|add|commit|rm|checkout|switch|init]; clone/fetch/push are forbidden", 400);
+    return err(msg.slice(0, 300), `retry with argv ["status"] or ["clone", "<https-url>"]`, 400);
   }
 };
 

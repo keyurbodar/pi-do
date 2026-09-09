@@ -12,13 +12,13 @@
     "wrangler": "^4.128.0"
   },
   "dependencies": {
-    "pi-cf": "*",
+    "@cloudflare/computer": "^0.2.1",
     "@earendil-works/pi-agent-core": "0.84.4",
     "@earendil-works/pi-ai": "0.84.4",
     "@hono/valibot-validator": "^0.6.1",
     "hono": "^4.13.7",
-    "isomorphic-git": "^1.41.9",
     "just-bash": "^3.4.2",
+    "pi-cf": "*",
     "valibot": "^1.4.2"
   }
 }

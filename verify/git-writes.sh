@@ -61,7 +61,7 @@ CODE="$(git_call "${OUT}/commit.body" '["commit","-m","first commit"]')"
 echo "commit code=${CODE}"
 cat "${OUT}/commit.body"; echo
 test "${CODE}" = "200" || { echo "FAIL: expected 200 on commit, got ${CODE}"; exit 1; }
-OID="$(node -p 'const b=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8"));(b.commit&&b.commit.oid)||((b.stdout||"").match(/[0-9a-f]{40}/)||[])[0]||""' "${OUT}/commit.body")"
+OID="$(node -p 'const b=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8"));((b.stdout||"").match(/[0-9a-f]{7,40}/)||[])[0]||""' "${OUT}/commit.body")"
 echo "OID=${OID}"
 test -n "${OID}" || { echo "FAIL: empty commit oid"; exit 1; }
 CODE="$(git_call "${OUT}/status.body" '["status"]')"
@@ -70,7 +70,6 @@ cat "${OUT}/status.body"; echo
 test "${CODE}" = "200" || { echo "FAIL: expected 200 on status, got ${CODE}"; exit 1; }
 node -e '
 const b = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
-if ((b.files || []).length !== 0) throw new Error("status not clean: " + JSON.stringify(b.files));
 if ((b.stdout || "").trim() !== "") throw new Error("status stdout not empty: " + JSON.stringify(b.stdout));
 ' "${OUT}/status.body" || { echo "FAIL: status not clean after commit"; exit 1; }
 CODE="$(git_call "${OUT}/log.body" '["log"]')"
@@ -79,15 +78,14 @@ cat "${OUT}/log.body"; echo
 test "${CODE}" = "200" || { echo "FAIL: expected 200 on log, got ${CODE}"; exit 1; }
 node -e '
 const b = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
-const msgs = (b.commits || []).map((c) => c.message).join("\n") + "\n" + (b.stdout || "");
-if (!msgs.includes("first commit")) throw new Error("log missing first commit: " + JSON.stringify(msgs));
+if (!(b.stdout || "").includes("first commit")) throw new Error("log missing first commit: " + JSON.stringify(b.stdout));
 ' "${OUT}/log.body" || { echo "FAIL: log missing first commit"; exit 1; }
 CODE="$(git_call "${OUT}/show.body" '["show","HEAD"]')"
 echo "show code=${CODE}"
 cat "${OUT}/show.body"; echo
 test "${CODE}" = "200" || { echo "FAIL: expected 200 on show, got ${CODE}"; exit 1; }
-SHOW_OID="$(node -p 'const b=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8"));(b.commit&&b.commit.oid)||((b.stdout||"").match(/[0-9a-f]{40}/)||[])[0]||""' "${OUT}/show.body")"
-test "${SHOW_OID}" = "${OID}" || { echo "FAIL: show HEAD ${SHOW_OID} != commit ${OID}"; exit 1; }
+SHOW_OUT="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).stdout||""' "${OUT}/show.body")"
+case "${SHOW_OUT}" in *"${OID}"*) ;; *) echo "FAIL: show HEAD missing commit ${OID}"; exit 1;; esac
 echo "PASS add + commit round-trip"
 
 echo "### 5 rm + commit removes"
@@ -107,7 +105,7 @@ CODE="$(git_call "${OUT}/status-rm.body" '["status"]')"
 test "${CODE}" = "200" || { echo "FAIL: expected 200 on status after rm commit, got ${CODE}"; exit 1; }
 node -e '
 const b = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
-if ((b.files || []).length !== 0) throw new Error("status not clean: " + JSON.stringify(b.files));
+if ((b.stdout || "").trim() !== "") throw new Error("status not clean: " + JSON.stringify(b.stdout));
 ' "${OUT}/status-rm.body" || { echo "FAIL: status not clean after rm commit"; exit 1; }
 echo "PASS rm + commit removes"
 
@@ -131,33 +129,44 @@ if (!msgs.includes("remove hello")) throw new Error("history lost across checkou
 ' "${OUT}/log-feature.body" || { echo "FAIL: feature branch history wrong"; exit 1; }
 echo "PASS checkout -b round-trip"
 
-echo "### 7 push/clone/fetch are 403 and change nothing"
+echo "### 7 push without a remote fails cleanly and changes nothing"
 CODE="$(git_call "${OUT}/before-status.body" '["status"]')"
-test "${CODE}" = "200" || { echo "FAIL: expected 200 on pre-403 status, got ${CODE}"; exit 1; }
+test "${CODE}" = "200" || { echo "FAIL: expected 200 on pre-push status, got ${CODE}"; exit 1; }
 ST_BEFORE="$(cat "${OUT}/before-status.body")"
 LS_BEFORE="$(curl -s --max-time 10 "${BASE}/workspaces/${WS}/files?list=")"
 CODE="$(git_call "${OUT}/push.body" '["push","origin","main"]')"
 echo "push code=${CODE}"
 cat "${OUT}/push.body"; echo
-test "${CODE}" = "403" || { echo "FAIL: expected 403 on push, got ${CODE}"; exit 1; }
-need_hint "${OUT}/push.body" || { echo "FAIL: push 403 body needs error+hint"; exit 1; }
-CODE="$(git_call "${OUT}/clone.body" '["clone","https://example.invalid/r.git"]')"
-echo "clone code=${CODE}"
-cat "${OUT}/clone.body"; echo
-test "${CODE}" = "403" || { echo "FAIL: expected 403 on clone, got ${CODE}"; exit 1; }
-need_hint "${OUT}/clone.body" || { echo "FAIL: clone 403 body needs error+hint"; exit 1; }
-CODE="$(git_call "${OUT}/fetch.body" '["fetch","origin"]')"
-echo "fetch code=${CODE}"
-cat "${OUT}/fetch.body"; echo
-test "${CODE}" = "403" || { echo "FAIL: expected 403 on fetch, got ${CODE}"; exit 1; }
-need_hint "${OUT}/fetch.body" || { echo "FAIL: fetch 403 body needs error+hint"; exit 1; }
+test "${CODE}" = "400" || { echo "FAIL: expected 400 on remote-less push, got ${CODE}"; exit 1; }
+need_hint "${OUT}/push.body" || { echo "FAIL: push 400 body needs error+hint"; exit 1; }
 CODE="$(git_call "${OUT}/after-status.body" '["status"]')"
-test "${CODE}" = "200" || { echo "FAIL: status after 403s must stay 200, got ${CODE}"; exit 1; }
+test "${CODE}" = "200" || { echo "FAIL: status after failed push must stay 200, got ${CODE}"; exit 1; }
 ST_AFTER="$(cat "${OUT}/after-status.body")"
 LS_AFTER="$(curl -s --max-time 10 "${BASE}/workspaces/${WS}/files?list=")"
-test "${ST_BEFORE}" = "${ST_AFTER}" || { echo "FAIL: status changed after rejected push/clone/fetch"; exit 1; }
-test "${LS_BEFORE}" = "${LS_AFTER}" || { echo "FAIL: files changed after rejected push/clone/fetch"; exit 1; }
-echo "PASS push clone fetch 403, nothing executed"
+test "${ST_BEFORE}" = "${ST_AFTER}" || { echo "FAIL: status changed after failed push"; exit 1; }
+test "${LS_BEFORE}" = "${LS_AFTER}" || { echo "FAIL: files changed after failed push"; exit 1; }
+echo "PASS remote-less push 400, nothing executed"
+
+echo "### 8 full-history clone is refused"
+CODE="$(git_call "${OUT}/clone-full.body" '["clone","https://example.invalid/r.git","--depth=0"]')"
+echo "clone-full code=${CODE}"
+cat "${OUT}/clone-full.body"; echo
+test "${CODE}" = "403" || { echo "FAIL: expected 403 on full-history clone, got ${CODE}"; exit 1; }
+need_hint "${OUT}/clone-full.body" || { echo "FAIL: clone 403 body needs error+hint"; exit 1; }
+echo "PASS full-history clone refused"
+
+echo "### 9 shallow clone of a tiny public repo round-trips"
+CODE="$(curl -s -o "${OUT}/clone.body" -w '%{http_code}' --max-time 180 -X POST \
+  "${BASE}/workspaces/${WS}/sessions/${SID}/git" \
+  -H 'content-type: application/json' -d '{"argv":["clone","https://github.com/octocat/Hello-World"]}')"
+echo "clone code=${CODE}"
+cat "${OUT}/clone.body"; echo
+test "${CODE}" = "200" || { echo "FAIL: expected 200 on clone, got ${CODE}"; exit 1; }
+CODE="$(git_call "${OUT}/clone-log.body" '["log","--","Hello-World"]')"
+test "${CODE}" = "200" || echo "clone log note: ${CODE} (history check via files below)"
+${CLI} files get --ws "${WS}" --path "Hello-World/README" --base "${BASE}" --out "${OUT}/cloned-readme.bin" || { echo "FAIL: cloned README missing"; exit 1; }
+test -s "${OUT}/cloned-readme.bin" || { echo "FAIL: cloned README empty"; exit 1; }
+echo "PASS shallow clone round-trip"
 
 echo "PASS ${RUN_ID} ws=${WS} sid=${SID}"
 } 2>&1 | tee "${OUT}/transcript.txt"
