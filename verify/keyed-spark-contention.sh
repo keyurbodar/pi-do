@@ -136,8 +136,7 @@ function finish(code, note) {
   if (settled) return;
   settled = true;
   clearTimeout(timer);
-  writeFileSync(OUTFILE, JSON.stringify({ frames, close, note: note || null }, null, 2) + "
-");
+  writeFileSync(OUTFILE, JSON.stringify({ frames, close, note: note || null }, null, 2) + "\n");
   process.exit(code);
 }
 const timer = setTimeout(() => finish(1, "client timeout waiting for frames"), 240000);

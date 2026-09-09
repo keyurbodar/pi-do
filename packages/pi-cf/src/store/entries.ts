@@ -168,7 +168,7 @@ function recordTurnInner(
   });
 }
 
-function bumpSessionTotals(sql: EntriesSql, sid: string, usage?: SessionUsage): void {
+export function bumpSessionTotals(sql: EntriesSql, sid: string, usage?: SessionUsage): void {
   const u = usage ?? { inTokens: 0, outTokens: 0, cacheRead: 0, costTotal: 0, elapsedMs: 0 };
   sql.exec(
     `INSERT INTO session_totals(sid, inTokens, outTokens, cacheRead, costTotal, elapsedMs, turns) VALUES (?, ?, ?, ?, ?, ?, 1)

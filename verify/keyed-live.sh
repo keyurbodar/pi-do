@@ -121,7 +121,7 @@ WSK="$(node -p "JSON.parse(process.argv[1]).workspaceId" "${WSK_JSON}")"
 printf '%s' "${SEED_BODY}" | ${CLI} files put --ws "${WSK}" --path "${SEED_PATH}" --base "${BASE}" --json || exit 1
 SESSK_JSON="$(${CLI} session create --ws "${WSK}" --base "${BASE}" --json)" || exit 1
 SIDK="$(node -p "JSON.parse(process.argv[1]).sessionId" "${SESSK_JSON}")"
-RUNK="$(${CLI} run --ws "${WSK}" --sid "${SIDK}" --prompt "Read ${SEED_PATH} and reply with its exact contents." --base "${BASE}" --json)" || exit 1
+RUNK="$(${CLI} run --ws "${WSK}" --sid "${SIDK}" --prompt "Read ${SEED_PATH} and reply with only the exact file contents and nothing else." --base "${BASE}" --json)" || exit 1
 printf '%s' "${RUNK}" > "${OUT}/shakeout-run.json"
 echo "${RUNK}"
 SEED_BODY="${SEED_BODY}" node -e "
@@ -140,7 +140,7 @@ WSK="$(node -p "JSON.parse(process.argv[1]).workspaceId" "${WSK_JSON}")"
 printf '%s' "${SEED_BODY}" | ${CLI} files put --ws "${WSK}" --path "${SEED_PATH}" --base "${BASE}" --json || exit 1
 SESSK_JSON="$(${CLI} session create --ws "${WSK}" --base "${BASE}" --json)" || exit 1
 SIDK="$(node -p "JSON.parse(process.argv[1]).sessionId" "${SESSK_JSON}")"
-RUNK="$(${CLI} run --ws "${WSK}" --sid "${SIDK}" --prompt "Read ${SEED_PATH} and reply with its exact contents." --base "${BASE}" --json)" || exit 1
+RUNK="$(${CLI} run --ws "${WSK}" --sid "${SIDK}" --prompt "Read ${SEED_PATH} and reply with only the exact file contents and nothing else." --base "${BASE}" --json)" || exit 1
 printf '%s' "${RUNK}" > "${OUT}/shakeout-run.json"
 echo "${RUNK}"
 SEED_BODY="${SEED_BODY}" node -e "
@@ -177,7 +177,7 @@ GATE_SLUG="$(node -p "const b=JSON.parse(require('fs').readFileSync('${OUT}/gate
 if [ -z "${GATE_SLUG}" ]; then echo "gate failed: empty models slice"; exit 1; fi
 ${CLI} model --ws "${WSG}" --sid "${SIDG}" --model "${KEYED_PROVIDER}/${GATE_SLUG}" --base "${BASE}" --json > "${OUT}/gate-switch.json" || exit 1
 CODE=0
-${CLI} run --ws "${WSG}" --sid "${SIDG}" --prompt "Read ${SEED_PATH} and reply with its exact contents." --base "${BASE}" --json > "${OUT}/gate-run.json" 2> "${OUT}/gate-run.stderr" || CODE=$?
+${CLI} run --ws "${WSG}" --sid "${SIDG}" --prompt "Read ${SEED_PATH} and reply with only the exact file contents and nothing else." --base "${BASE}" --json > "${OUT}/gate-run.json" 2> "${OUT}/gate-run.stderr" || CODE=$?
 cat "${OUT}/gate-run.json"
 if check_stop "${OUT}/gate-run.json" "${CODE}"; then
 note_stop "keyed gate hit 429/rate/quota; secret plumbing ok, provider throttled."
@@ -239,7 +239,7 @@ S1="blocked"; S2="blocked"; S3="blocked"; S4="blocked"; S5="blocked"; S6="blocke
 else
 [ "${CODE}" = "0" ] || { echo "proof 1 switch failed on code"; cat "${OUT}/p1-switch.stderr"; exit 1; }
 CODE=0
-${CLI} run --ws "${WSA}" --sid "${SIDA}" --prompt "Read ${SEED_PATH} and reply with its exact contents." --base "${BASE}" --json > "${OUT}/p1-run.json" 2> "${OUT}/p1-run.stderr" || CODE=$?
+${CLI} run --ws "${WSA}" --sid "${SIDA}" --prompt "Read ${SEED_PATH} and reply with only the exact file contents and nothing else." --base "${BASE}" --json > "${OUT}/p1-run.json" 2> "${OUT}/p1-run.stderr" || CODE=$?
 cat "${OUT}/p1-run.json"
 if check_stop "${OUT}/p1-run.json" "${CODE}"; then
 note_stop "proof 1 turn hit 429/rate/quota."
@@ -282,7 +282,7 @@ if (b.thinking !== process.env.LEVEL) throw new Error('row thinking wrong: ' + J
 console.log('stored ok: meta re-read shows thinking=' + b.thinking);
 " || exit 1
 CODE=0
-${CLI} run --ws "${WSA}" --sid "${SIDA}" --prompt "Read ${SEED_PATH} again and reply with its exact contents." --base "${BASE}" --json > "${OUT}/p2-run.json" 2> "${OUT}/p2-run.stderr" || CODE=$?
+${CLI} run --ws "${WSA}" --sid "${SIDA}" --prompt "Read ${SEED_PATH} again and reply with only the exact file contents and nothing else." --base "${BASE}" --json > "${OUT}/p2-run.json" 2> "${OUT}/p2-run.stderr" || CODE=$?
 cat "${OUT}/p2-run.json"
 if check_stop "${OUT}/p2-run.json" "${CODE}"; then
 note_stop "proof 2 turn hit 429/rate/quota."
@@ -392,7 +392,7 @@ sock.onmessage = (event) => {
     if (frame.entry && !steerSent) {
       steerSent = true;
       try {
-        sock.send(JSON.stringify({ steer: true, text: "steer-note-keyed" }));
+        sock.send(JSON.stringify({ steer: true, text: "steer note (not a task): keep going, and include the word steer-note-keyed in your final reply" }));
       } catch {
       }
     }
@@ -419,7 +419,7 @@ EOF
 echo "client written"
 STREAMB="${WS_BASE}/workspaces/${WSB}/sessions/${SIDB}/stream?fence=${FB0}&expected=${RB0}"
 CODE=0
-WS_URL="${STREAMB}" MODE=turn PROMPT="Read ${SEED_PATH} and reply with its exact contents." FENCE="${FB0}" EXPECTED="${RB0}" OUTFILE="${OUT}/p3-frames.json" STOPFILE="${OUT}/.stopbus" node "${OUT}/ws-client.mjs" || CODE=$?
+WS_URL="${STREAMB}" MODE=turn PROMPT="Read ${SEED_PATH} and reply with only the exact file contents and nothing else." FENCE="${FB0}" EXPECTED="${RB0}" OUTFILE="${OUT}/p3-frames.json" STOPFILE="${OUT}/.stopbus" node "${OUT}/ws-client.mjs" || CODE=$?
 cat "${OUT}/p3-frames.json"
 if [ -f "${OUT}/.stopbus" ]; then
 note_stop "proof 3 stream hit $(cat "${OUT}/.stopbus")."
@@ -497,7 +497,7 @@ else
 STREAMC="${WS_BASE}/workspaces/${WSC}/sessions/${SIDC}/stream?fence=${FC0}&expected=${RC0}"
 rm -f "${OUT}/.stopbus"
 CODE=0
-WS_URL="${STREAMC}" MODE=abort-next PROMPT="Read ${SEED_PATH} and reply with its exact contents." PROMPT2="Read ${SEED_PATH} again and reply with its exact contents." FENCE="${FC0}" EXPECTED="${RC0}" OUTFILE="${OUT}/p4-frames.json" STOPFILE="${OUT}/.stopbus" node "${OUT}/ws-client.mjs" || CODE=$?
+WS_URL="${STREAMC}" MODE=abort-next PROMPT="Read ${SEED_PATH} and reply with only the exact file contents and nothing else." PROMPT2="Read ${SEED_PATH} again and reply with only the exact file contents and nothing else." FENCE="${FC0}" EXPECTED="${RC0}" OUTFILE="${OUT}/p4-frames.json" STOPFILE="${OUT}/.stopbus" node "${OUT}/ws-client.mjs" || CODE=$?
 cat "${OUT}/p4-frames.json"
 if [ -f "${OUT}/.stopbus" ]; then
 note_stop "proof 4 stream hit $(cat "${OUT}/.stopbus")."
@@ -559,7 +559,7 @@ else
 [ "${CODE}" = "0" ] || { echo "proof 5 switch failed on code"; cat "${OUT}/p5-switch.stderr"; exit 1; }
 STREAMD="${WS_BASE}/workspaces/${WSD}/sessions/${SIDD}/stream?fence=${FD0}&expected=${RD0}"
 rm -f "${OUT}/.stopbus"
-WS_URL="${STREAMD}" MODE=steer-queue PROMPT="Read ${SEED_PATH} and reply with its exact contents." FENCE="${FD0}" EXPECTED="${RD0}" OUTFILE="${OUT}/p5-frames.json" STOPFILE="${OUT}/.stopbus" node "${OUT}/ws-client.mjs" &
+WS_URL="${STREAMD}" MODE=steer-queue PROMPT="Read ${SEED_PATH} and reply with only the exact file contents and nothing else." FENCE="${FD0}" EXPECTED="${RD0}" OUTFILE="${OUT}/p5-frames.json" STOPFILE="${OUT}/.stopbus" node "${OUT}/ws-client.mjs" &
 PW=$!
 sleep 3
 CODE=0
@@ -578,7 +578,14 @@ else
 [ "${CODE}" = "0" ] || { echo "proof 5 POST failed on code"; cat "${OUT}/p5-post.stderr"; exit 1; }
 [ "${CW}" = "0" ] || { echo "proof 5 WS failed on code"; exit 1; }
 ${CLI} entries --ws "${WSD}" --sid "${SIDD}" --after 0 --limit 1000 --base "${BASE}" --json > "${OUT}/p5-entries.json" || exit 1
-SEED_BODY="${SEED_BODY}" node -e "
+${CLI} meta --ws "${WSD}" --sid "${SIDD}" --base "${BASE}" --json > "${OUT}/p5-meta.json" || exit 1
+P5PAGES="$(node -p "require('${OUT}/p5-meta.json').compaction.archivePages || 0")"
+P=1
+while [ "${P}" -le "${P5PAGES}" ]; do
+${CLI} archive --ws "${WSD}" --sid "${SIDD}" --page "${P}" --base "${BASE}" --json > "${OUT}/p5-archive-p${P}.json" || exit 1
+P=$((P + 1))
+done
+SEED_BODY="${SEED_BODY}" P5PAGES="${P5PAGES}" node -e "
 const fs = require('node:fs');
 const frames = JSON.parse(fs.readFileSync('${OUT}/p5-frames.json', 'utf8')).frames;
 if (frames.some((f) => f.busy === true)) throw new Error('queued paths must serialize, never answer {busy:true}');
@@ -591,8 +598,11 @@ console.log('serialize+steer ok: no busy, steer landed mid-turn, WS turn done');
 const p = JSON.parse(fs.readFileSync('${OUT}/p5-post.json', 'utf8'));
 if (!String(p.result || '').includes(process.env.SEED_BODY)) throw new Error('POST result misses history: the second turn did not see the first read');
 console.log('history ok: queued POST quoted the earlier turn read');
-const entries = JSON.parse(fs.readFileSync('${OUT}/p5-entries.json', 'utf8')).entries;
-const cursors = entries.map((e) => e.cursor);
+const live = JSON.parse(fs.readFileSync('${OUT}/p5-entries.json', 'utf8')).entries;
+let archived = [];
+for (let p = 1; p <= Number(process.env.P5PAGES || 0); p++) archived.push(...JSON.parse(fs.readFileSync('${OUT}/p5-archive-p' + p + '.json', 'utf8')).entries);
+const entries = archived.concat(live);
+const cursors = live.map((e) => e.cursor);
 for (let i = 1; i < cursors.length; i++) {
   if (cursors[i] !== cursors[i - 1] + 1) throw new Error('cursor gap at index ' + i);
 }
@@ -604,16 +614,16 @@ for (const e of entries) {
   if (!byRun.has(b.runId)) byRun.set(b.runId, []);
   byRun.get(b.runId).push(e.cursor);
 }
-const runOf = (needle) => {
-  const hit = entries.find((e) => e.type === 'prompt' && String(e.body).includes(needle));
-  if (!hit) throw new Error('prompt entry missing for ' + needle);
-  return JSON.parse(hit.body).runId;
-};
-const wRun = runOf('reply with its exact contents.');
-const pRun = runOf('Quote the exact seeded body');
+const wPrompt = frames.find((f) => f.entry && f.entry.type === 'prompt');
+if (!wPrompt) throw new Error('WS prompt frame missing');
+const wRun = JSON.parse(wPrompt.entry.body).runId;
+const pHit = live.find((e) => e.type === 'prompt' && String(e.body).includes('Quote the exact seeded body'));
+if (!pHit) throw new Error('POST prompt entry missing from live entries');
+const pRun = JSON.parse(pHit.body).runId;
 if (wRun === pRun) throw new Error('WS turn and POST turn must be distinct runs');
+if (!byRun.has(wRun)) throw new Error('WS run has no persisted entries (live or archived)');
 if (Math.max(...byRun.get(wRun)) >= Math.min(...byRun.get(pRun))) throw new Error('paths interleaved across runs');
-console.log('ordered ok: one chain, WS run precedes POST run, no interleave');
+console.log('ordered ok: one chain, WS run precedes POST run, no interleave (live plus ' + archived.length + ' archived entries)');
 const u = done.usage || {};
 console.log('p5-ws usage in=' + (u.inTokens || 0) + ' out=' + (u.outTokens || 0) + ' cacheRead=' + (u.cacheRead || 0) + ' cost=' + (u.costTotal || 0) + ' elapsed=' + (u.elapsedMs || 0) + 'ms');
 require('node:fs').writeFileSync('${OUT}/p5-done-usage.json', JSON.stringify({ sid: '${SIDD}', usage: done.usage }) + '\n');
@@ -632,7 +642,7 @@ fi
 if [ "${STOP}" = "0" ]; then
 echo "### 10 proof 6: MEM-06 reserve on the long-history session"
 CODE=0
-${CLI} run --ws "${WSA}" --sid "${SIDA}" --prompt "Read ${SEED_PATH} one last time and reply with its exact contents (reserve check)." --base "${BASE}" --json > "${OUT}/p6-run.json" 2> "${OUT}/p6-run.stderr" || CODE=$?
+${CLI} run --ws "${WSA}" --sid "${SIDA}" --prompt "Read ${SEED_PATH} one last time and reply with only the exact file contents and nothing else (reserve check)." --base "${BASE}" --json > "${OUT}/p6-run.json" 2> "${OUT}/p6-run.stderr" || CODE=$?
 cat "${OUT}/p6-run.json"
 if check_stop "${OUT}/p6-run.json" "${CODE}"; then
 note_stop "proof 6 turn hit 429/rate/quota."
@@ -661,18 +671,16 @@ fi
 
 if [ "${STOP}" = "0" ]; then
 echo "### 11 proof 7: CACHE-01 SKIP asserted by grepping the source, not by traffic"
-CS_LINE="$(grep -n "completeSimple(" "${ROOT}/packages/pi-cf/src/agent/session.ts" | head -1 | cut -d: -f1)"
-[ -n "${CS_LINE}" ] || { echo "completeSimple call site gone; re-examine the cache path"; exit 1; }
-FROM=$((CS_LINE - 30))
-TO=$((CS_LINE + 12))
-echo "completeSimple call site at session.ts:${CS_LINE}; scanning lines ${FROM}-${TO} for a session id"
-sed -n "${FROM},${TO}p" "${ROOT}/packages/pi-cf/src/agent/session.ts"
-if sed -n "${FROM},${TO}p" "${ROOT}/packages/pi-cf/src/agent/session.ts" | grep -i -q "sessionId\|session_id"; then
-echo "session id now threads near completeSimple; the SKIP reason is stale"
+CS_LINE="$(grep -n "createAgentSession({" "${ROOT}/packages/pi-cf/src/index.ts" | head -1 | cut -d: -f1)"
+[ -n "${CS_LINE}" ] || { echo "createAgentSession call site gone; re-examine the cache path"; exit 1; }
+CALL="$(sed -n "${CS_LINE}p" "${ROOT}/packages/pi-cf/src/index.ts")"
+echo "call: ${CALL}"
+if printf '%s' "${CALL}" | grep -q "sessionId"; then
+echo "session id now threads into createAgentSession; the SKIP reason is stale"
 exit 1
 fi
-echo "SKIP CACHE-01: no session id threads into completeSimple (session.ts:${CS_LINE}), so no per-session cache key exists to prove."
-printf '%s\n' "SKIP CACHE-01: no session id threads into completeSimple (session.ts:${CS_LINE}), so no per-session cache key exists to prove." > "${OUT}/p7-cache-skip.txt"
+echo "SKIP CACHE-01: no sessionId in the createAgentSession call (index.ts:${CS_LINE}), so no per-session cache key exists to prove."
+printf '%s\n' "SKIP CACHE-01: no sessionId in the createAgentSession call (index.ts:${CS_LINE}), so no per-session cache key exists to prove." > "${OUT}/p7-cache-skip.txt"
 S7="skip"
 else
 echo "SKIP proof 7 (stopped)"
@@ -763,12 +771,15 @@ if [ "${STOP}" = "1" ]; then
 [ "${S7}" = "pending" ] && S7="blocked"
 [ "${S8}" = "pending" ] && S8="blocked"
 fi
+echo "proofs: shakeout=${S0} factory=${S1} thinking=${S2} stream=${S3} abort=${S4} steer=${S5} reserve=${S6} cache=${S7} rollup=${S8} failed_on_code=${FAILED_CODE} stopped=${STOP}"
 if [ "${FAILED_CODE}" != "0" ]; then
 exit 1
 fi
 if [ "${STOP}" = "1" ]; then
 echo "STOPPED ${RUN_ID}; stop note kept at ${OUT}/stop-note.txt"
 echo "PASS ${RUN_ID} BLOCKED keyed-provider-refusal"
+else
+echo "PASS ${RUN_ID} keyed full-inference"
 fi
 } 2>&1 | tee "${OUT}/transcript.txt"
 exit "${PIPESTATUS[0]}"

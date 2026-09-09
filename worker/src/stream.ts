@@ -1,4 +1,4 @@
-import { appendEntry, closeRun, getEntry, listEntries, openRun, sessionLeaf, type EntriesSql } from "pi-cf/store/entries";
+import { appendEntry, bumpSessionTotals, closeRun, getEntry, listEntries, openRun, sessionLeaf, type EntriesSql } from "pi-cf/store/entries";
 import { enforceFence } from "pi-cf/store/fence";
 import type { FileStore } from "pi-cf/store/vfs-dofs";
 import { clampThinkingLevel, defaultTurnModel, keyedProviders, resolveCatalogModel, resolveKeyedModel, resolveProviderKey, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
@@ -438,6 +438,7 @@ async function startTurn(
           emit("result", { runId: doneId, result: turn.result, usage: turn.usage, runtime, ...(turn.halt ? { halt: turn.halt } : {}) });
           try {
             closeRun(host.sql, host.sid, doneId);
+            bumpSessionTotals(host.sql, host.sid, turn.usage);
           } catch {
           }
           if (held !== null) {
