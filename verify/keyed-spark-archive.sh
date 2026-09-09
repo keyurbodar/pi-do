@@ -387,7 +387,8 @@ for (const s of ctx.skipped) {
 for (let i = 2; i < ctx.messages.length; i++) {
   if (!(ctx.messages[i].cursor > ctx.messages[i - 1].cursor)) throw new Error("tail messages must run in cursor order");
 }
-console.log("tail-verbatim ok: " + projected + " tail prompt/result/tool entries project verbatim in cursor order");
+if (projected < 1) console.log("tail empty: final compaction left the summary newest, nothing to project (byte-identity proven in 11b)");
+else console.log("tail-verbatim ok: " + projected + " tail prompt/result/tool entries project verbatim in cursor order");
 EOF
 node "${OUT}/check.mjs" || exit 1
 
@@ -399,6 +400,37 @@ if (b.runtime.thinking !== '${CUR}') throw new Error('follow-up thinking ' + b.r
 const u = b.usage;
 console.log('follow-up usage: in=' + u.inTokens + ' out=' + u.outTokens + ' cacheRead=' + u.cacheRead + ' costTotal=' + u.costTotal + ' elapsedMs=' + u.elapsedMs);
 console.log('follow-up ok: thinking=${CUR} reflected, result non-empty, usage positive');
+" || exit 1
+echo "### 11b pre-compaction tail window replays byte-identical through the compacted path"
+WINDOW="$(node -p "JSON.parse(require('node:fs').readFileSync('${OUT}/entries-presettle.json','utf8')).entries.filter((e)=>e.type==='prompt'||e.type==='result').length")"
+echo "projected tail window=${WINDOW}"
+if [ "${WINDOW}" -le 0 ]; then echo "tail window empty: the vacuous projection recurred"; exit 1; fi
+${CLI} entries --ws "${WS}" --sid "${SID}" --after 0 --limit 1000 --base "${BASE}" --json > "${OUT}/entries-post.json" || exit 1
+${CLI} meta --ws "${WS}" --sid "${SID}" --base "${BASE}" --json > "${OUT}/meta-post.json" || exit 1
+POSTPAGES="$(node -p "require('${OUT}/meta-post.json').compaction.archivePages")"
+PP=1
+while [ "${PP}" -le "${POSTPAGES}" ]; do
+  ${CLI} archive --ws "${WS}" --sid "${SID}" --page "${PP}" --base "${BASE}" --json > "${OUT}/archive-post-p${PP}.json" || exit 1
+  PP=$((PP + 1))
+done
+node -e "
+const fs = require('node:fs');
+const pre = JSON.parse(fs.readFileSync('${OUT}/entries-presettle.json', 'utf8')).entries;
+const win = pre.filter((e) => e.type === 'prompt' || e.type === 'result');
+if (win.length < 1) throw new Error('tail window empty: the vacuous projection recurred, not a pass');
+const post = JSON.parse(fs.readFileSync('${OUT}/entries-post.json', 'utf8')).entries;
+const pages = require('${OUT}/meta-post.json').compaction.archivePages;
+let archived = [];
+for (let p = 1; p <= pages; p++) archived.push(...JSON.parse(fs.readFileSync('${OUT}/archive-post-p' + p + '.json', 'utf8')).entries);
+const union = new Map();
+for (const e of post.concat(archived)) union.set(e.cursor, JSON.stringify(e));
+let n = 0;
+for (const e of win) {
+  const g = union.get(e.cursor);
+  if (!g || g !== JSON.stringify(e)) throw new Error('window entry not byte-identical through the compacted path at cursor ' + e.cursor);
+  n++;
+}
+console.log('tail-window ok: ' + n + ' pre-compaction prompt/result bodies byte-identical through the compacted path (live plus archive)');
 " || exit 1
 
 echo "### 12 tail byte-stable across the follow-up (storage re-read)"
