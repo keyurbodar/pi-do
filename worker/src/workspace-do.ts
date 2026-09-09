@@ -2,6 +2,7 @@ import { createDofsVfs, type FileStore } from "pi-cf/store/vfs-dofs";
 import { ensureEntriesSchema } from "pi-cf/store/entries";
 import { ensureWorkspaceSchema } from "pi-cf/store/sql-util";
 import { ensureCompactionSchema, runPendingCompactions } from "./compaction";
+import { COMPACTION_JOB, COMPACTION_REARM_MS, KEEPALIVE_JOB, KEEPALIVE_MS, cancelJob, earliestDeadline, ensureAlarmMuxSchema, runDueJobs, scheduleJob } from "./alarm-mux";
 import { readAttachment, socketMessage, wrapSocket, type StreamHost } from "./stream";
 import type { Agent } from "@earendil-works/pi-agent-core";
 import { resolveCatalogModel, type RuntimeEnv } from "./model-runtime";
@@ -96,6 +97,7 @@ export class WorkspaceDO implements DurableObject {
     this.files.ensureSchema();
     ensureEntriesSchema(sql);
     ensureCompactionSchema(sql);
+    ensureAlarmMuxSchema(sql);
     sql.exec("DROP TABLE IF EXISTS pi_owners");
   }
 
@@ -226,9 +228,21 @@ export class WorkspaceDO implements DurableObject {
 
   async alarm(): Promise<void> {
     this.ensureSchema();
-    runPendingCompactions(this.state.storage.sql, () => {
-      void this.state.storage.setAlarm(Date.now() + 2000);
+    const sql = this.state.storage.sql;
+    const now = Date.now();
+    await runDueJobs(sql, now, {
+      [COMPACTION_JOB]: () => {
+        runPendingCompactions(sql, () => {
+          scheduleJob(sql, COMPACTION_JOB, Date.now() + COMPACTION_REARM_MS);
+        });
+      },
+      [KEEPALIVE_JOB]: () => {
+        if (this.live.size > 0) scheduleJob(sql, KEEPALIVE_JOB, Date.now() + KEEPALIVE_MS);
+      },
     });
+    const next = earliestDeadline(sql);
+    if (next === null) await this.state.storage.deleteAlarm();
+    else await this.state.storage.setAlarm(next);
   }
 
   private streamHost(ws: string, sid: string): StreamHost {
@@ -250,7 +264,21 @@ export class WorkspaceDO implements DurableObject {
       live: this.live,
       sockets: () => this.state.getWebSockets(),
       enqueue: (fn) => this.enqueueSessionTurn(sid, fn),
-      scheduleAlarm: () => this.state.storage.setAlarm(Date.now() + 2000),
+      scheduleAlarm: async () => {
+        scheduleJob(this.state.storage.sql, COMPACTION_JOB, Date.now() + COMPACTION_REARM_MS);
+        const next = earliestDeadline(this.state.storage.sql);
+        if (next !== null) await this.state.storage.setAlarm(next);
+      },
+      holdKeepalive: async () => {
+        scheduleJob(this.state.storage.sql, KEEPALIVE_JOB, Date.now() + KEEPALIVE_MS);
+        const next = earliestDeadline(this.state.storage.sql);
+        if (next !== null) await this.state.storage.setAlarm(next);
+      },
+      releaseKeepalive: async () => {
+        const next = cancelJob(this.state.storage.sql, KEEPALIVE_JOB);
+        if (next === null) await this.state.storage.deleteAlarm();
+        else await this.state.storage.setAlarm(next);
+      },
     };
   }
 

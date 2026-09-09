@@ -31,6 +31,8 @@ export interface StreamHost {
   sockets(): WebSocket[];
   enqueue: <T>(fn: () => Promise<T>) => Promise<T>;
   scheduleAlarm(): Promise<void>;
+  holdKeepalive(): Promise<void>;
+  releaseKeepalive(): Promise<void>;
 }
 
 export interface StreamAttachment {
@@ -342,6 +344,15 @@ function shaped(e: unknown, fallbackError: string, fallbackHint: string): { erro
 }
 
 export async function executeTurn(host: StreamHost, input: TurnInput, sink: TurnSink): Promise<void> {
+  await host.holdKeepalive();
+  try {
+    await executeTurnInner(host, input, sink);
+  } finally {
+    await host.releaseKeepalive();
+  }
+}
+
+async function executeTurnInner(host: StreamHost, input: TurnInput, sink: TurnSink): Promise<void> {
   let resolved: TurnModel;
   try {
     resolved = resolveTurnModel(host.runtimeEnv, input.catalog);
