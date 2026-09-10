@@ -106,30 +106,74 @@ function readAllLive(sql: EntriesSql, sid: string): EntryRow[] {
   return drainPages((after) => listEntries(sql, sid, { after, limit: 1000 }));
 }
 
-function summarizePrefix(old: EntryRow[]): CompactionSummaryBody {
-  let chars = 0;
-  const lines: string[] = [];
-  for (const e of old) {
-    chars += e.body.length;
-    if (lines.length >= 8) continue;
-    if (e.type === "prompt" || e.type === "result" || e.type === "compaction") {
-      const obj = parseJsonObject(e.body);
-      let text = e.body;
-      if (obj !== null) {
-        for (const field of SUMMARY_FIELDS) {
-          const value = strField(obj, field);
-          if (value !== null) {
-            text = value;
-            break;
-          }
-        }
-      }
-      const first = text.split("\n")[0].slice(0, 120);
-      if (first.length > 0) lines.push(`${e.type}#${e.cursor}: ${first}`);
+// Deterministic per-turn synthesis: one sentence per prompt→tools→outcome
+// turn, so resume reads narrative instead of type#cursor fragments. Stays
+// synchronous for the alarm path (no inference keyless); prior summaries
+// carry forward so re-compaction never drops older history.
+function firstLine(text: string, max: number): string {
+  const line = text.split("\n")[0].trim();
+  return line.length > max ? `${line.slice(0, max)}…` : line;
+}
+function entryText(e: EntryRow): string {
+  const obj = parseJsonObject(e.body);
+  if (obj === null) return e.body;
+  for (const field of SUMMARY_FIELDS) {
+    const value = strField(obj, field);
+    if (value !== null) return value;
+  }
+  return strField(obj, "text") ?? e.body;
+}
+function describeCall(tool: string, args: unknown): string {
+  if (args !== null && typeof args === "object") {
+    const record = args as Record<string, unknown>;
+    for (const key of ["path", "command", "file"]) {
+      const value = record[key];
+      if (typeof value === "string" && value.length > 0) return `${tool}(${firstLine(value, 80)})`;
     }
   }
+  return tool;
+}
+function summarizePrefix(old: EntryRow[]): CompactionSummaryBody {
+  let chars = 0;
+  const sentences: string[] = [];
+  let turns = 0;
+  let turn: { prompt: string; tools: string[]; outcome: string | null; from: number; to: number } | null = null;
+  const flush = () => {
+    if (turn === null) return;
+    turns += 1;
+    const ran = turn.tools.length > 0 ? ` ran ${turn.tools.join(", ")}` : "";
+    const outcome = turn.outcome !== null && turn.outcome.length > 0 ? `, outcome ${turn.outcome}` : "";
+    sentences.push(`Turn "${turn.prompt}"${ran}${outcome} (cursors ${turn.from}..${turn.to}).`);
+    turn = null;
+  };
+  for (const e of old) {
+    chars += e.body.length;
+    const text = firstLine(entryText(e), 160);
+    if (e.type === "prompt" || e.type === "steer") {
+      flush();
+      turn = { prompt: text, tools: [], outcome: null, from: e.cursor, to: e.cursor };
+    } else if (e.type === "result") {
+      if (turn === null) sentences.push(`Outcome "${text}" (cursor ${e.cursor}).`);
+      else {
+        turn.outcome = text;
+        turn.to = e.cursor;
+        flush();
+      }
+    } else if (e.type === "toolCall" && turn !== null) {
+      const obj = parseJsonObject(e.body);
+      const tool = obj !== null ? strField(obj, "tool") ?? e.type : e.type;
+      turn.tools.push(describeCall(tool, obj !== null ? obj.args : null));
+      turn.to = e.cursor;
+    } else if (e.type === "compaction") {
+      flush();
+      if (text.length > 0) sentences.push(`Earlier: ${firstLine(text, 240)}`);
+    } else if (turn !== null) turn.to = e.cursor;
+  }
+  flush();
+  const detail = sentences.length > 8 ? [...sentences.slice(0, 8), `… plus ${sentences.length - 8} further archived turns.`] : sentences;
+  const head = turns > 0 ? `Archived ${old.length} entries (cursors ${old[0].cursor}..${old[old.length - 1].cursor}) across ${turns} turn${turns === 1 ? "" : "s"}.` : `Archived ${old.length} entries (cursors ${old[0].cursor}..${old[old.length - 1].cursor}).`;
   return {
-    summary: `compacted ${old.length} entries (cursors ${old[0].cursor}..${old[old.length - 1].cursor}). ${lines.join(" | ")}`,
+    summary: `${head} ${detail.join(" ")}`,
     fromCursor: old[0].cursor,
     toCursor: old[old.length - 1].cursor,
     count: old.length,
