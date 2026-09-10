@@ -16,8 +16,8 @@
 # reuses that server and never writes a secret file. The secret never enters
 # artifact (redaction grep at the end proves it).
 # Usage: sh verify/keyed-spark-contention.sh [BASE]
-# Exit 0 on pass (or on quota-blocked 429, reported not failed), 1 otherwise.
-# Writes artifacts/RUN_ID/keyed-spark-contention/.
+# Exit 0 on pass, 2 on blocked (OUT/BLOCKED names the cause; never PASS),
+# 1 otherwise. Writes artifacts/RUN_ID/keyed-spark-contention/.
 set -u
 BASE="${1:-}"
 RUN_ID="verify-$(date +%s)"
@@ -42,8 +42,8 @@ fi
 if [ "${OWN}" = "1" ]; then
 if [ -z "${OPENCODE_API_KEY:-}" ]; then
 printf '%s\n' "blocked: keyed-spark-contention missing-secret (OPENCODE_API_KEY absent; keyed race unreachable)." > "${OUT}/BLOCKED"
-echo "BLOCKED missing secret; transcript kept, exiting 0"
-exit 0
+echo "BLOCKED missing secret; transcript kept, exiting 2"
+exit 2
 fi
 if [ -e "${DEV_VARS}" ]; then
 if printf '%s=%s\n' "OPENCODE_API_KEY" "${OPENCODE_API_KEY}" | cmp -s - "${DEV_VARS}"; then
@@ -193,8 +193,8 @@ fi
 done
 if [ "${BLOCKED_HIT}" = "1" ]; then
 printf '%s\n' "BLOCKED: keyed-spark-contention race refused on a keyed turn (429/quota or 403/opt-in; cause in framesA/B/C.json runP.json/runP.stderr)." > "${OUT}/BLOCKED"
-echo "PASS ${RUN_ID} ws=${WS} sid=${SID} BLOCKED keyed-race-refused"
-exit 0
+echo "BLOCKED ${RUN_ID} ws=${WS} sid=${SID} keyed-race-refused"
+exit 2
 fi
 if [ "${CP}" != "0" ]; then echo "POST turn P failed"; exit 1; fi
 echo "ws exits: A=${CA} B=${CB} C=${CC} (nonzero means that socket lost the race and must show preemption in its frames, asserted below)"

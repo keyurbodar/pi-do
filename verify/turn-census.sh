@@ -2,10 +2,11 @@
 # turn-census.sh — runs one keyed turn and prints the write census: SQL ops
 # count (entry appends, one INSERT each), rows written, bytes per entry, and
 # writes-per-turn, plus the usage timing split. The turn must be real keyed
-# inference (usage inTokens>0 and costTotal>0 prove it); a stub turn fails.
+# inference (usage inTokens>0 and costTotal>0 prove it).
+# A refused run path exits 2 BLOCKED (never PASS); a stub-path turn exits 2
+# BLOCKED missing-secret (the stub turn touches no provider inference).
 # Usage: sh verify/turn-census.sh [BASE]
-# Exit 0 on pass (or a named quota/missing-secret block), 1 otherwise. Writes
-# artifacts/RUN_ID/turn-census/.
+# Exit 0 on pass, 2 on blocked (OUT/BLOCKED names the cause), 1 otherwise.
 set -u
 BASE="${1:-http://127.0.0.1:8791}"
 RUN_ID="verify-$(date +%s)"
@@ -72,25 +73,28 @@ if (/error[^}]{0,300}?(429|403|quota|rate.?limit|datapolicy|opt.in|consent|excee
 process.exit(1);
 "; then
   printf '%s\n' "BLOCKED: turn-census refused on the run path (429/quota or 403/opt-in; census unproven this run; cause in run.json)." > "${OUT}/BLOCKED"
-  echo "BLOCKED run path refused; transcript kept, exiting 0"
-  echo "PASS ${RUN_ID} ws=${WS} sid=${SID} BLOCKED run-refused"
-  exit 0
+  echo "BLOCKED run path refused; transcript kept, exiting 2"
+  exit 2
 fi
-echo "### 7 real-inference gate: stub turns fail the census"
+echo "### 7 real-inference gate: stub turns read BLOCKED, keyed usage gaps fail"
 node -e "
 const fs = require('node:fs');
 const b = JSON.parse(fs.readFileSync('${OUT}/run.json', 'utf8'));
-if (!b.runtime || b.runtime.provider !== 'opencode-go') throw new Error('turn did not run keyed: ' + JSON.stringify(b.runtime));
+if (!b.runtime || b.runtime.provider !== 'opencode-go' || b.runtime.stub === true) {
+  fs.writeFileSync('${OUT}/BLOCKED', 'blocked: turn-census missing-secret plumbing (turn ran the stub path; server key absent; cause in run.json).\n');
+  console.log('BLOCKED missing secret: turn ran stub, census unproven; exiting 2');
+  process.exit(2);
+}
 const u = b.usage;
 if (!u || typeof u !== 'object') throw new Error('run.json missing usage payload');
-if (!(u.inTokens > 0)) throw new Error('stub turn: usage.inTokens must be > 0 for real inference, got ' + JSON.stringify(u));
-if (!(u.costTotal > 0)) throw new Error('stub turn: usage.costTotal must be > 0 for real inference, got ' + JSON.stringify(u));
+if (!(u.inTokens > 0)) throw new Error('keyed turn with no input tokens: ' + JSON.stringify(u));
+if (!(u.costTotal > 0)) throw new Error('keyed turn with no cost: ' + JSON.stringify(u));
 for (const k of ['sqlMs', 'inferenceMs', 'frameMs']) {
   if (typeof u[k] !== 'number' || !Number.isInteger(u[k]) || u[k] < 0) throw new Error('usage.' + k + ' must be an integer >= 0: ' + JSON.stringify(u));
 }
 console.log('keyed ok: provider=opencode-go in=' + u.inTokens + ' out=' + u.outTokens + ' costTotal=' + u.costTotal);
 console.log('timing split: sqlMs=' + u.sqlMs + ' inferenceMs=' + u.inferenceMs + ' frameMs=' + u.frameMs + ' elapsedMs=' + u.elapsedMs);
-" || exit 1
+" || { code=$?; if [ "${code}" = "2" ]; then exit 2; fi; exit 1; }
 echo "### 8 entries after the turn plus the census table"
 AFTER_JSON="$(${CLI} entries --ws "${WS}" --sid "${SID}" --after 0 --limit 1000 --base "${BASE}" --json)" || exit 1
 printf '%s' "${AFTER_JSON}" > "${OUT}/entries-after.json"

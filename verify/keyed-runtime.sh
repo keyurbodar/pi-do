@@ -7,10 +7,11 @@
 # windows, and a switch to opencode-go/deepseek-v4-flash plus thinking off is
 # stored. Turns still run the stub (no network): the seeded read lands in the
 # result via createAgentSession. Without the key, the keyed steps are reported
-# unreachable and the keyless remainder still passes; the secret never enters
+# unreachable, the keyless remainder still runs, then the script exits 2
+# BLOCKED (never PASS): the key path stands unproven. The secret never enters
 # any artifact (redaction grep at the end proves it).
 # Usage: sh verify/keyed-runtime.sh [BASE]
-# Exit 0 on pass, 1 otherwise. Writes artifacts/RUN_ID/keyed-runtime/.
+# Exit 0 on pass, 2 on blocked (OUT/BLOCKED names the cause), 1 otherwise. Writes artifacts/RUN_ID/keyed-runtime/.
 set -u
 BASE="${1:-http://127.0.0.1:8787}"
 RUN_ID="verify-$(date +%s)"
@@ -186,6 +187,11 @@ else
   printf '%s\n' "redaction: key prefix absent from ${OUT} (grep exit 1, no match)." > "${OUT}/redaction.txt"
 fi
 
+if [ -f "${OUT}/keyed-unreachable.txt" ]; then
+  printf '%s\n' "blocked: keyed path unreachable this run (cause in keyed-unreachable.txt)." > "${OUT}/BLOCKED"
+  echo "BLOCKED ${RUN_ID} ws=${WS} sid=${SID} keyed-unproven"
+  exit 2
+fi
 echo "PASS ${RUN_ID} ws=${WS} sid=${SID}"
 } 2>&1 | tee "${OUT}/transcript.txt"
 exit "${PIPESTATUS[0]}"

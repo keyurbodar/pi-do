@@ -13,7 +13,7 @@
 # plus MODEL_ID=opencode-go/muse-spark-1.3-contributor. The secret never enters
 # any artifact (redaction grep at the end proves it).
 # Usage: sh verify/keyed-spark-thinking.sh [BASE]
-# Exit 0 on pass, or on quota-blocked (OUT/BLOCKED names the stuck turn);
+# Exit 0 on pass, 2 on blocked (OUT/BLOCKED names the stuck turn; never PASS),
 # 1 otherwise. Writes artifacts/RUN_ID/keyed-spark-thinking/.
 set -u
 BASE="${1:-http://127.0.0.1:8789}"
@@ -103,7 +103,7 @@ console.log('usage: in=' + u.inTokens + ' out=' + u.outTokens + ' cacheRead=' + 
 else
   cat "${OUT}/run-low.json" "${OUT}/run-low.stderr"
   if grep -qiE "datapolicy|opt[.-]in|consent|quota|rate.limit|overloaded|capacity|(^|[^0-9a-fA-F])(429|403)([^0-9a-fA-F]|$)" "${OUT}/run-low.json" "${OUT}/run-low.stderr"; then
-    echo "blocked: quota/refusal on the thinking-low turn; keeping green remainder"
+    echo "blocked: quota/refusal on the thinking-low turn; transcript kept"
     printf '%s\n' "blocked: thinking-low (off-requested, applied low) turn refused (429/quota or 403/opt-in; cause in run-low.json/run-low.stderr)." > "${OUT}/BLOCKED"
   else
     echo "keyed low turn failed without a 429/refusal signal"
@@ -152,7 +152,7 @@ console.log('usage: in=' + u.inTokens + ' out=' + u.outTokens + ' cacheRead=' + 
 else
   cat "${OUT}/run-high.json" "${OUT}/run-high.stderr"
   if grep -qiE "datapolicy|opt[.-]in|consent|quota|rate.limit|overloaded|capacity|(^|[^0-9a-fA-F])(429|403)([^0-9a-fA-F]|$)" "${OUT}/run-high.json" "${OUT}/run-high.stderr"; then
-    echo "blocked: quota/refusal on the thinking-high turn; keeping green remainder"
+    echo "blocked: quota/refusal on the thinking-high turn; transcript kept"
     printf '%s\n' "blocked: thinking-high turn refused (429/quota or 403/opt-in; cause in run-high.json/run-high.stderr)." > "${OUT}/BLOCKED"
   else
     echo "keyed high turn failed without a 429/refusal signal"
@@ -227,6 +227,10 @@ else
   printf '%s\n' "redaction: key prefix absent from ${OUT} (grep exit 1, no match)." > "${OUT}/redaction.txt"
 fi
 
+if [ -f "${OUT}/BLOCKED" ]; then
+  echo "BLOCKED ${RUN_ID} ws=${WS} sid=${SID} turns=${TURNS_OK} thinking-unproven"
+  exit 2
+fi
 echo "PASS ${RUN_ID} ws=${WS} sid=${SID} turns=${TURNS_OK}"
 } 2>&1 | tee "${OUT}/transcript.txt"
 exit "${PIPESTATUS[0]}"

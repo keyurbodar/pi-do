@@ -29,4 +29,5 @@ printf '%s\n' "$@" | xargs -P 8 -I{} sh -c 'n="$1"; sh verify/"$n".sh "$BASE" > 
   if [ "$n" = "doctor" ]; then if [ "$code" = "0" ]; then echo "PASS $n"; else echo "FAIL $n"; fi;
   elif [ "$code" != "0" ]; then echo "FAIL $n (exit $code)";
   elif grep -Eqm1 "^PASS.*BLOCKED|^BLOCKED" "$OUTDIR/$n.txt"; then r=$(grep -E -m1 "^PASS.*BLOCKED|^BLOCKED" "$OUTDIR/$n.txt" | sed "s/^.*BLOCKED *//;s/ *$//"); if [ -z "$r" ]; then echo "PASS $n (BLOCKED)"; else echo "PASS $n (BLOCKED $r)"; fi;
-  elif grep -qm1 "^PASS" "$OUTDIR/$n.txt"; then echo "PASS $n"; else echo "FAIL $n"; fi' sh {}
+  elif grep -qm1 "^PASS" "$OUTDIR/$n.txt"; then echo "PASS $n"; else echo "FAIL $n"; fi' sh {} | tee "${OUTDIR}/summary.txt"
+! grep -qm1 "^FAIL" "${OUTDIR}/summary.txt"
