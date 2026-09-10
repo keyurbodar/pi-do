@@ -158,8 +158,12 @@ export function emitEntry(host: StreamHost, sock: StreamSocket, type: string, bo
       }
     });
     if (chunk !== null) chunk.seq += 1;
-  } catch {
-    sock.send({ error: "entry persistence failed", hint: "the frame could not be stored; check DO storage health and retry the turn" });
+  } catch (e) {
+    live?.controller.abort();
+    // Dropping the sid from the live map orphans the open pi_runs row so the recovery scan redrives it.
+    host.live.delete(host.sid);
+    sock.send({ error: e instanceof Error ? e.message : String(e), hint: "chunk persist failed; the turn is orphaned and the recovery scan will redrive it" });
+    sock.close(CLOSE_UNKNOWN, "chunk persist failed; turn orphaned for the recovery scan");
     return;
   }
   let row: ReturnType<typeof getEntry> = null;
