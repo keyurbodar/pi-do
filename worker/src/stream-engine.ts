@@ -165,6 +165,18 @@ export function acceptStream(request: Request, host: StreamHost, state: DurableO
   return new Response(null, { status: 101, webSocket: client });
 }
 
+// Follow-up steer queue: steers that arrive before the agent attaches wait
+// here in arrival order and drain into agent.steer on attach, so every
+// mid-turn steer applies in order instead of only reaching a live agent.
+// Keyed by runId; the turn's finally deletes its row. Done/abort acks
+// reconcile applied vs still-pending so no steer goes silent.
+const steerQueues = new Map<string, { text: string; applied: boolean }[]>();
+
+function steerOutcome(runId: string): { applied: number; pending: string[] } {
+  const queue = steerQueues.get(runId) ?? [];
+  return { applied: queue.filter((s) => s.applied).length, pending: queue.filter((s) => !s.applied).map((s) => s.text) };
+}
+
 export async function socketMessage(
   host: StreamHost,
   sock: StreamSocket,
@@ -208,12 +220,19 @@ export async function socketMessage(
       return;
     }
     emitEntry(host, sock, "steer", { runId, text });
+    let queue = steerQueues.get(runId);
+    if (queue === undefined) {
+      queue = [];
+      steerQueues.set(runId, queue);
+    }
     const live = host.live.get(host.sid);
     if (live?.agent !== undefined) {
       live.agent.steer({ role: "user", content: text, timestamp: Date.now() });
-      sock.send({ steered: true, runId });
+      queue.push({ text, applied: true });
+      sock.send({ steered: true, runId, steer: queue.length });
     } else {
-      sock.send({ steered: false, runId, hint: "no live agent to steer mid-turn; the steer text is persisted and applied on the next turn" });
+      queue.push({ text, applied: false });
+      sock.send({ steered: false, runId, queued: queue.filter((s) => !s.applied).length, hint: "no live agent yet; the steer is queued in order, persists with the turn, and applies on attach or on the next turn" });
     }
     return;
   }
@@ -579,7 +598,14 @@ async function executeTurnInner(host: StreamHost, input: TurnInput, sink: TurnSi
       budgets: input.budgets,
       onAgent: (agent) => {
         const live = host.live.get(host.sid);
-        if (live !== undefined && live.controller.signal === input.signal) live.agent = agent;
+        if (live === undefined || live.controller.signal !== input.signal) return;
+        live.agent = agent;
+        if (input.signal?.aborted === true) return;
+        for (const s of steerQueues.get(input.runId) ?? []) {
+          if (s.applied) continue;
+          agent.steer({ role: "user", content: s.text, timestamp: Date.now() });
+          s.applied = true;
+        }
       },
       onUpdate: (event) => {
         if (event.kind === "toolCall") sink.push("toolCall", { runId: input.runId, id: event.id, tool: event.tool, args: event.args });
@@ -655,6 +681,7 @@ async function startTurn(
             bumpSessionTotals(host.sql, host.sid, turn.usage);
           } catch {
           }
+          const steers = steerOutcome(doneId);
           if (held !== null) {
             const next = { fence: crypto.randomUUID(), revision: held.revision + 1 };
             if (!host.casRotateFence(held.fence, held.revision, next)) {
@@ -663,8 +690,8 @@ async function startTurn(
               sock.close(CLOSE_CONFLICT, "concurrent rotation mid-turn");
               return;
             }
-            sock.send({ done: true, turnId, fence: next.fence, revision: next.revision, result: turn.result, runtime, usage: turn.usage, ...(turn.halt ? { halt: turn.halt } : {}) });
-          } else sock.send({ done: true, turnId, result: turn.result, runtime, usage: turn.usage, ...(turn.halt ? { halt: turn.halt } : {}) });
+            sock.send({ done: true, turnId, fence: next.fence, revision: next.revision, result: turn.result, runtime, usage: turn.usage, steers, ...(turn.halt ? { halt: turn.halt } : {}) });
+          } else sock.send({ done: true, turnId, result: turn.result, runtime, usage: turn.usage, steers, ...(turn.halt ? { halt: turn.halt } : {}) });
         },
         fail: (failId, error, hint) => {
           try {
@@ -675,12 +702,12 @@ async function startTurn(
             closeRun(host.sql, host.sid, failId);
           } catch {
           }
-          sock.send({ error, hint });
+          sock.send({ error, hint, steers: steerOutcome(failId) });
         },
         aborted: (abortId) => {
           host.sql.exec("UPDATE runs SET status = ? WHERE sid = ? AND runId = ?", "interrupted", host.sid, abortId);
           emit("interrupted", { runId: abortId });
-          sock.send({ aborted: true, runId: abortId });
+          sock.send({ aborted: true, runId: abortId, steers: steerOutcome(abortId) });
         },
       };
       // Ledger row opens before the first entry lands: a kill between the
@@ -715,6 +742,7 @@ async function startTurn(
       sock.send({ error: out.error, hint: out.hint });
     } finally {
       if (host.live.get(host.sid)?.controller === turnController) host.live.delete(host.sid);
+      steerQueues.delete(runId);
     }
   });
 }
