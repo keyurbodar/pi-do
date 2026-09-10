@@ -19,6 +19,7 @@ const run: RouteHandler = async (ctx, request, url) => {
   const rec = body !== null && typeof body === "object" ? (body as Record<string, unknown>) : {};
   const prompt: unknown = rec["prompt"];
   const oneShotModel: unknown = "model" in rec ? rec["model"] : undefined;
+  const plan = rec["plan"] === true;
   const oneShotThinking: unknown = "thinking" in rec ? rec["thinking"] : undefined;
   if (typeof prompt !== "string" || prompt.length === 0) {
     return err("missing prompt", 'retry as POST /workspaces/:id/sessions/:sid/run with JSON {"prompt": "read seed.txt"}', 400);
@@ -100,7 +101,7 @@ const run: RouteHandler = async (ctx, request, url) => {
       },
       aborted() {},
     };
-    await executeTurn(ctx.streamHost(ws, sid), { prompt, catalog, thinking: effThinking, runId, turnId, budgets: budgets.budgets }, sink);
+    await executeTurn(ctx.streamHost(ws, sid), { prompt, catalog, thinking: effThinking, runId, turnId, budgets: budgets.budgets, plan }, sink);
     return response ?? json({ error: "run failed", hint: "retry the run with a simpler prompt" }, 500);
   });
 };

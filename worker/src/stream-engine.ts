@@ -228,7 +228,7 @@ export interface TurnInput {
   // the per-turn seq counter lives on the session's LiveTurn entry, not here.
   turnId: string;
   signal?: AbortSignal;
-  budgets?: SessionRunBudgets;
+  budgets?: SessionRunBudgets; plan?: boolean;
 }
 
 export interface TurnRuntime {
@@ -556,6 +556,7 @@ async function executeTurnInner(host: StreamHost, input: TurnInput, sink: TurnSi
       history: cachedHistory(host.sql, host.sid),
       sessionId: host.sid,
       cacheRetention: host.retention,
+      plan: input.plan,
     });
     const turn = await session.run(input.prompt, {
       signal: input.signal,

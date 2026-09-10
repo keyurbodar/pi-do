@@ -305,7 +305,7 @@ export function createPiCf(options: CreatePiCfOptions = {}): new (
             404,
           );
         }
-        let prompt: unknown;
+        let prompt: unknown; let plan = false;
         let fence: unknown;
         let expected: unknown;
         let hasFence = false;
@@ -322,6 +322,7 @@ export function createPiCf(options: CreatePiCfOptions = {}): new (
               expected = body.expected;
               hasExpected = true;
             }
+            if ("plan" in body) plan = body.plan === true;
           }
         } catch {
           prompt = undefined;
@@ -348,7 +349,7 @@ export function createPiCf(options: CreatePiCfOptions = {}): new (
           }
           const runId = crypto.randomUUID();
           try {
-            const session = createAgentSession({ files: this.files, ws, shell, model, tools, apiKey, history: { leaf: sessionLeaf(sql, sid), readEntries: (after, limit) => listEntries(sql, sid, { after, limit }) } });
+            const session = createAgentSession({ files: this.files, ws, shell, model, tools, apiKey, plan, history: { leaf: sessionLeaf(sql, sid), readEntries: (after, limit) => listEntries(sql, sid, { after, limit }) } });
             const turn = await session.run(prompt);
             recordTurnWithOpen(sql, sid, runId, prompt, turn.toolCalls, turn.result, turn.usage, turn.halt ?? null);
             const out = {

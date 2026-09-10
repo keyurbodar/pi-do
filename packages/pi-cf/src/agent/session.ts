@@ -12,7 +12,7 @@ import { pmTool, testTool } from "../tools/dev-tools.ts";
 import { definitionTool, diagnosticsCompilerTool, referencesTool } from "../tools/ts-tools.ts";
 import { bgTool } from "../tools/bg-tools.ts";
 import { findTool, grepTool } from "../tools/search-tools.ts";
-import { planStubTurn } from "./stub-plan.ts";
+import { planStubTurn, planTools } from "./stub-plan.ts";
 import { buildSessionContextFromEntries, capSessionContext, estimateTokens, type ContextMessage } from "./context.ts";
 export const sessionTools = {
   read: readTool, write: writeTool, edit: editTool, list: listTool, remove: removeTool, bash: bashTool,
@@ -30,7 +30,7 @@ export interface SessionModel {
 export interface CreateAgentSessionOptions {
   files: FileStoreLike; ws: string; shell: ShellLike; model: SessionModel; tools?: Partial<SessionTools>;
   apiKey?: string; history?: { leaf: number; readEntries: (after: number, limit: number) => EntryRow[] };
-  sessionId?: string; cacheRetention?: "short" | "long";
+  sessionId?: string; cacheRetention?: "short" | "long"; plan?: boolean;
 }
 
 export interface SessionToolCall {
@@ -163,7 +163,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
     const signal = runOptions?.signal;
     const apiKey = options.apiKey;
     const retention = options.cacheRetention ?? "short";
-    const tools: Record<string, AgentHarnessTool<ToolContext, any, any>> = { ...sessionTools, ...options.tools };
+    const tools: Record<string, AgentHarnessTool<ToolContext, any, any>> = options.plan === true ? planTools({ ...sessionTools, ...options.tools }) : { ...sessionTools, ...options.tools };
     // Timing split staging: sqlMs accumulates history storage reads below,
     // frameMs accumulates wall time inside the sink/socket-frame callbacks.
     // inferenceMs is measured around the model call inside each turn runner.

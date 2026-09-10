@@ -24,7 +24,7 @@ examples:
   session: T("pi-do session — manage sessions", "pi-do session create --ws WS [--retention short|long] [--base URL] [--json]"),
   "session:create": T("pi-do session create — mint a session in a workspace", "pi-do session create --ws WS [--retention short|long] [--base URL] [--json]", `POSTs /workspaces/:id/sessions. Stdout is "session <id>" (raw JSON with --json).`),
   claim: T("pi-do claim — rotate the owner fence via revision CAS", "pi-do claim --ws WS --sid SID --fence F --expected N [--base URL] [--json]", "Wrong fence is 403, stale expected is 409. Success rotates fence and bumps revision."),
-  run: T("pi-do run — one headless harness turn in a session", "pi-do run --ws WS --sid SID --prompt T [--model provider/id] [--thinking L] [--fence F --expected N] [--base URL] [--json]", "Without --json stdout is the result text; with --json stdout is the raw server JSON."),
+  run: T("pi-do run — one headless harness turn in a session", "pi-do run --ws WS --sid SID --prompt T [--plan] [--model provider/id] [--thinking L] [--fence F --expected N] [--base URL] [--json]", "Without --json stdout is the result text; with --json stdout is the raw server JSON. With --plan the turn is read-only: every write tool fails closed."),
   model: T("pi-do model — switch the session model mid-session", "pi-do model --ws WS --sid SID --model provider/id [--fence F --expected N] [--base URL] [--json]"),
   thinking: T("pi-do thinking — switch the session thinking level", "pi-do thinking --ws WS --sid SID --level L [--fence F --expected N] [--base URL] [--json]"),
   models: T("pi-do models — list catalog models with context windows", "pi-do models [--provider P] [--base URL] [--json]"),
@@ -99,7 +99,7 @@ function parseArgs(argv) {
     "--after": "after", "--limit": "limit", "--page": "page", "--model": "model", "--level": "level",
     "--thinking": "level", "--provider": "provider", "--retention": "retention",
   };
-  const flags = { "--json": "json", "--help": "help", "-h": "help", "--all": "all", "--recursive": "recursive" };
+  const flags = { "--json": "json", "--help": "help", "-h": "help", "--all": "all", "--recursive": "recursive", "--plan": "plan" };
   const positionals = [];
   let baseSet = false;
   for (let i = 0; i < argv.length; i++) {
@@ -245,6 +245,7 @@ async function doRun(base, json, opts) {
   if (opts.prompt === undefined) failUsage(`run needs --prompt T.`, HELP.run);
   const expected = fenceExpected(opts, "run", HELP.run);
   const payload = { prompt: opts.prompt };
+  if (opts.plan === true) payload.plan = true;
   if (opts.fence !== undefined) { payload.fence = opts.fence; payload.expected = expected; }
   if (opts.model !== undefined) payload.model = splitProviderId(opts.model, `run needs --model provider/id (e.g. --model anthropic/claude-opus-4-6).`, HELP.run);
   if (opts.level !== undefined) payload.thinking = opts.level;
