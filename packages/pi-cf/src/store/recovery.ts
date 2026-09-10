@@ -32,8 +32,8 @@
 // The scan never duplicates a committed entry: suffixForTurn emits only
 // deltas after the last committed seq, resolved per chunk through the
 // pi_chunks.cursor pin (cursor <= live head means the mirrored entry
-// exists), with a count fallback for pre-migration rows whose cursor is
-// NULL. The resume record extends the same guarantee to tool execution:
+// exists). Rows without a usable pin refuse instead of guessing.
+// The resume record extends the same guarantee to tool execution:
 // completed tools never run twice.
 //
 // Alarm wiring: RECOVERY_JOB fires through the mux like keepalive and
@@ -43,7 +43,7 @@
 import { entryHead, listEntries, type EntriesSql } from "./entries.ts";
 import { listChunksForTurn, type ChunkRow } from "./chunks.ts";
 import { commitPiRun, getPiRun, PI_RUN_MAX_ATTEMPTS, recordAttempt, type PiRunRow } from "./runs.ts";
-import { parseJsonObject, readSingleRow, strField } from "./sql-util.ts";
+import { parseJsonObject, strField } from "./sql-util.ts";
 
 // Alarm-mux job name for the recovery scan. Re-exported from the mux file
 // so workspace-do.ts can register the handler without importing pi-cf twice.
@@ -188,14 +188,13 @@ export function isContiguous(chunks: readonly ChunkRow[]): boolean {
   return true;
 }
 
-// Highest chunk seq whose mirrored entry is committed. Primary signal is
-// the pi_chunks.cursor pin: entry ids are never reused, so cursor <= live
-// head means the entry exists (a fully-committed orphan left behind by a
-// crash between commit and row delete resolves here, suffix empty).
-// Pre-migration rows have NULL cursors (written before the column
-// existed); for an all-NULL turn, fall back to counting live entries past
-// the turn's start cursor — the session queue is single-writer, so the
-// first K entries after the start cursor pair with seqs 0..K-1.
+// Highest chunk seq whose mirrored entry is committed, resolved only
+// through the pi_chunks.cursor pin: entry ids are never reused, so
+// cursor <= live head means the entry exists (a fully-committed orphan
+// left behind by a crash between commit and row delete resolves here,
+// suffix empty). A turn with no usable pin (pre-migration NULL cursors,
+// or a store predating the column) throws and the scan refuses it
+// instead of guessing a suffix from entry counts.
 export function lastCommittedSeq(
   sql: EntriesSql,
   sid: string,
@@ -203,10 +202,6 @@ export function lastCommittedSeq(
   turnId: string,
   chunks: readonly ChunkRow[],
 ): number {
-  // One pass over the turn's pins: any usable cursor switches to pin
-  // resolution, where the max committed seq wins. No usable cursor at all
-  // (pre-migration NULL rows, or a store predating the column) falls through
-  // to the entry-count fallback below.
   const head = entryHead(sql, sid).head;
   let last = -1;
   let pinned = false;
@@ -222,12 +217,10 @@ export function lastCommittedSeq(
       if (rec.cursor > 0 && rec.cursor <= head && rec.seq > last) last = rec.seq;
     }
   } catch {
-    // Pre-migration store without the cursor column: count fallback below.
+    throw new Error("recovery refuses NULL-cursor turn: no cursor pin");
   }
-  if (pinned) return last;
-  const row = readSingleRow(sql, "SELECT COUNT(*) AS count FROM pi_entries WHERE sid = ? AND id > ?", sid, startCursor);
-  const count = row !== null && typeof row.count === "number" && Number.isInteger(row.count) && row.count > 0 ? row.count : 0;
-  return count - 1;
+  if (!pinned) throw new Error("recovery refuses NULL-cursor turn: no cursor pin");
+  return last;
 }
 
 // Only deltas after the last committed seq. Emitting this suffix — never
@@ -339,7 +332,14 @@ export async function scanTurns(sql: EntriesSql, nowMs: number, driver: Recovery
     const chunks = listChunksForTurn(sql, run.sid, run.turnId);
     const prompt = readTurnPrompt(sql, run.sid, run.cursor);
     if (isContiguous(chunks)) {
-      const suffix = suffixForTurn(sql, run.sid, run.cursor, run.turnId, chunks);
+      let suffix: ChunkRow[];
+      try {
+        suffix = suffixForTurn(sql, run.sid, run.cursor, run.turnId, chunks);
+      } catch (e) {
+        recordAttempt(sql, run.turnId, nowMs);
+        summary.failed.push({ turnId: run.turnId, error: e instanceof Error ? e.message.slice(0, 300) : String(e ?? "re-drive failed").slice(0, 300) });
+        continue;
+      }
       const prefix = chunks.slice(0, chunks.length - suffix.length);
       if (suffix.length === 0 && prefixIsTerminal(prefix)) {
         // Fully committed: the crash landed between commit and row delete.
