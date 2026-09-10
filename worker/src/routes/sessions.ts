@@ -1,4 +1,5 @@
-import { appendEntry, runInSyncTx, sumResultUsage, entryHead } from "pi-cf/store/entries";
+import { appendEntry, listEntries, runInSyncTx, sumResultUsage, entryHead } from "pi-cf/store/entries";
+import { drainPages, readSingleRow } from "pi-cf/store/sql-util";
 import { buildRuntime, clampThinkingLevel, resolveCatalogModel, supportedThinkingLevels, THINKING_LEVELS, type RuntimeEnv, type RuntimeModel } from "../model-runtime";
 import { archiveMeta, compactionPending } from "../compaction";
 import { checkedRotate } from "../stream";
@@ -39,7 +40,7 @@ const sessions: RouteHandler = async (ctx, request, url) => {
     name,
     cwd,
   );
-  return json({ sessionId, fence, revision: 0, model: { provider: defaults.provider, id: defaults.id }, thinking: defaults.thinking, retention: effRetention, name, cwd });
+  return json({ sessionId, fence, revision: 0, model: { provider: defaults.provider, id: defaults.id }, thinking: defaults.thinking, retention: effRetention, name, cwd, parentSessionId: null });
 };
 
 const claim: RouteHandler = async (ctx, request, url) => {
@@ -250,7 +251,8 @@ const meta: RouteHandler = (ctx, request, url) => {
   let created = "";
   let name: string | null = null;
   let cwd: string | null = null;
-  for (const row of sql.exec("SELECT created_at, name, cwd FROM sessions WHERE sid = ? AND ws = ? LIMIT 1", sid, ws)) {
+  let parentSessionId: string | null = null;
+  for (const row of sql.exec("SELECT created_at, name, cwd, parentSessionId FROM sessions WHERE sid = ? AND ws = ? LIMIT 1", sid, ws)) {
     if (row !== null && typeof row === "object" && "created_at" in row && typeof row.created_at === "string") {
       created = row.created_at;
     }
@@ -259,6 +261,9 @@ const meta: RouteHandler = (ctx, request, url) => {
     }
     if (row !== null && typeof row === "object" && "cwd" in row && typeof row.cwd === "string") {
       cwd = row.cwd;
+    }
+    if (row !== null && typeof row === "object" && "parentSessionId" in row && typeof row.parentSessionId === "string") {
+      parentSessionId = row.parentSessionId;
     }
   }
   const { count, head } = entryHead(sql, sid);
@@ -277,8 +282,53 @@ const meta: RouteHandler = (ctx, request, url) => {
   const triple = ctx.readTriple(sid);
   const archive = archiveMeta(sql, sid);
   const usage = fmtUsage(sumResultUsage(sql, sid), ctx.sessionContextWindow(triple));
-  return json({ sid, ws, created, name, cwd, head, count, leaf, openRun, model: { provider: triple?.provider ?? null, id: triple?.id ?? null }, thinking: triple?.thinking ?? null, retention: triple?.retention ?? "short", usage, compaction: { pending: compactionPending(sql, sid), archivePages: archive.pages, archiveTotal: archive.total } });
+  return json({ sid, ws, created, name, cwd, parentSessionId, head, count, leaf, openRun, model: { provider: triple?.provider ?? null, id: triple?.id ?? null }, thinking: triple?.thinking ?? null, retention: triple?.retention ?? "short", usage, compaction: { pending: compactionPending(sql, sid), archivePages: archive.pages, archiveTotal: archive.total } });
 };
+
+const branch = (copyEntries: boolean): RouteHandler => async (ctx, request, url) => {
+  if (request.method !== "POST") return null;
+  const ws = url.searchParams.get("ws") ?? "";
+  const sid = url.searchParams.get("sid") ?? "";
+  const bad = ctx.requireSession(ws, sid, "call POST /workspaces/:id/sessions/:sid/fork on the Worker instead", MINT_WS_HINT);
+  if (bad) return bad;
+  let body: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = await request.json();
+    if (parsed !== null && typeof parsed === "object") body = parsed as Record<string, unknown>;
+  } catch {
+    body = {};
+  }
+  const sql = ctx.state.storage.sql;
+  const parent = readSingleRow(sql, "SELECT modelProvider, modelId, thinkingLevel, cacheRetention, cwd FROM sessions WHERE sid = ? AND ws = ? LIMIT 1", sid, ws);
+  if (parent === null) return err("unknown session", MINT_WS_HINT, 404);
+  const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
+  const name = "name" in body ? str(body.name) : null;
+  const cwd = "cwd" in body ? str(body.cwd) : str(parent.cwd);
+  const retention = parent.cacheRetention === "long" ? "long" : "short";
+  const child = crypto.randomUUID();
+  const fence = crypto.randomUUID();
+  sql.exec(
+    "INSERT INTO sessions(sid, ws, created_at, ownerFence, revision, modelProvider, modelId, thinkingLevel, cacheRetention, name, cwd, parentSessionId) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)",
+    child,
+    ws,
+    new Date().toISOString(),
+    fence,
+    str(parent.modelProvider),
+    str(parent.modelId),
+    str(parent.thinkingLevel),
+    retention,
+    name,
+    cwd,
+    sid,
+  );
+  let copied = 0;
+  if (copyEntries) for (const e of drainPages((after) => listEntries(sql, sid, { after, limit: 1000 }))) copied += appendEntry(sql, child, e.type, e.body) > 0 ? 1 : 0;
+  const head = entryHead(sql, child);
+  return json({ sessionId: child, fence, revision: 0, model: { provider: str(parent.modelProvider), id: str(parent.modelId) }, thinking: str(parent.thinkingLevel), retention, name, cwd, parentSessionId: sid, copied, head: head.head, count: head.count });
+};
+
+const fork: RouteHandler = branch(false);
+const clone: RouteHandler = branch(true);
 
 export const sessionRoutes: Record<string, RouteHandler> = {
   "/sessions": sessions,
@@ -287,4 +337,6 @@ export const sessionRoutes: Record<string, RouteHandler> = {
   "/thinking": modelOrThinking,
   "/settings": settings,
   "/meta": meta,
+  "/fork": fork,
+  "/clone": clone,
 };

@@ -23,6 +23,8 @@ const app = new Hono<{ Bindings: Env }>()
   .get("/workspaces/:id/sessions/:sid/archive", (c) => forwardToWorkspace(c.env, c.req.param("id"), "/archive", c.req, { sid: c.req.param("sid"), page: c.req.query("page") }))
   .get("/workspaces/:id/sessions/:sid/entries", (c) => forwardToWorkspace(c.env, c.req.param("id"), "/entries", c.req, { sid: c.req.param("sid"), after: c.req.query("after"), limit: c.req.query("limit") }))
   .get("/workspaces/:id/sessions/:sid/meta", (c) => forwardToWorkspace(c.env, c.req.param("id"), "/meta", c.req, { sid: c.req.param("sid") }))
+  .post("/workspaces/:id/sessions/:sid/fork", (c) => forwardToWorkspace(c.env, c.req.param("id"), "/fork", c.req, { sid: c.req.param("sid") }))
+  .post("/workspaces/:id/sessions/:sid/clone", (c) => forwardToWorkspace(c.env, c.req.param("id"), "/clone", c.req, { sid: c.req.param("sid") }))
   .get("/models", (c) => {
   const only = c.req.query("provider") ?? null;
   const found = listCatalogModels().filter((m) => only === null || m.provider === only);
