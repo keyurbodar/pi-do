@@ -41,3 +41,7 @@ pr	title	branch	worktree	complexity	time_min	depends_on	parallel_group	scope	com
 41	lane-recovery-scan	wt-recovery	.worktrees/wt-recovery	3	120	none	W15	wake scan plus classify continue-retry plus suffix merge via injected driver	100%	✅ merged to main (7 scenarios green, boundary-disciplined pi-cf module)
 42	lane-ledger-runs	wt-ledger	.worktrees/wt-ledger	3	120	none	W15	pi_runs lifecycle plus poison plus cutover reaping with live-turn guard	100%	✅ merged to main (plans seek, census flat)
 43	proof-sigkill-e2e	main	.	3	180	41,42	W15	kill -9 mid-turn plus wake plus byte-exact recovery proof script	100%	✅ green unmodified on merge (latch 1, chunks 0..N, gapless)
+44	lane-recovery-continuation	main	.	3	120	41	W15	tool-aware resume without re-executing finished tools	100%	✅ merged to main (exactly-once tools, sigkill green unmodified)
+45	proof-chaos-quota	main	.	2	60	37	W15	quota-refusal proof plus eviction gap audit plus battery chaos docs	100%	✅ committed (PASS, headers only elsewhere)
+46	lane-shape	main	.	4	180	44	W15	seam split plus DO base plus perf pack	100%	✅ merged to main (moves-only splits, tier green each step, kill green)
+47	proof-nightly-soak	main	.	2	120	46	W16	100-turn soak with kills, flat census, zero orphans	100%	✅ committed (PASS 363s, cursors 1..627 exactly once)
