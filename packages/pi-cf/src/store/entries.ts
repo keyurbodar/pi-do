@@ -1,6 +1,6 @@
 import type { SessionHalt, SessionUsage } from "../agent/session";
 import type { EntryRow } from "./sql-util.ts";
-import { CREATE_TABLES, ensureTables, execPrepared, existsBy, mapEntryRows, numField, parseJsonObject, readScalar, readSingleRow, toEntryRow } from "./sql-util.ts";
+import { CREATE_TABLES, ensureTables, existsBy, mapEntryRows, numField, parseJsonObject, readScalar, readSingleRow, toEntryRow } from "./sql-util.ts";
 
 export interface EntriesSql {
   exec(query: string, ...bindings: unknown[]): Iterable<unknown>;
@@ -27,7 +27,7 @@ export function appendEntry(
   runInSyncTx(sql, () => {
     const leaf = readScalar<unknown>(sql, "SELECT leaf FROM sessions WHERE sid = ? LIMIT 1", sid);
     const parent = typeof leaf === "number" && Number.isInteger(leaf) && leaf > 0 ? leaf : 0;
-    execPrepared(sql, "INSERT INTO pi_entries(sid, parent, type, body) VALUES (?, ?, ?, ?)", sid, parent, type, stored);
+    sql.exec("INSERT INTO pi_entries(sid, parent, type, body) VALUES (?, ?, ?, ?)", sid, parent, type, stored);
     const id = readScalar<unknown>(sql, "SELECT last_insert_rowid() AS id");
     if (typeof id !== "number" || id < 0) throw new Error("appendEntry: last_insert_rowid returned no row");
     cursor = id;
@@ -37,7 +37,7 @@ export function appendEntry(
 }
 
 export function advanceSessionLeaf(sql: EntriesSql, sid: string, cursor: number): void {
-  execPrepared(sql, "UPDATE sessions SET leaf = ? WHERE sid = ?", cursor, sid);
+  sql.exec("UPDATE sessions SET leaf = ? WHERE sid = ?", cursor, sid);
 }
 
 export function listEntries(
@@ -51,7 +51,7 @@ export function listEntries(
   if (!Number.isInteger(a) || a < 0) throw new Error("listEntries: after must be a non-negative integer");
   if (!Number.isInteger(raw) || raw < 0) throw new Error("listEntries: limit must be a non-negative integer");
   const l = Math.min(raw, 1000);
-  return mapEntryRows(execPrepared(sql,
+  return mapEntryRows(sql.exec(
     "SELECT id AS cursor, COALESCE(parent, 0) AS parent, type, body FROM pi_entries WHERE sid = ? AND id > ? ORDER BY id LIMIT ?",
     sid,
     a,

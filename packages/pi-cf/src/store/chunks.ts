@@ -8,7 +8,6 @@
 // synchronous: free-text deltas pack into boundary-aware multi-row flushes
 // while structural deltas keep one row per delta with identical shape.
 import type { EntriesSql } from "./entries.ts";
-import { execPrepared } from "./sql-util.ts";
 
 export const PI_CHUNKS_DDL =
   "CREATE TABLE IF NOT EXISTS pi_chunks(sid TEXT, turnId TEXT, seq INTEGER, body TEXT, cursor INTEGER, PRIMARY KEY(sid, turnId, seq))";
@@ -78,7 +77,7 @@ export function appendChunkBatch(sql: EntriesSql, sid: string, turnId: string, r
 export function listChunksForTurn(sql: EntriesSql, sid: string, turnId: string): ChunkRow[] {
   const out: ChunkRow[] = [];
   for (
-    const row of execPrepared(sql,
+    const row of sql.exec(
       "SELECT sid, turnId, seq, body, cursor FROM pi_chunks WHERE sid = ? AND turnId = ? ORDER BY seq ASC",
       sid,
       turnId,
