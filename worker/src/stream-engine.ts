@@ -250,8 +250,9 @@ export interface TurnSink {
 
 function shaped(e: unknown, fallbackError: string, fallbackHint: string): { error: string; hint: string } {
   const rec = e !== null && typeof e === "object" ? (e as { error?: unknown; hint?: unknown }) : null;
-  const error = typeof rec?.error === "string" ? rec.error : (e instanceof Error ? e.message : fallbackError);
-  return { error: error.slice(0, 300), hint: typeof rec?.hint === "string" ? rec.hint : fallbackHint };
+  if (typeof rec?.error === "string") return { error: rec.error.slice(0, 300), hint: typeof rec?.hint === "string" ? rec.hint : fallbackHint };
+  if (e instanceof Error) return { error: e.cause === undefined ? e.message : `${e.message}: ${e.cause instanceof Error ? e.cause.message : String(e.cause)}`, hint: fallbackHint };
+  return { error: typeof e === "string" ? e : fallbackError, hint: fallbackHint };
 }
 
 // executeTurn is the turn boundary for the pi_runs ledger: one row opens
