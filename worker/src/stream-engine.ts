@@ -65,7 +65,7 @@ const BUDGET_CAPS = { maxTurns: 200, maxToolCalls: 1000, maxDurationMs: 1800000,
 export function parseBudgets(raw: unknown): { ok: true; budgets: SessionRunBudgets | undefined } | { ok: false; error: string; hint: string } {
   if (raw === undefined) return { ok: true, budgets: undefined };
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    return { ok: false, error: "bad budgets", hint: 'retry with {"budgets": {"maxTurns": 25}}; every field must be a finite number >= 0' };
+    return { ok: false, error: "bad budgets", hint: 'retry with {"budgets": {"maxTurns": 25}}; numeric fields must be finite numbers >= 0, toolExecution "sequential" or "parallel"' };
   }
   const rec = raw as Record<string, unknown>;
   const budgets: SessionRunBudgets = {};
@@ -76,6 +76,21 @@ export function parseBudgets(raw: unknown): { ok: true; budgets: SessionRunBudge
       return { ok: false, error: `bad budgets.${field}`, hint: `set budgets.${field} to a finite number >= 0, capped at ${BUDGET_CAPS[field]}` };
     }
     budgets[field] = Math.min(value, BUDGET_CAPS[field]);
+  }
+  for (const field of ["maxRetries", "maxRetryDelayMs", "timeoutMs"] as const) {
+    const value = rec[field];
+    if (value === undefined) continue;
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+      return { ok: false, error: `bad budgets.${field}`, hint: `set budgets.${field} to a finite number >= 0` };
+    }
+    budgets[field] = value;
+  }
+  const toolExecution = rec["toolExecution"];
+  if (toolExecution !== undefined) {
+    if (toolExecution !== "sequential" && toolExecution !== "parallel") {
+      return { ok: false, error: "bad budgets.toolExecution", hint: 'set budgets.toolExecution to "sequential" or "parallel"' };
+    }
+    budgets.toolExecution = toolExecution;
   }
   return { ok: true, budgets };
 }

@@ -369,6 +369,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
       initialState: {
         systemPrompt: SYSTEM_PROMPT, model: piModel,
         messages, tools: agentTools,
+        thinkingLevel: (thinking ?? "off") as ThinkingLevel,
       },
       streamFn,
       sessionId: options.sessionId !== undefined && options.sessionId.length > 0 ? options.sessionId : undefined,
