@@ -10,11 +10,11 @@
 # turn (the aborted turn carries no usage frame). The secret never enters any
 # artifact (redaction grep at the end proves it).
 # Usage: sh verify/keyed-spark-abort.sh [BASE]
-# Exit 0 on pass (or on quota-blocked, see below), 1 otherwise.
+# Exit 0 on pass, 2 on blocked (OUT/BLOCKED names the cause), 1 otherwise.
 # Writes artifacts/RUN_ID/keyed-spark-abort/.
 # Quota: if any path 429s, the script stops immediately, keeps the green
-# transcript so far, writes OUT/BLOCKED naming the abort path, and exits 0
-# (blocked is reported, not failed).
+# transcript so far, writes OUT/BLOCKED naming the abort path, and exits 2
+# BLOCKED (never PASS).
 set -u
 BASE="${1:-http://127.0.0.1:8789}"
 RUN_ID="verify-$(date +%s)"
@@ -154,8 +154,8 @@ process.exit(1);
 "; then
   echo "blocked: abort path refused (429/quota or 403/opt-in) on ${KEYED_MODEL}; transcript kept"
   printf '%s\n' "blocked: abort path refused (429/quota or 403/opt-in) on ${KEYED_MODEL}; no fail, transcript kept; cause in frames.json." > "${OUT}/BLOCKED"
-  echo "PASS ${RUN_ID} ws=${WS} sid=${SID} BLOCKED abort-path-refused"
-  exit 0
+  echo "BLOCKED ${RUN_ID} ws=${WS} sid=${SID} abort-path-refused"
+  exit 2
 fi
 echo "no block: frames carry no 429/refusal signal"
 if [ "${CLIENT_CODE}" != "0" ]; then

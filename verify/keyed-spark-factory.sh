@@ -10,10 +10,10 @@
 # any artifact (redaction grep at the end proves it).
 # On a 429/quota or provider-refusal (403/opt-in) block the factory path is
 # recorded in OUT/BLOCKED with the green transcript kept, and the script exits
-# 0 (blocked is reported, not failed). The refusal payload names the true
+# 2 BLOCKED (never PASS). The refusal payload names the true
 # cause; run-failed.json keeps it verbatim.
 # Usage: sh verify/keyed-spark-factory.sh [BASE]
-# Exit 0 on pass or recorded block, 1 otherwise. Writes artifacts/RUN_ID/keyed-spark-factory/.
+# Exit 0 on pass, 2 on blocked (OUT/BLOCKED names the cause), 1 otherwise. Writes artifacts/RUN_ID/keyed-spark-factory/.
 set -u
 BASE="${1:-http://127.0.0.1:8789}"
 RUN_ID="verify-$(date +%s)"
@@ -70,8 +70,8 @@ if (!/429|403|rate|quota|too many|overloaded|capacity|datapolicy|opt.in|consent/
 console.log('block signal ok: ' + JSON.stringify(b).slice(0, 300));
 " || exit 1
   printf '%s\n' "blocked: factory path (POST /run keyed turn ${KEYED_PROVIDER}/${KEYED_MODEL} via createAgentSession) refused; cause in run-failed.json (429/quota or 403/opt-in)." > "${OUT}/BLOCKED"
-  echo "PASS ${RUN_ID} ws=${WS} sid=${SID} BLOCKED factory-refused"
-  exit 0
+  echo "BLOCKED ${RUN_ID} ws=${WS} sid=${SID} factory-refused"
+  exit 2
 fi
 echo "${RUN_JSON}"
 printf '%s' "${RUN_JSON}" > "${OUT}/run.json"
