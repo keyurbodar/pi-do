@@ -14,16 +14,23 @@
 // never rewritten). A compaction moves the old prefix into pi_archive pages
 // and leaves one "compaction" summary entry plus the live tail, so resume
 // replay equals summary plus tail.
+import { estimateTokens } from "pi-cf/agent/context";
 import { advanceSessionLeaf, appendEntry, entryHead, listEntries, runInSyncTx, type EntriesSql, type EntryRow } from "pi-cf/store/entries";
 import { CREATE_TABLES, SUMMARY_FIELDS, drainPages, ensureTables, mapEntryRows, parseJsonObject, readScalar, readSingleRow, strField } from "pi-cf/store/sql-util";
 
-export const LIVE_ENTRY_BUDGET = 50;
-export const COMPACTION_RESERVE = 24;
+// Token window: compaction fires when live entries leave less headroom than
+// the reserve (pi shouldCompact convention); stub-seed totals calibrate it.
+export const LIVE_TOKEN_BUDGET = 1000;
+export const COMPACTION_RESERVE_TOKENS = 300;
 export const COMPACTION_KEEP_TAIL = 25;
 export const ARCHIVE_PAGE_SIZE = 25;
-
-export function shouldCompact(liveCount: number): boolean {
-  return LIVE_ENTRY_BUDGET - liveCount < COMPACTION_RESERVE;
+export function shouldCompact(liveTokens: number, windowTokens: number = LIVE_TOKEN_BUDGET): boolean {
+  return windowTokens - liveTokens < COMPACTION_RESERVE_TOKENS;
+}
+export function liveTokenEstimate(entries: readonly EntryRow[]): number {
+  let total = 0;
+  for (const e of entries) total += estimateTokens(e.body);
+  return total;
 }
 
 export interface CompactionSummaryBody {
@@ -56,8 +63,7 @@ export function pendingSessions(sql: EntriesSql): string[] {
 }
 
 export function maybeMarkForCompaction(sql: EntriesSql, sid: string): boolean {
-  const { count } = entryHead(sql, sid);
-  if (!shouldCompact(count)) return false;
+  if (!shouldCompact(liveTokenEstimate(readAllLive(sql, sid)))) return false;
   if (isPending(sql, sid)) return false;
   sql.exec("INSERT INTO compaction_marks(sid, pending) VALUES (?, 1) ON CONFLICT(sid) DO UPDATE SET pending = 1", sid);
   return true;
@@ -141,7 +147,7 @@ export interface CompactionResult {
 
 export function runCompaction(sql: EntriesSql, sid: string, force = false, liveTurnIds: readonly string[] = []): CompactionResult {
   const live = readAllLive(sql, sid);
-  if (live.length <= COMPACTION_KEEP_TAIL + 1 || (!force && !shouldCompact(live.length))) {
+  if (live.length <= COMPACTION_KEEP_TAIL + 1 || (!force && !shouldCompact(liveTokenEstimate(live)))) {
     sql.exec("INSERT INTO compaction_marks(sid, pending) VALUES (?, 0) ON CONFLICT(sid) DO UPDATE SET pending = 0", sid);
     return { compacted: false, live: live.length, archived: 0, summaryCursor: null, pages: archiveMeta(sql, sid).pages };
   }
