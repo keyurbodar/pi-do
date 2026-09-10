@@ -189,7 +189,9 @@ export function bumpSessionTotals(sql: EntriesSql, sid: string, usage?: SessionU
 }
 
 function finiteOr0(value: number): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+  if (value < 0) throw new RangeError(`finiteOr0: negative usage rejected: ${value}`);
+  return value;
 }
 
 export function recordTurnWithOpen(
