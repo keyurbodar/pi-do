@@ -1,6 +1,6 @@
 // stream-engine.ts — turn policy over the stream codec: prompt/abort/steer
-// frames, executeTurn plus the ledger open/commit wrapper, tool-aware
-// redrive, and the recovery driver. Separated from the frame codec
+// frames, executeTurn plus the ledger open/commit wrapper, redrive
+// and the recovery driver. Separated from the frame codec
 // (stream-codec.ts) so turn policy can evolve without touching transport
 // framing. Import through ./stream, which re-exports both halves.
 import { bumpSessionTotals, closeRun, entryHead, listEntries, openRun, sessionLeaf, type EntriesSql, type EntryRow } from "pi-cf/store/entries";
@@ -8,11 +8,8 @@ import { commitPiRun, openPiRun } from "pi-cf/store/runs";
 import type { RedriveInput } from "pi-cf/store/recovery";
 import { RECOVERY_JOB, RECOVERY_SCAN_MS, scheduleJob } from "./alarm-mux";
 import { enforceFence } from "pi-cf/store/fence";
-import { createAgentSession, sessionTools, type SessionRunBudgets, type SessionTurn } from "pi-cf/agent/session";
+import { createAgentSession, type SessionRunBudgets, type SessionTurn } from "pi-cf/agent/session";
 import { clampThinkingLevel, defaultTurnModel, keyedProviders, resolveCatalogModel, resolveKeyedModel, resolveProviderKey, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
-import { planStubTurn } from "pi-cf/agent/stub-plan";
-import { textOf, type ToolContext } from "pi-cf/tools/tools";
-import { ComputerExecutionEnv } from "pi-cf/runtime/env";
 import { compactionPending, maybeMarkForCompaction } from "./compaction";
 import { broadcast, CLOSE_CONFLICT, CLOSE_FENCED, CLOSE_UNKNOWN, emitEntry, wrapSocket, type StreamAttachment, type StreamHost, type StreamSocket } from "./stream-codec";
 
@@ -383,88 +380,14 @@ export async function executeTurn(host: StreamHost, input: TurnInput, sink: Turn
     await host.releaseKeepalive();
   }
 }
-// Tool-aware stub continuation for the continue path. The stub plan is
-// deterministic (read seed.txt, then the bash marker), so the resumed run
-// replays it step by step against the resume record instead of regenerating
-// and dropping a prefix: completed pairs reuse their committed output with
-// no re-execution and no re-emit, in-flight calls re-execute once with only
-// the toolResult emitted (the call entry already committed), and fresh steps
-// emit both halves. Everything emitted here is a post-commit delta landing
-// on chunk seqs continuing at nextSeq, so the turn completes byte-exact
-// with contiguous seqs and no duplicated committed entry. Model (keyed)
-// turns cannot pre-seed the agent loop this way and keep the
-// regenerate-and-drop path in redriveTurn.
-async function redriveStubContinue(
-  host: StreamHost,
-  sock: StreamSocket,
-  input: RedriveInput,
-  signal: AbortSignal,
-  thinking: string | null,
-  catalog: RuntimeModel | null,
-  resolved: TurnModel,
-): Promise<void> {
-  const env = new ComputerExecutionEnv(host.files, host.ws, host.shell);
-  const context: ToolContext = { env };
-  const readFn = sessionTools.read;
-  const bashFn = sessionTools.bash;
-  const t0 = Date.now();
-  const outputs: string[] = [];
-  let n = 0;
-  let ri = 0;
-  for (const step of planStubTurn(input.prompt as string)) {
-    signal.throwIfAborted();
-    n += 1;
-    const id = `session-${n}`;
-    const tool = step.kind;
-    const args = step.kind === "read" ? { path: step.path } : { command: step.command };
-    const toolFn = step.kind === "read" ? readFn : bashFn;
-    const head = ri < input.resume.length ? input.resume[ri] : undefined;
-    if (head !== undefined && head.tool === tool && JSON.stringify(head.args) === JSON.stringify(args)) {
-      ri += 1;
-      if (head.output !== null) {
-        outputs.push(head.output);
-        continue;
-      }
-      const retried = await toolFn.execute(id, args, signal, undefined, context);
-      const retriedOutput = textOf(retried);
-      outputs.push(retriedOutput);
-      emitEntry(host, sock, "toolResult", { runId: input.turnId, id, tool, args, output: retriedOutput });
-      continue;
-    }
-    // Plan diverged from the record (non-deterministic tools): fall back to
-    // executing and emitting the step. Best-effort; the deterministic stub
-    // plan always matches.
-    emitEntry(host, sock, "toolCall", { runId: input.turnId, id, tool, args });
-    const result = await toolFn.execute(id, args, signal, undefined, context);
-    const output = textOf(result);
-    outputs.push(output);
-    emitEntry(host, sock, "toolResult", { runId: input.turnId, id, tool, args, output });
-  }
-  const usage = {
-    inTokens: 0, outTokens: 0, cacheRead: 0, costTotal: 0, elapsedMs: 0, tokensPerSec: null,
-    retention: host.retention, sqlMs: 0, inferenceMs: Date.now() - t0, frameMs: 0,
-  };
-  const runtime = {
-    via: "createAgentSession", model: resolved.model.id, provider: resolved.provider, thinking, stub: true,
-    ...(catalog !== null ? { hint: `no key for provider ${resolved.provider}; running the stub model` } : {}),
-  };
-  emitEntry(host, sock, "result", { runId: input.turnId, result: outputs.join("\n"), usage, runtime });
-  try {
-    closeRun(host.sql, host.sid, input.turnId);
-  } catch {
-  }
-  try {
-    bumpSessionTotals(host.sql, host.sid, usage);
-  } catch {
-  }
-}
 // Re-drives an orphaned turn to completion under its original turnId. The
 // fresh model run regenerates the turn's bytes; the first skipDeltas pushes
 // are dropped (prompt plus already-committed prefix, never re-emitted), the
 // rest land as entries with chunk seqs continuing at startSeq. Exact under
-// deterministic output, best-effort otherwise. A continue-path stub turn
-// instead resumes tool-aware through redriveStubContinue above, so committed
-// tools never re-execute. Runs inside the session queue
+// deterministic output, best-effort otherwise. Stub turns are deterministic
+// (read seed.txt, then the bash marker), so the same path covers them:
+// re-execution is side-effect-free and the prefix drop keeps every
+// committed entry single. Runs inside the session queue
 // so it never interleaves a live turn; rotates no fence and sends no socket
 // frames (alarm context has neither). Failures throw so the scan records the
 // attempt; success closes the ledger row via executeTurn's done wrapper.
@@ -486,18 +409,6 @@ export async function redriveTurn(host: StreamHost, input: RedriveInput & { skip
       };
       const catalog = host.model === null ? null : resolveCatalogModel(host.model.provider, host.model.id);
       const effThinking = host.thinking === null ? null : clampThinkingLevel(catalog ?? {}, host.thinking);
-      const resolved = resolveTurnModel(host.runtimeEnv, catalog);
-      if (!input.fresh && resolved.stub) {
-        // Deterministic stub on the continue path: resume tool-aware so
-        // committed tools never re-execute. Mirrors executeTurn's
-        // keepalive release; the scan owns commit and re-arm.
-        try {
-          await redriveStubContinue(host, dummySock, input, turnController.signal, effThinking, catalog, resolved);
-        } finally {
-          await host.releaseKeepalive();
-        }
-        return;
-      }
       await executeTurn(
         host,
         { prompt: input.prompt as string, catalog, thinking: effThinking, runId: input.turnId, turnId: input.turnId, signal: turnController.signal },
