@@ -27,7 +27,7 @@ export function strField(obj: Record<string, unknown>, key: string): string | nu
 
 export function numField(obj: Record<string, unknown>, key: string): number {
   const value = obj[key];
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 export function readSingleRow(sql: Sql, query: string, ...bindings: unknown[]): Record<string, unknown> | null {
