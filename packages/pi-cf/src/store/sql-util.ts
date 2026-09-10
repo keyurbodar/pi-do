@@ -105,6 +105,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { table: "sessions", column: "thinkingLevel", ddl: "ALTER TABLE sessions ADD COLUMN thinkingLevel TEXT" },
   { table: "sessions", column: "cacheRetention", ddl: "ALTER TABLE sessions ADD COLUMN cacheRetention TEXT" },
   { table: "sessions", column: "leaf", ddl: "ALTER TABLE sessions ADD COLUMN leaf INTEGER NOT NULL DEFAULT 0" },
+  { table: "sessions", column: "name", ddl: "ALTER TABLE sessions ADD COLUMN name TEXT" },
   { table: "compaction_marks", column: "pages", ddl: "ALTER TABLE compaction_marks ADD COLUMN pages INTEGER NOT NULL DEFAULT 0" },
   { table: "compaction_marks", column: "total", ddl: "ALTER TABLE compaction_marks ADD COLUMN total INTEGER NOT NULL DEFAULT 0" },
 ];
@@ -118,7 +119,7 @@ export function migrate(sql: Sql, migrations: readonly Migration[] = MIGRATIONS)
 
 export const CREATE_TABLES = {
   workspaces: "CREATE TABLE IF NOT EXISTS workspaces(id TEXT PRIMARY KEY, created_at TEXT)",
-  sessions: "CREATE TABLE IF NOT EXISTS sessions(sid TEXT PRIMARY KEY, ws TEXT, created_at TEXT, ownerFence TEXT, revision INTEGER NOT NULL DEFAULT 0)",
+  sessions: "CREATE TABLE IF NOT EXISTS sessions(sid TEXT PRIMARY KEY, ws TEXT, created_at TEXT, ownerFence TEXT, revision INTEGER NOT NULL DEFAULT 0, name TEXT)",
   workspaceSettings: "CREATE TABLE IF NOT EXISTS workspace_settings(ws TEXT PRIMARY KEY, modelProvider TEXT, modelId TEXT, thinkingLevel TEXT)",
   piEntries: "CREATE TABLE IF NOT EXISTS pi_entries (id INTEGER PRIMARY KEY AUTOINCREMENT, ws TEXT, sid TEXT, cursor INTEGER, parent INTEGER NOT NULL DEFAULT 0, type TEXT, body TEXT)",
   runs: "CREATE TABLE IF NOT EXISTS runs (sid TEXT, runId TEXT PRIMARY KEY, status TEXT)",
