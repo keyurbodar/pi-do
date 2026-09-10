@@ -1,6 +1,6 @@
 import type { EntryRow } from "../store/entries.ts";
 import { ENTRY_PROJECTION, parseJsonObject, strField } from "../store/sql-util.ts";
-
+import { loadProjectContextMessage, type ProjectContextSource } from "./project-context.ts";
 export type ContextRole = "user" | "assistant" | "compactionSummary" | "toolCall" | "toolResult";
 
 export interface ContextMessage {
@@ -95,8 +95,10 @@ export function capSessionContext(ctx: SessionContext, budgetTokens: number): Se
 
 export type EntryReader = (cursor: number) => EntryRow | null;
 
-export function buildSessionContext(leaf: number, readEntry: EntryReader): SessionContext {
+export function buildSessionContext(leaf: number, readEntry: EntryReader, project?: ProjectContextSource | null): SessionContext {
   const context: SessionContext = { messages: [], model: null, thinking: "off", toolNames: null, skipped: [], truncated: false, dropped: 0 };
+  const section = project === undefined || project === null ? null : loadProjectContextMessage(project);
+  if (section !== null) context.messages.push(section);
   if (!Number.isInteger(leaf) || leaf <= 0) {
     return context;
   }
@@ -183,10 +185,10 @@ export function buildSessionContext(leaf: number, readEntry: EntryReader): Sessi
   return context;
 }
 
-export function buildSessionContextFromEntries(entries: readonly EntryRow[], leaf: number): SessionContext {
+export function buildSessionContextFromEntries(entries: readonly EntryRow[], leaf: number, project?: ProjectContextSource | null): SessionContext {
   const byCursor = new Map<number, EntryRow>();
   for (const entry of entries) {
     byCursor.set(entry.cursor, entry);
   }
-  return buildSessionContext(leaf, (cursor) => byCursor.get(cursor) ?? null);
+  return buildSessionContext(leaf, (cursor) => byCursor.get(cursor) ?? null, project);
 }
