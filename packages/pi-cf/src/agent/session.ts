@@ -14,6 +14,7 @@ import { bgTool } from "../tools/bg-tools.ts";
 import { findTool, grepTool } from "../tools/search-tools.ts";
 import { planStubTurn } from "./stub-plan.ts";
 import { buildSessionContextFromEntries, capSessionContext, estimateTokens, type ContextMessage } from "./context.ts";
+import { composePrompt } from "./prompt.ts";
 export const sessionTools = {
   read: readTool, write: writeTool, edit: editTool, list: listTool, remove: removeTool, bash: bashTool,
   find: findTool, grep: grepTool, diagnostics: diagnosticsCompilerTool,
@@ -367,7 +368,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
       });
     const agent = new Agent({
       initialState: {
-        systemPrompt: SYSTEM_PROMPT, model: piModel,
+        systemPrompt: composePrompt(SYSTEM_PROMPT), model: piModel,
         messages, tools: agentTools,
         thinkingLevel: (thinking ?? "off") as ThinkingLevel,
       },
