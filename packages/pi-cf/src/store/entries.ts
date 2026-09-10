@@ -1,6 +1,7 @@
 import type { SessionHalt, SessionUsage } from "../agent/session";
 import type { EntryRow } from "./sql-util.ts";
 import { CREATE_TABLES, ensureTables, existsBy, mapEntryRows, numField, parseJsonObject, readScalar, readSingleRow, toEntryRow } from "./sql-util.ts";
+import { checkEntry } from "./entry-validation.ts";
 
 export interface EntriesSql {
   exec(query: string, ...bindings: unknown[]): Iterable<unknown>;
@@ -22,6 +23,7 @@ export function appendEntry(
   type: string,
   body: unknown,
 ): number {
+  checkEntry(sql, sid, type, body);
   const stored = typeof body === "string" ? body : JSON.stringify(body);
   let cursor = -1;
   runInSyncTx(sql, () => {
