@@ -8,6 +8,7 @@ export interface ShellExecInput {
   env?: Record<string, string>;
   sid?: string;
   timeout?: number;
+  root?: string;
 }
 
 export interface ShellExecResult {
@@ -33,7 +34,22 @@ export interface DisposeResult {
   stderrBytes: number;
 }
 
-function resolveCwd(requested: string | undefined, base: string): string {
+function resolveRoot(raw: string | undefined): string {
+  if (typeof raw !== "string" || !raw.startsWith("/")) return WORKSPACE_ROOT;
+  const out: string[] = [];
+  for (const part of raw.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") out.pop();
+    else out.push(part);
+  }
+  const resolved = `/${out.join("/")}`;
+  if (resolved !== WORKSPACE_ROOT && !resolved.startsWith(`${WORKSPACE_ROOT}/`)) {
+    throw new Error(`exec root escapes the workspace root (${WORKSPACE_ROOT}): ${raw}`);
+  }
+  return resolved;
+}
+
+function resolveCwd(requested: string | undefined, base: string, root: string = WORKSPACE_ROOT): string {
   const raw = requested ?? base;
   const abs = raw.startsWith("/") ? raw : `${base}/${raw}`;
   const out: string[] = [];
@@ -43,8 +59,9 @@ function resolveCwd(requested: string | undefined, base: string): string {
     else out.push(part);
   }
   const resolved = `/${out.join("/")}`;
-  if (resolved !== WORKSPACE_ROOT && !resolved.startsWith(`${WORKSPACE_ROOT}/`)) {
-    throw new Error(`exec cwd escapes the workspace root (${WORKSPACE_ROOT}): ${raw}`);
+  if (resolved !== root && !resolved.startsWith(`${root}/`)) {
+    const scope = root === WORKSPACE_ROOT ? "workspace root" : "session root";
+    throw new Error(`exec cwd escapes the ${scope} (${root}): ${raw}`);
   }
   return resolved;
 }
@@ -53,6 +70,7 @@ interface ExecSession {
   bash: Bash;
   env: Record<string, string>;
   cwd: string;
+  root: string;
   current: TimeoutScope | null;
   killRequested: boolean;
   lastUsed: number;
@@ -110,10 +128,10 @@ export class ShellWorker<Env = unknown> extends WorkerEntrypoint<Env> {
   async exec(input: ShellExecInput): Promise<ShellExecResult> {
     const command = input?.command;
     if (typeof command !== "string" || command.length === 0) throw new Error("exec needs a command string");
-    if (input.sid === undefined) return runOneOff(command, input.cwd, input.env, input.timeout);
+    if (input.sid === undefined) return runOneOff(command, input.cwd, input.env, input.timeout, input.root);
     const sid = input.sid;
     if (typeof sid !== "string" || sid.length === 0) throw new Error("exec needs a session id string");
-    return locks.withLock(sid, () => this.runSessionTurn(sid, command, input.cwd, input.env, input.timeout));
+    return locks.withLock(sid, () => this.runSessionTurn(sid, command, input.cwd, input.env, input.timeout, input.root));
   }
 
   private async runSessionTurn(
@@ -122,6 +140,7 @@ export class ShellWorker<Env = unknown> extends WorkerEntrypoint<Env> {
     requestedCwd: string | undefined,
     extraEnv: Record<string, string> | undefined,
     requestedTimeout: number | undefined,
+    requestedRoot: string | undefined,
   ): Promise<ShellExecResult> {
     let session = this.sessions.get(sid);
     if (session === undefined) {
@@ -132,10 +151,11 @@ export class ShellWorker<Env = unknown> extends WorkerEntrypoint<Env> {
         }
         throw new Error(`exec sessions full (${MAX_LIVE_SESSIONS} live, all running): kill or dispose one first`);
       }
-      session = { bash: freshBash(), env: {}, cwd: DEFAULT_CWD, current: null, killRequested: false, lastUsed: Date.now(), stdoutBytes: 0, stderrBytes: 0 };
+      const root = resolveRoot(requestedRoot);
+      session = { bash: freshBash(), env: {}, cwd: root, root, current: null, killRequested: false, lastUsed: Date.now(), stdoutBytes: 0, stderrBytes: 0 };
       this.sessions.set(sid, session);
     }
-    const cwd = resolveCwd(requestedCwd, session.cwd);
+    const cwd = resolveCwd(requestedCwd, session.cwd, session.root);
     session.lastUsed = Date.now();
     const scope = withTimeoutSignal(resolveTimeoutMs(requestedTimeout));
     session.current = scope;
@@ -154,9 +174,9 @@ export class ShellWorker<Env = unknown> extends WorkerEntrypoint<Env> {
         const pwd = result.env["PWD"];
         if (typeof pwd === "string" && pwd.startsWith("/")) {
           try {
-            session.cwd = resolveCwd(pwd, session.cwd);
+            session.cwd = resolveCwd(pwd, session.cwd, session.root);
           } catch {
-            session.cwd = DEFAULT_CWD;
+            session.cwd = session.root;
           }
         }
       }
@@ -212,10 +232,11 @@ export class ShellWorker<Env = unknown> extends WorkerEntrypoint<Env> {
     return oldestSid;
   }
 
-  async bgStart(input: { command: string; cwd?: string; env?: Record<string, string> }): Promise<{ handle: string }> {
+  async bgStart(input: { command: string; cwd?: string; env?: Record<string, string>; root?: string }): Promise<{ handle: string }> {
     const command = input?.command;
     if (typeof command !== "string" || command.length === 0) throw new Error("bg needs a command string");
-    const cwd = resolveCwd(input.cwd, DEFAULT_CWD);
+    const root = resolveRoot(input.root);
+    const cwd = resolveCwd(input.cwd, root, root);
     const handle = `bg-${crypto.randomUUID()}`;
     const scope = withTimeoutSignal(BG_TIMEOUT_MS);
     const entry: BgProcess = { bash: freshBash(), scope, done: false, result: null, startedAt: Date.now(), killRequested: false };
@@ -285,8 +306,10 @@ async function runOneOff(
   cwd?: string,
   env?: Record<string, string>,
   requestedTimeout?: number,
+  requestedRoot?: string,
 ): Promise<ShellExecResult> {
-  const resolvedCwd = resolveCwd(cwd, DEFAULT_CWD);
+  const root = resolveRoot(requestedRoot);
+  const resolvedCwd = resolveCwd(cwd, root, root);
   const scope = withTimeoutSignal(resolveTimeoutMs(requestedTimeout));
   try {
     const result = await freshBash().exec(command, { cwd: resolvedCwd, env, signal: scope.signal });
