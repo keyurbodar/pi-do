@@ -135,7 +135,11 @@ kill9_port() {
   rkill_pattern "npm exec wrangler dev --port ${PORT}([^0-9]|$)"
   rkill_pattern "cli\.js dev --port ${PORT}([^0-9]|$)"
   rkill_pattern "entry=localhost:${PORT}([^0-9]|$)"
-  sleep 2
+  SILENCE=0
+  while [ "${SILENCE}" -lt 10 ] && curl -sf --max-time 2 "${BASE}/" >/dev/null 2>&1; do
+    SILENCE=$((SILENCE + 1))
+    sleep 1
+  done
   rkill_pattern "wrangler dev --port ${PORT}([^0-9]|$)"
   rkill_pattern "npm exec wrangler dev --port ${PORT}([^0-9]|$)"
   rkill_pattern "cli\.js dev --port ${PORT}([^0-9]|$)"
@@ -700,7 +704,20 @@ echo "kills ok: ${KILLS} kill-restart cycles, ${ORPHANS_TOTAL} cold orphan(s) to
 
 echo "### 5 final compact plus full evidence"
 ${CLI} compact --ws "${WS}" --sid "${SID}" --base "${BASE}" --json > "${OUT}/compact-final.json" || exit 1
-sleep 5
+echo "settle poll: two consecutive identical entries reads within 30s, else RED"
+SETTLED=""
+SETTLE_N=0
+PREV_SET=""
+while [ "${SETTLE_N}" -lt 30 ]; do
+  ${CLI} entries --ws "${WS}" --sid "${SID}" --after 0 --all --base "${BASE}" --json > "${OUT}/entries-settle.json" || exit 1
+  if [ -n "${PREV_SET}" ] && cmp -s "${PREV_SET}" "${OUT}/entries-settle.json"; then SETTLED="yes"; break; fi
+  PREV_SET="${OUT}/entries-settle-prev.json"
+  cp "${OUT}/entries-settle.json" "${PREV_SET}"
+  SETTLE_N=$((SETTLE_N + 1))
+  sleep 1
+done
+if [ -z "${SETTLED}" ]; then echo "RED assert-settle: entries never settled within 30s after final compact (no rerun)"; exit 1; fi
+echo "settled ok: entries stable across consecutive reads"
 ${CLI} entries --ws "${WS}" --sid "${SID}" --after 0 --all --base "${BASE}" --json > "${OUT}/entries-final.json" || exit 1
 ${CLI} meta --ws "${WS}" --sid "${SID}" --base "${BASE}" --json > "${OUT}/meta-final.json" || exit 1
 SQLITE="$(find_sqlite "${SID}")" || { echo "RED assert-sqlite: persisted sqlite lost after the soak"; exit 1; }

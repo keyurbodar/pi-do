@@ -44,6 +44,9 @@ while [ "${TRIES}" -lt 5 ]; do
   TRIES=$((TRIES + 1))
   sleep 1
 done
+if [ "${TRIES}" -ge 5 ]; then
+  echo "pending window missed within the 5s deadline; structural mode (no rerun)"
+fi
 cat "${OUT}/meta-marked.json"
 MODE="structural"
 if [ "${TRIES}" -lt 5 ]; then
@@ -255,3 +258,4 @@ fi
 
 echo "PASS ${RUN_ID} ws=${WS} sid=${SID}"
 } 2>&1 | tee "${OUT}/transcript.txt"
+exit "${PIPESTATUS[0]}"
