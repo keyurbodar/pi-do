@@ -65,12 +65,8 @@ const run: RouteHandler = async (ctx, request, url) => {
   const wantThinking = (oneShotThinking as string | undefined) ?? stored?.thinking ?? null;
   let like: RuntimeModel | Record<string, never> = catalog ?? {};
   if (catalog === null && wantThinking !== null) {
-    try {
-      const fallback = buildRuntime(ctx.env as unknown as RuntimeEnv);
-      if (!fallback.stub) like = fallback.model;
-    } catch {
-      like = {};
-    }
+    const fallback = buildRuntime(ctx.env as unknown as RuntimeEnv);
+    if (!fallback.stub) like = fallback.model;
   }
   if (oneShotThinking !== undefined && !(THINKING_LEVELS as readonly string[]).includes(oneShotThinking as string)) {
     return err(`unknown thinking level: ${oneShotThinking as string}`, `supported levels: ${supportedThinkingLevels(like).join(", ")}`, 400);
