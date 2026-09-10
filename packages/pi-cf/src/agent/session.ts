@@ -60,6 +60,8 @@ export interface SessionHalt {
 
 export interface SessionRunBudgets {
   maxTurns?: number; maxToolCalls?: number; maxDurationMs?: number; maxCost?: number;
+  maxRetries?: number; maxRetryDelayMs?: number; timeoutMs?: number;
+  toolExecution?: "sequential" | "parallel";
 }
 
 export type SessionToolEvent =
@@ -330,11 +332,17 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
     };
     const valid = (value: number | undefined, fallback: number): number =>
       typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback;
+    const validOpt = (value: number | undefined): number | undefined =>
+      typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
     const limits = {
       maxTurns: valid(budgets?.maxTurns, DEFAULT_RUN_BUDGETS.maxTurns),
       maxToolCalls: valid(budgets?.maxToolCalls, DEFAULT_RUN_BUDGETS.maxToolCalls),
       maxDurationMs: valid(budgets?.maxDurationMs, DEFAULT_RUN_BUDGETS.maxDurationMs),
       maxCost: valid(budgets?.maxCost, DEFAULT_RUN_BUDGETS.maxCost),
+      maxRetries: validOpt(budgets?.maxRetries),
+      maxRetryDelayMs: validOpt(budgets?.maxRetryDelayMs),
+      timeoutMs: validOpt(budgets?.timeoutMs),
+      toolExecution: budgets?.toolExecution === "sequential" ? ("sequential" as const) : ("parallel" as const),
     };
     if (limits.maxTurns <= 0) return finish("turns");
     if (limits.maxToolCalls <= 0) return finish("tool-calls");
@@ -350,7 +358,13 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
       return `session-${n}`;
     };
     const streamFn: StreamFn = (target, ctx, options) =>
-      streamSimple(target, ctx, { ...options, apiKey: options?.apiKey ?? apiKey, cacheRetention: retention });
+      streamSimple(target, ctx, {
+        ...options,
+        apiKey: options?.apiKey ?? apiKey,
+        cacheRetention: retention,
+        ...(limits.maxRetries !== undefined ? { maxRetries: limits.maxRetries } : null),
+        ...(limits.timeoutMs !== undefined ? { timeoutMs: limits.timeoutMs } : null),
+      });
     const agent = new Agent({
       initialState: {
         systemPrompt: SYSTEM_PROMPT, model: piModel,
@@ -358,7 +372,8 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
       },
       streamFn,
       sessionId: options.sessionId !== undefined && options.sessionId.length > 0 ? options.sessionId : undefined,
-      toolExecution: "parallel",
+      toolExecution: limits.toolExecution,
+      maxRetryDelayMs: limits.maxRetryDelayMs,
       shouldStopAfterTurn: () => {
         if (turns >= limits.maxTurns) halted = "turns";
         else if (toolCalls.length >= limits.maxToolCalls) halted = "tool-calls";
