@@ -7,13 +7,13 @@
 # gapless from 1, two prompts, one result, the killed run healed to interrupted) with
 # Any 429/rate/quota/provider-refusal on the keyed path
 # writes OUT/BLOCKED naming the stuck turn, keeps the green transcript, stops further
-# keyed turns, and exits 0.
+# keyed turns, and exits 2 BLOCKED (never PASS).
 # Usage: sh verify/keyed-spark-eviction.sh [BASE]. With no BASE the script boots its own
 # wrangler dev on port 8794 (next free in 8791-8796) with a temp worker/.dev.vars holding
 # only the OPENCODE_API_KEY line and stops it on exit; with a BASE it takes over that
 # port (kill plus own boot on the same port) so both evictions stay under its control,
 # and still removes a temp secret file it created on exit.
-# Exit 0 on pass (or a named quota/missing-secret block), 1 otherwise. Writes
+# Exit 0 on pass, 2 on blocked (OUT/BLOCKED names the cause), 1 otherwise. Writes
 # artifacts/RUN_ID/keyed-spark-eviction/.
 # Wave 2 gap record (recovery scan merged; this script predates it and stays
 # unextended by design): case A proves kill plus same-chain retry with the killed
@@ -98,10 +98,10 @@ rm -f "${OUT}/want-dev-vars"
 blocked() {
 printf '%s\n' "BLOCKED: $1" > "${OUT}/BLOCKED"
 echo ""
-echo "PASS ${RUN_ID} BLOCKED eviction-refused"
+echo "BLOCKED ${RUN_ID} eviction-refused"
 echo "green transcript kept; further keyed turns stopped"
 redact || exit 1
-exit 0
+exit 2
 }
 wait_want() {
 I=0
@@ -140,8 +140,8 @@ fi
 command -v lsof >/dev/null 2>&1 || { echo "lsof missing; cannot scope kills to the port"; exit 1; }
 if [ -z "${OPENCODE_API_KEY:-}" ]; then
 printf '%s\n' "BLOCKED: missing-secret plumbing (no OPENCODE_API_KEY in caller env; keyed eviction unreachable)." > "${OUT}/BLOCKED"
-echo "BLOCKED missing secret; transcript kept, exiting 0"
-exit 0
+echo "BLOCKED missing secret; transcript kept, exiting 2"
+exit 2
 fi
 if [ -z "${BASE}" ]; then
 PORT="8794"

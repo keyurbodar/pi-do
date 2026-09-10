@@ -3,7 +3,7 @@
 # Eight keyed turns with varied thinking plus instant thinking toggles fill the ledger past the force floor; then the manual floor plus the alarm-path manual stack two compactions (same runCompaction code path). The live replay holds the latest summary, the archive pages re-read the compacted prefix, the context build opens with the latest summary and projects the tail verbatim, the tail stays byte-stable across storage re-reads, and keyed turns before and after resolve from the compacted path (runtime.thinking reflected, result non-empty, usage positive).
 # Keyed env needed: with no BASE the script boots its own wrangler dev on an isolated port with a temp single-line worker/.dev.vars carrying OPENCODE_API_KEY from the caller env (byte-identical to keyed-live.sh); with BASE it reuses that server and never writes a secret file. The secret never enters any artifact (redaction grep at the end proves it).
 # Usage: sh verify/keyed-spark-archive.sh [BASE]
-# Exit 0 on pass, or on quota-blocked (OUT/BLOCKED names the stuck turn); 1 otherwise. Writes artifacts/RUN_ID/keyed-spark-archive/.
+# Exit 0 on pass, 2 on blocked (OUT/BLOCKED names the stuck turn; never PASS); 1 otherwise. Writes artifacts/RUN_ID/keyed-spark-archive/.
 set -u
 BASE="${1:-}"
 RUN_ID="verify-$(date +%s)"
@@ -32,7 +32,7 @@ do_turn() {
     if node -e "const b = JSON.parse(require('node:fs').readFileSync('${OUT}/${F}.json', 'utf8')); if (b.runtime && b.runtime.provider === 'stub') process.exit(0); process.exit(1);"; then
       printf '%s\n' "blocked: ${F} stayed on the stub path; the Worker never saw the key (missing-secret plumbing)." > "${OUT}/BLOCKED"
       echo "BLOCKED ${RUN_ID}: ${F} stayed stub, cause recorded in ${OUT}/BLOCKED"
-      exit 0
+      exit 2
     fi
     TOKEN="${TOKEN}" CUR="${CUR}" node -e "
 const fs = require('node:fs');
@@ -65,11 +65,10 @@ console.log('retry ok: token=' + process.env.TOKEN);
   else
     cat "${OUT}/${F}.json" "${OUT}/${F}.stderr" 2>/dev/null || true
     if is_quota "${OUT}/${F}.json" "${OUT}/${F}.stderr"; then
-      echo "blocked: quota/refusal on ${F} (prompt token ${TOKEN}); keeping green remainder"
+      echo "blocked: quota/refusal on ${F} (prompt token ${TOKEN}); transcript kept"
       printf '%s\n' "blocked: ${F} (prompt token ${TOKEN}, thinking ${CUR}) refused (429/quota or 403/opt-in; cause in ${F}.json/${F}.stderr)." > "${OUT}/BLOCKED"
-      echo "blocked: ${F} (prompt token ${TOKEN}) refused; keeping green remainder"
-      echo "PASS ${RUN_ID} ws=${WS} sid=${SID} BLOCKED quota-refusal"
-      exit 0
+      echo "BLOCKED ${RUN_ID} ws=${WS} sid=${SID} quota-refusal"
+      exit 2
     else
       echo "keyed turn ${F} failed without a 429/refusal signal"
       exit 1
@@ -87,7 +86,7 @@ if [ "${OWN}" = "1" ]; then
   if [ -z "${OPENCODE_API_KEY:-}" ]; then
     printf '%s\n' "blocked: own boot needs OPENCODE_API_KEY in the caller env; no keyed server can start." > "${OUT}/BLOCKED"
     echo "BLOCKED ${RUN_ID}: missing secret for own boot, cause recorded in ${OUT}/BLOCKED"
-    exit 0
+    exit 2
   fi
   if [ -e "${DEV_VARS}" ]; then
     printf '%s=%s\n' "OPENCODE_API_KEY" "${OPENCODE_API_KEY}" > "${OUT}/dev-vars.expect"

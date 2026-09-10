@@ -9,26 +9,25 @@ const sessions: RouteHandler = async (ctx, request, url) => {
   const ws = url.searchParams.get("ws") ?? "";
   const bad = ctx.requireSession(ws, null, "call POST /workspaces/:id/sessions on the Worker instead", "create one with POST /workspaces first, then POST /workspaces/:id/sessions");
   if (bad) return bad;
-  let retention: unknown;
-  let hasRetention = false;
+  let body: Record<string, unknown> = {};
   try {
-    const body: unknown = await request.json();
-    if (body !== null && typeof body === "object" && "retention" in body) {
-      retention = (body as { retention?: unknown }).retention;
-      hasRetention = true;
-    }
+    const parsed: unknown = await request.json();
+    if (parsed !== null && typeof parsed === "object") body = parsed as Record<string, unknown>;
   } catch {
-    retention = undefined;
+    body = {};
   }
-  const effRetention = hasRetention ? retention : "short";
+  const retention: unknown = "retention" in body ? body.retention : "short";
+  const effRetention = retention;
   if (effRetention !== "short" && effRetention !== "long") {
     return err("bad retention", 'retry with {"retention": "short"|"long"}; omit it for short', 400);
   }
+  const name = typeof body.name === "string" ? body.name : null;
+  const cwd = typeof body.cwd === "string" ? body.cwd : null;
   const sessionId = crypto.randomUUID();
   const fence = crypto.randomUUID();
   const defaults = ctx.readSettings(ws);
   ctx.state.storage.sql.exec(
-    "INSERT INTO sessions(sid, ws, created_at, ownerFence, revision, modelProvider, modelId, thinkingLevel, cacheRetention) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)",
+    "INSERT INTO sessions(sid, ws, created_at, ownerFence, revision, modelProvider, modelId, thinkingLevel, cacheRetention, name, cwd) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
     sessionId,
     ws,
     new Date().toISOString(),
@@ -37,8 +36,10 @@ const sessions: RouteHandler = async (ctx, request, url) => {
     defaults.id,
     defaults.thinking,
     effRetention,
+    name,
+    cwd,
   );
-  return json({ sessionId, fence, revision: 0, model: { provider: defaults.provider, id: defaults.id }, thinking: defaults.thinking, retention: effRetention });
+  return json({ sessionId, fence, revision: 0, model: { provider: defaults.provider, id: defaults.id }, thinking: defaults.thinking, retention: effRetention, name, cwd });
 };
 
 const claim: RouteHandler = async (ctx, request, url) => {
@@ -247,9 +248,17 @@ const meta: RouteHandler = (ctx, request, url) => {
   if (bad) return bad;
   const sql = ctx.state.storage.sql;
   let created = "";
-  for (const row of sql.exec("SELECT created_at FROM sessions WHERE sid = ? AND ws = ? LIMIT 1", sid, ws)) {
+  let name: string | null = null;
+  let cwd: string | null = null;
+  for (const row of sql.exec("SELECT created_at, name, cwd FROM sessions WHERE sid = ? AND ws = ? LIMIT 1", sid, ws)) {
     if (row !== null && typeof row === "object" && "created_at" in row && typeof row.created_at === "string") {
       created = row.created_at;
+    }
+    if (row !== null && typeof row === "object" && "name" in row && typeof row.name === "string") {
+      name = row.name;
+    }
+    if (row !== null && typeof row === "object" && "cwd" in row && typeof row.cwd === "string") {
+      cwd = row.cwd;
     }
   }
   const { count, head } = entryHead(sql, sid);
@@ -268,7 +277,7 @@ const meta: RouteHandler = (ctx, request, url) => {
   const triple = ctx.readTriple(sid);
   const archive = archiveMeta(sql, sid);
   const usage = fmtUsage(sumResultUsage(sql, sid), ctx.sessionContextWindow(triple));
-  return json({ sid, ws, created, head, count, leaf, openRun, model: { provider: triple?.provider ?? null, id: triple?.id ?? null }, thinking: triple?.thinking ?? null, retention: triple?.retention ?? "short", usage, compaction: { pending: compactionPending(sql, sid), archivePages: archive.pages, archiveTotal: archive.total } });
+  return json({ sid, ws, created, name, cwd, head, count, leaf, openRun, model: { provider: triple?.provider ?? null, id: triple?.id ?? null }, thinking: triple?.thinking ?? null, retention: triple?.retention ?? "short", usage, compaction: { pending: compactionPending(sql, sid), archivePages: archive.pages, archiveTotal: archive.total } });
 };
 
 export const sessionRoutes: Record<string, RouteHandler> = {

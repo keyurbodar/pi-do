@@ -1,4 +1,4 @@
-// verify-runs.mjs — drives entries.ts against an in-memory fake SQL backend.
+// verify-runs.mjs — drives entries.ts against real SQLite in-memory.
 // Proves crashed runs flip to interrupted on next open while clean runs
 // never produce false interrupted entries. Exit nonzero on the first gap.
 import {
@@ -10,6 +10,8 @@ import {
   openRun,
   recordTurnWithOpen,
 } from "./src/store/entries.ts";
+import { DatabaseSync } from "node:sqlite";
+import { ensureWorkspaceSchema } from "./src/store/sql-util.ts";
 
 function fail(step, want, got) {
   console.error(`FAIL ${step}: want ${want} got ${got}`);
@@ -22,99 +24,44 @@ function eq(step, got, want) {
   if (a !== b) fail(step, b, a);
 }
 
-function createFakeSql() {
-  let seq = 0;
-  const entries = [];
-  const runs = new Map();
-  const totals = new Map();
-  const leafFor = (sid) => entries.reduce((max, e) => (e.sid === sid && e.id > max ? e.id : max), 0);
-  return {
+function createRealSql() {
+  const db = new DatabaseSync(":memory:");
+  const sql = {
     exec(query, ...bindings) {
-      const q = String(query);
-      if (q.startsWith("PRAGMA")) return [];
-      if (q.startsWith("CREATE TABLE")) return [];
-      if (q.startsWith("CREATE INDEX")) return [];
-      if (q.startsWith("INSERT INTO pi_entries")) {
-        seq += 1;
-        entries.push({ id: seq, sid: bindings[0], parent: bindings[1], type: bindings[2], body: bindings[3] });
-        return [];
-      }
-      if (q.startsWith("SELECT last_insert_rowid")) return [{ id: seq }];
-      if (q.startsWith("SELECT leaf FROM sessions")) {
-        return [{ leaf: leafFor(bindings[0]) }];
-      }
-      if (q.startsWith("SELECT 1 FROM session_totals")) {
-        return totals.size > 0 ? [{ one: 1 }] : [];
-      }
-      if (q.startsWith("SELECT 1 FROM pi_entries WHERE type")) {
-        return entries.some((e) => e.type === "result") ? [{ one: 1 }] : [];
-      }
-      if (q.startsWith("SELECT sid, body FROM pi_entries WHERE type")) {
-        return entries.filter((e) => e.type === "result").map((e) => ({ sid: e.sid, body: e.body }));
-      }
-      if (q.startsWith("INSERT INTO session_totals")) {
-        const t = totals.get(bindings[0]) ?? { inTokens: 0, outTokens: 0, cacheRead: 0, costTotal: 0, elapsedMs: 0, turns: 0 };
-        if (q.includes("ON CONFLICT")) {
-          t.inTokens += bindings[1];
-          t.outTokens += bindings[2];
-          t.cacheRead += bindings[3];
-          t.costTotal += bindings[4];
-          t.elapsedMs += bindings[5];
-          t.turns += 1;
-        } else {
-          t.inTokens = bindings[1];
-          t.outTokens = bindings[2];
-          t.cacheRead = bindings[3];
-          t.costTotal = bindings[4];
-          t.elapsedMs = bindings[5];
-          t.turns = bindings[6];
-        }
-        totals.set(bindings[0], t);
-        return [];
-      }
-      if (q.startsWith("UPDATE sessions SET leaf = (SELECT MAX(id)")) return [];
-      if (q.startsWith("UPDATE sessions SET leaf")) return [];
-      if (q.startsWith("SELECT id AS cursor")) {
-        return entries
-          .filter((e) => e.sid === bindings[0] && e.id > bindings[1])
-          .sort((a, b) => a.id - b.id)
-          .slice(0, Math.min(bindings[2] ?? 100, 1000))
-          .map((e) => ({ cursor: e.id, type: e.type, body: e.body, parent: e.parent ?? 0 }));
-      }
-      if (q.startsWith("SELECT COUNT(*) AS count")) {
-        const ids = entries.filter((e) => e.sid === bindings[0]).map((e) => e.id);
-        return [{ count: ids.length, head: ids.length === 0 ? 0 : Math.max(...ids) }];
-      }
-      if (q.startsWith("SELECT runId FROM runs")) {
-        return [...runs.values()]
-          .filter((r) => r.sid === bindings[0] && r.status === bindings[1])
-          .map((r) => ({ runId: r.runId }));
-      }
-      if (q.startsWith("INSERT OR REPLACE INTO runs")) {
-        runs.set(bindings[1], { sid: bindings[0], runId: bindings[1], status: bindings[2] });
-        return [];
-      }
-      if (q.startsWith("UPDATE runs SET status")) {
-        const r = runs.get(bindings[2]);
-        if (r && r.sid === bindings[1]) r.status = bindings[0];
-        return [];
-      }
-      fail("fake-exec", "known query", q);
+      const text = String(query);
+      const stmt = db.prepare(text);
+      if (/^\s*(SELECT|PRAGMA|EXPLAIN|WITH)\b/i.test(text)) return stmt.all(...bindings);
+      stmt.run(...bindings);
       return [];
     },
     transactionSync(fn) {
-      fn();
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        fn();
+      } catch (e) {
+        db.exec("ROLLBACK");
+        throw e;
+      }
+      db.exec("COMMIT");
     },
     statusOf(runId) {
-      return runs.get(runId)?.status;
+      for (const row of sql.exec("SELECT status FROM runs WHERE runId = ? LIMIT 1", runId)) return row.status;
+      return undefined;
     },
     leafOf(sid) {
-      return leafFor(sid);
+      for (const row of sql.exec("SELECT leaf FROM sessions WHERE sid = ? LIMIT 1", sid)) return row.leaf ?? 0;
+      return 0;
     },
   };
+  ensureWorkspaceSchema(sql);
+  ensureEntriesSchema(sql);
+  // Fixture sessions: production inserts these on session create; the script
+  // drives entries directly, so the backend seeds the two fixture sessions.
+  for (const sid of ["s1", "s2"]) sql.exec("INSERT OR IGNORE INTO sessions(sid) VALUES (?)", sid);
+  return sql;
 }
 
-const sql = createFakeSql();
+const sql = createRealSql();
 ensureEntriesSchema(sql);
 
 recordTurnWithOpen(

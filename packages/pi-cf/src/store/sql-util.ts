@@ -2,60 +2,6 @@ export interface Sql {
   exec(query: string, ...bindings: unknown[]): Iterable<unknown>;
 }
 
-// Prepared-statement reuse for hot paths (append plus tail reads). The
-// stable SqlStorage surface exposes exec only, so the wrapper probes for a
-// prepare implementation once per database and falls back to exec where it
-// is absent (verify fakes, older runtimes): same query strings either way,
-// so the fallback keeps the exact current plans. Statements are keyed by
-// query text; every hot query below is a module constant, so repeats hit.
-interface BoundStatement {
-  bind(...bindings: unknown[]): { all(): unknown[]; run(): unknown };
-}
-
-function asBoundStatement(prepared: unknown): BoundStatement | null {
-  if (prepared === null || typeof prepared !== "object" || !("bind" in prepared)) return null;
-  // Probed shape: bind is validated a function below; the remaining surface
-  // is only touched inside try/catch at execution time.
-  const candidate: BoundStatement = prepared as BoundStatement;
-  if (typeof candidate.bind !== "function") return null;
-  return candidate;
-}
-
-const preparedCache = new WeakMap<object, Map<string, BoundStatement | null>>();
-
-function cachedStatement(sql: Sql, query: string): BoundStatement | null {
-  let byQuery = preparedCache.get(sql);
-  if (byQuery === undefined) {
-    byQuery = new Map();
-    preparedCache.set(sql, byQuery);
-  }
-  if (byQuery.has(query)) return byQuery.get(query) ?? null;
-  let stmt: BoundStatement | null = null;
-  try {
-    if ("prepare" in sql) {
-      const prepare: unknown = sql.prepare;
-      if (typeof prepare === "function") stmt = asBoundStatement(Reflect.apply(prepare, sql, [query]));
-    }
-  } catch {
-    stmt = null;
-  }
-  byQuery.set(query, stmt);
-  return stmt;
-}
-
-export function execPrepared(sql: Sql, query: string, ...bindings: unknown[]): unknown[] {
-  const stmt = cachedStatement(sql, query);
-  if (stmt !== null) {
-    try {
-      return stmt.bind(...bindings).all();
-    } catch {
-      // Prepared execution failed after a good probe (evicted statement,
-      // read/write mismatch); fall through to exec on the same text.
-    }
-  }
-  return [...sql.exec(query, ...bindings)];
-}
-
 export interface EntryRow {
   cursor: number;
   parent: number;
@@ -81,11 +27,11 @@ export function strField(obj: Record<string, unknown>, key: string): string | nu
 
 export function numField(obj: Record<string, unknown>, key: string): number {
   const value = obj[key];
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 export function readSingleRow(sql: Sql, query: string, ...bindings: unknown[]): Record<string, unknown> | null {
-  for (const row of execPrepared(sql, query, ...bindings)) {
+  for (const row of sql.exec(query, ...bindings)) {
     if (row !== null && typeof row === "object") return row as Record<string, unknown>;
   }
   return null;
@@ -159,6 +105,8 @@ export const MIGRATIONS: readonly Migration[] = [
   { table: "sessions", column: "thinkingLevel", ddl: "ALTER TABLE sessions ADD COLUMN thinkingLevel TEXT" },
   { table: "sessions", column: "cacheRetention", ddl: "ALTER TABLE sessions ADD COLUMN cacheRetention TEXT" },
   { table: "sessions", column: "leaf", ddl: "ALTER TABLE sessions ADD COLUMN leaf INTEGER NOT NULL DEFAULT 0" },
+  { table: "sessions", column: "name", ddl: "ALTER TABLE sessions ADD COLUMN name TEXT" },
+  { table: "sessions", column: "cwd", ddl: "ALTER TABLE sessions ADD COLUMN cwd TEXT" },
   { table: "compaction_marks", column: "pages", ddl: "ALTER TABLE compaction_marks ADD COLUMN pages INTEGER NOT NULL DEFAULT 0" },
   { table: "compaction_marks", column: "total", ddl: "ALTER TABLE compaction_marks ADD COLUMN total INTEGER NOT NULL DEFAULT 0" },
 ];
@@ -172,7 +120,7 @@ export function migrate(sql: Sql, migrations: readonly Migration[] = MIGRATIONS)
 
 export const CREATE_TABLES = {
   workspaces: "CREATE TABLE IF NOT EXISTS workspaces(id TEXT PRIMARY KEY, created_at TEXT)",
-  sessions: "CREATE TABLE IF NOT EXISTS sessions(sid TEXT PRIMARY KEY, ws TEXT, created_at TEXT, ownerFence TEXT, revision INTEGER NOT NULL DEFAULT 0)",
+  sessions: "CREATE TABLE IF NOT EXISTS sessions(sid TEXT PRIMARY KEY, ws TEXT, created_at TEXT, ownerFence TEXT, revision INTEGER NOT NULL DEFAULT 0, name TEXT, cwd TEXT)",
   workspaceSettings: "CREATE TABLE IF NOT EXISTS workspace_settings(ws TEXT PRIMARY KEY, modelProvider TEXT, modelId TEXT, thinkingLevel TEXT)",
   piEntries: "CREATE TABLE IF NOT EXISTS pi_entries (id INTEGER PRIMARY KEY AUTOINCREMENT, ws TEXT, sid TEXT, cursor INTEGER, parent INTEGER NOT NULL DEFAULT 0, type TEXT, body TEXT)",
   runs: "CREATE TABLE IF NOT EXISTS runs (sid TEXT, runId TEXT PRIMARY KEY, status TEXT)",

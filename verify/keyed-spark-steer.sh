@@ -15,7 +15,7 @@
 # The secret arrives only via the caller env / Worker secret and never enters
 # any artifact (redaction grep at the end proves it).
 # Usage: sh verify/keyed-spark-steer.sh [BASE]
-# Exit 0 on pass (or on quota-blocked 429, reported not failed), 1 otherwise.
+# Exit 0 on pass, 2 on blocked (OUT/BLOCKED names the cause), 1 otherwise.
 # Writes artifacts/RUN_ID/keyed-spark-steer/.
 set -u
 BASE="${1:-http://127.0.0.1:8789}"
@@ -137,9 +137,8 @@ if (/error[^}]{0,300}?(429|403|quota|rate.?limit|datapolicy|opt.in|consent|excee
 process.exit(1);
 "; then
   printf '%s\n' "BLOCKED: keyed-spark-steer refused on the steer path (429/quota or 403/opt-in; steer entry/done unproven this run; cause in frames.json)." > "${OUT}/BLOCKED"
-  echo "BLOCKED steer path refused; transcript kept, exiting 0"
-  echo "PASS ${RUN_ID} ws=${WS} sid=${SID} BLOCKED steer-refused"
-  exit 0
+  echo "BLOCKED steer path refused; transcript kept, exiting 2"
+  exit 2
 fi
 
 echo "### 7 steer entry frame landed mid-turn; marker in result or a file the turn wrote; usage costTotal>0"

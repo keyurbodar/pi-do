@@ -8,11 +8,11 @@
 # redrive rows, and a second capped turn completes on the next revision, so the
 # refused turn left no orphaned pi_runs row behind for the Wave 2 recovery scan).
 # A real provider refusal (429/quota/insufficient/opt-in) on the capped turn is
-# reported, not failed: the script proves what it can (error frame plus error row,
-# no result row, openRun null), writes OUT/BLOCKED via record_blocked, and exits 0
-# with PASS ... BLOCKED (record_blocked pattern, same as retention-long/turn-census).
-# Missing-secret plumbing (session stays on stub) and a cost-free model path (usage
-# costTotal 0, cap untrippable) also exit 0 BLOCKED: refusal unproven this run.
+# reported, not passed: the script proves what it can (error frame plus error row,
+# no result row, openRun null), writes OUT/BLOCKED via record_blocked, and exits 2
+# with BLOCKED (never PASS). Missing-secret plumbing (session stays on stub) and
+# a cost-free model path (usage costTotal 0, cap untrippable) also exit 2
+# BLOCKED: refusal unproven this run, no inference touched past the refused turn.
 # Shared-dev safe: boots nothing, kills nothing, so it runs against the shared dev
 # and is parallel-tier eligible (one cheap keyed turn plus a passive scan window).
 # Usage: sh verify/quota-refusal.sh [BASE]
@@ -42,8 +42,7 @@ console.log('block signal ok: ' + JSON.stringify(b).slice(0, 300));
 " "$1" || exit 1
   printf '%s\n' "blocked: quota proof ($2 keyed turn ${KEYED_MODEL} with maxCost ${MAXCOST}) refused; cause in $1 (429/quota or 403/opt-in)." > "${OUT}/BLOCKED"
   echo "BLOCKED ${RUN_ID}: quota proof refused, cause recorded in ${OUT}/BLOCKED"
-  echo "PASS ${RUN_ID} ws=${WS} sid=${SID} BLOCKED quota-refused"
-  exit 0
+  exit 2
 }
 {
 echo "### 0 key presence by length only (secret never enters artifacts)"
@@ -82,9 +81,8 @@ if (b.openRun !== null) throw new Error('session opens with a stuck run: ' + JSO
 console.log('keyed ok: triple opencode-go/deepseek-v4-flash, openRun null');
 " || {
   printf '%s\n' "blocked: quota proof missing-secret plumbing (meta triple stayed stub; server key absent; cause in meta-before.json)." > "${OUT}/BLOCKED"
-  echo "BLOCKED ${RUN_ID}: missing secret, transcript kept, exiting 0"
-  echo "PASS ${RUN_ID} ws=${WS} sid=${SID} BLOCKED missing-secret"
-  exit 0
+  echo "BLOCKED ${RUN_ID}: missing secret, transcript kept, exiting 2"
+  exit 2
 }
 echo "### 5 entries before the capped turn"
 BEFORE_JSON="$(${CLI} entries --ws "${WS}" --sid "${SID}" --after 0 --limit 1000 --base "${BASE}" --json)" || exit 1
@@ -178,14 +176,12 @@ cost-halt) echo "credit refusal observed: done carries halt reason cost" ;;
 refused) record_blocked "${OUT}/frames.json" "capped" ;;
 missing-secret)
   printf '%s\n' "blocked: quota proof missing-secret plumbing (keyed turn unauthenticated; cause in frames.json)." > "${OUT}/BLOCKED"
-  echo "BLOCKED ${RUN_ID}: missing secret, transcript kept, exiting 0"
-  echo "PASS ${RUN_ID} ws=${WS} sid=${SID} BLOCKED missing-secret"
-  exit 0 ;;
+  echo "BLOCKED ${RUN_ID}: missing secret, transcript kept, exiting 2"
+  exit 2 ;;
 cost-free)
   printf '%s\n' "blocked: quota proof cost-free path (usage costTotal 0; maxCost cap untrippable this run; cause in frames.json)." > "${OUT}/BLOCKED"
-  echo "BLOCKED ${RUN_ID}: cost-free path, transcript kept, exiting 0"
-  echo "PASS ${RUN_ID} ws=${WS} sid=${SID} BLOCKED cost-free"
-  exit 0 ;;
+  echo "BLOCKED ${RUN_ID}: cost-free path, transcript kept, exiting 2"
+  exit 2 ;;
 untripped) echo "cap untripped despite costTotal>0: the cost halt did not fire"; exit 1 ;;
 *) echo "turn ended without refusal or completion: ${VERDICT}; see ${OUT}/frames.json"; exit 1 ;;
 esac
