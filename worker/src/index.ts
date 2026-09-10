@@ -24,6 +24,11 @@ const app = new Hono<{ Bindings: Env }>()
   .get("/workspaces/:id/sessions/:sid/entries", (c) => forwardToWorkspace(c.env, c.req.param("id"), "/entries", c.req, { sid: c.req.param("sid"), after: c.req.query("after"), limit: c.req.query("limit") }))
   .get("/workspaces/:id/sessions/:sid/meta", (c) => forwardToWorkspace(c.env, c.req.param("id"), "/meta", c.req, { sid: c.req.param("sid") }))
   .get("/workspaces/:id/sessions/:sid/snapshot", (c) => forwardToWorkspace(c.env, c.req.param("id"), "/snapshot", c.req, { sid: c.req.param("sid"), since: c.req.query("since") }))
+  .get("/workspaces/:id/doctor", (c) => forwardToWorkspace(c.env, c.req.param("id"), "/doctor", c.req))
+  .post("/workspaces/:id/sessions/:sid/fork", (c) => forwardToWorkspace(c.env, c.req.param("id"), "/fork", c.req, { sid: c.req.param("sid") }))
+  .post("/workspaces/:id/sessions/:sid/clone", (c) => forwardToWorkspace(c.env, c.req.param("id"), "/clone", c.req, { sid: c.req.param("sid") }))
+  .on(["GET", "POST"], "/workspaces/:id/sessions/:sid/checkpoints", (c) => forwardToWorkspace(c.env, c.req.param("id"), "/checkpoints", c.req, { sid: c.req.param("sid") }))
+  .post("/workspaces/:id/sessions/:sid/rewind", (c) => forwardToWorkspace(c.env, c.req.param("id"), "/rewind", c.req, { sid: c.req.param("sid") }))
   .get("/models", (c) => {
   const only = c.req.query("provider") ?? null;
   const found = listCatalogModels().filter((m) => only === null || m.provider === only);

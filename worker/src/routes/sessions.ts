@@ -1,4 +1,6 @@
-import { appendEntry, runInSyncTx, sumResultUsage, entryHead } from "pi-cf/store/entries";
+import { appendEntry, listEntries, runInSyncTx, sessionLeaf, sumResultUsage, entryHead } from "pi-cf/store/entries";
+import { createCheckpoint, getCheckpoint, listCheckpoints, rewindSession } from "pi-cf/store/checkpoints";
+import { drainPages, readSingleRow } from "pi-cf/store/sql-util";
 import { buildRuntime, clampThinkingLevel, resolveCatalogModel, supportedThinkingLevels, THINKING_LEVELS, type RuntimeEnv, type RuntimeModel } from "../model-runtime";
 import { archiveMeta, compactionPending } from "../compaction";
 import { checkedRotate } from "../stream";
@@ -40,7 +42,7 @@ const sessions: RouteHandler = async (ctx, request, url) => {
     name,
     cwd,
   );
-  return json({ sessionId, fence, revision: 0, model: { provider: defaults.provider, id: defaults.id }, thinking: defaults.thinking, retention: effRetention, name, cwd });
+  return json({ sessionId, fence, revision: 0, model: { provider: defaults.provider, id: defaults.id }, thinking: defaults.thinking, retention: effRetention, name, cwd, parentSessionId: null });
 };
 
 const claim: RouteHandler = async (ctx, request, url) => {
@@ -251,7 +253,8 @@ const meta: RouteHandler = (ctx, request, url) => {
   let created = "";
   let name: string | null = null;
   let cwd: string | null = null;
-  for (const row of sql.exec("SELECT created_at, name, cwd FROM sessions WHERE sid = ? AND ws = ? LIMIT 1", sid, ws)) {
+  let parentSessionId: string | null = null;
+  for (const row of sql.exec("SELECT created_at, name, cwd, parentSessionId FROM sessions WHERE sid = ? AND ws = ? LIMIT 1", sid, ws)) {
     if (row !== null && typeof row === "object" && "created_at" in row && typeof row.created_at === "string") {
       created = row.created_at;
     }
@@ -260,6 +263,9 @@ const meta: RouteHandler = (ctx, request, url) => {
     }
     if (row !== null && typeof row === "object" && "cwd" in row && typeof row.cwd === "string") {
       cwd = row.cwd;
+    }
+    if (row !== null && typeof row === "object" && "parentSessionId" in row && typeof row.parentSessionId === "string") {
+      parentSessionId = row.parentSessionId;
     }
   }
   const { count, head } = entryHead(sql, sid);
@@ -278,7 +284,7 @@ const meta: RouteHandler = (ctx, request, url) => {
   const triple = ctx.readTriple(sid);
   const archive = archiveMeta(sql, sid);
   const usage = fmtUsage(sumResultUsage(sql, sid), ctx.sessionContextWindow(triple));
-  return json({ sid, ws, created, name, cwd, head, count, leaf, openRun, model: { provider: triple?.provider ?? null, id: triple?.id ?? null }, thinking: triple?.thinking ?? null, retention: triple?.retention ?? "short", usage, compaction: { pending: compactionPending(sql, sid), archivePages: archive.pages, archiveTotal: archive.total } });
+  return json({ sid, ws, created, name, cwd, parentSessionId, head, count, leaf, openRun, model: { provider: triple?.provider ?? null, id: triple?.id ?? null }, thinking: triple?.thinking ?? null, retention: triple?.retention ?? "short", usage, compaction: { pending: compactionPending(sql, sid), archivePages: archive.pages, archiveTotal: archive.total } });
 };
 const snapshot: RouteHandler = (ctx, request, url) => {
   if (request.method !== "GET") return null;
@@ -293,6 +299,133 @@ const snapshot: RouteHandler = (ctx, request, url) => {
   return json({ snapshot: readSnapshot(sid), events: readEvents(sid, since) });
 };
 
+const branch = (copyEntries: boolean): RouteHandler => async (ctx, request, url) => {
+  if (request.method !== "POST") return null;
+  const ws = url.searchParams.get("ws") ?? "";
+  const sid = url.searchParams.get("sid") ?? "";
+  const bad = ctx.requireSession(ws, sid, "call POST /workspaces/:id/sessions/:sid/fork on the Worker instead", MINT_WS_HINT);
+  if (bad) return bad;
+  let body: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = await request.json();
+    if (parsed !== null && typeof parsed === "object") body = parsed as Record<string, unknown>;
+  } catch {
+    body = {};
+  }
+  const sql = ctx.state.storage.sql;
+  const parent = readSingleRow(sql, "SELECT modelProvider, modelId, thinkingLevel, cacheRetention, cwd FROM sessions WHERE sid = ? AND ws = ? LIMIT 1", sid, ws);
+  if (parent === null) return err("unknown session", MINT_WS_HINT, 404);
+  const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
+  const name = "name" in body ? str(body.name) : null;
+  const cwd = "cwd" in body ? str(body.cwd) : str(parent.cwd);
+  const retention = parent.cacheRetention === "long" ? "long" : "short";
+  const child = crypto.randomUUID();
+  const fence = crypto.randomUUID();
+  sql.exec(
+    "INSERT INTO sessions(sid, ws, created_at, ownerFence, revision, modelProvider, modelId, thinkingLevel, cacheRetention, name, cwd, parentSessionId) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)",
+    child,
+    ws,
+    new Date().toISOString(),
+    fence,
+    str(parent.modelProvider),
+    str(parent.modelId),
+    str(parent.thinkingLevel),
+    retention,
+    name,
+    cwd,
+    sid,
+  );
+  let copied = 0;
+  if (copyEntries) for (const e of drainPages((after) => listEntries(sql, sid, { after, limit: 1000 }))) copied += appendEntry(sql, child, e.type, e.body) > 0 ? 1 : 0;
+  const head = entryHead(sql, child);
+  return json({ sessionId: child, fence, revision: 0, model: { provider: str(parent.modelProvider), id: str(parent.modelId) }, thinking: str(parent.thinkingLevel), retention, name, cwd, parentSessionId: sid, copied, head: head.head, count: head.count });
+};
+
+const fork: RouteHandler = branch(false);
+const clone: RouteHandler = branch(true);
+const checkpoints: RouteHandler = async (ctx, request, url) => {
+  const ws = url.searchParams.get("ws") ?? "";
+  const sid = url.searchParams.get("sid") ?? "";
+  const bad = ctx.requireSession(ws, sid, "call /workspaces/:id/sessions/:sid/checkpoints on the Worker instead", MINT_WS_HINT);
+  if (bad) return bad;
+  const sql = ctx.state.storage.sql;
+  if (request.method === "GET") return json({ checkpoints: listCheckpoints(sql, sid) });
+  if (request.method !== "POST") return null;
+  let body: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = await request.json();
+    if (parsed !== null && typeof parsed === "object") body = parsed as Record<string, unknown>;
+  } catch {
+    body = {};
+  }
+  const label = body.label === undefined || body.label === null ? null : body.label;
+  if (label !== null && typeof label !== "string") {
+    return err("bad label", "retry with a string label, or omit it", 400);
+  }
+  let cursor: number;
+  if (body.cursor === undefined) {
+    cursor = sessionLeaf(sql, sid);
+  } else if (typeof body.cursor !== "number" || !Number.isInteger(body.cursor) || body.cursor < 0) {
+    return err("checkpoint_bad_cursor", "retry with cursor 0 or an entry cursor of this session", 400);
+  } else {
+    cursor = body.cursor;
+  }
+  try {
+    return json(createCheckpoint(sql, sid, crypto.randomUUID(), cursor, label));
+  } catch (e) {
+    if (e !== null && typeof e === "object" && "error" in e && typeof e.error === "string") {
+      const hint = "hint" in e && typeof e.hint === "string" ? e.hint : "retry with cursor 0 or an entry cursor of this session";
+      return json({ error: e.error, hint }, 400);
+    }
+    throw e;
+  }
+};
+
+const rewind: RouteHandler = async (ctx, request, url) => {
+  if (request.method !== "POST") return null;
+  const ws = url.searchParams.get("ws") ?? "";
+  const sid = url.searchParams.get("sid") ?? "";
+  const bad = ctx.requireSession(ws, sid, "call POST /workspaces/:id/sessions/:sid/rewind on the Worker instead", MINT_WS_HINT);
+  if (bad) return bad;
+  let body: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = await request.json();
+    if (parsed !== null && typeof parsed === "object") body = parsed as Record<string, unknown>;
+  } catch {
+    body = {};
+  }
+  const hasCursor = body.cursor !== undefined;
+  const hasCheckpoint = typeof body.checkpointId === "string" && body.checkpointId.length > 0;
+  if (hasCursor === hasCheckpoint) {
+    return err("bad rewind target", "retry with exactly one of {cursor} or {checkpointId}", 400);
+  }
+  const sql = ctx.state.storage.sql;
+  let cursor: number;
+  if (hasCheckpoint) {
+    const cp = getCheckpoint(sql, sid, body.checkpointId as string);
+    if (cp === null) return err("unknown checkpoint", "list checkpoints with GET /workspaces/:id/sessions/:sid/checkpoints, then retry with a checkpoint id of this session", 404);
+    cursor = cp.cursor;
+  } else if (typeof body.cursor !== "number" || !Number.isInteger(body.cursor) || body.cursor < 0) {
+    return err("checkpoint_bad_cursor", "retry with cursor 0 or an entry cursor of this session", 400);
+  } else {
+    cursor = body.cursor;
+  }
+  try {
+    let out: unknown = null;
+    runInSyncTx(sql, () => {
+      out = rewindSession(sql, sid, cursor);
+    });
+    return json(out);
+  } catch (e) {
+    if (e !== null && typeof e === "object" && "error" in e && typeof e.error === "string") {
+      const hint = "hint" in e && typeof e.hint === "string" ? e.hint : "retry with a cursor at or behind the session leaf";
+      return json({ error: e.error, hint }, 400);
+    }
+    throw e;
+  }
+};
+
+
 export const sessionRoutes: Record<string, RouteHandler> = {
   "/sessions": sessions,
   "/claim": claim,
@@ -301,4 +434,8 @@ export const sessionRoutes: Record<string, RouteHandler> = {
   "/settings": settings,
   "/meta": meta,
   "/snapshot": snapshot,
+  "/fork": fork,
+  "/clone": clone,
+  "/checkpoints": checkpoints,
+  "/rewind": rewind,
 };

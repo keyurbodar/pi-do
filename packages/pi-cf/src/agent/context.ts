@@ -1,7 +1,7 @@
-import type { EntryRow } from "../store/entries.ts";
+import type { EntriesSql, EntryRow } from "../store/entries.ts";
 import { projectEntry } from "./projectors.ts";
-import { parseJsonObject, strField } from "../store/sql-util.ts";
-
+import { parseJsonObject, readSingleRow, strField } from "../store/sql-util.ts";
+import { loadProjectContextMessage, type ProjectContextSource } from "./project-context.ts";
 export type ContextRole = "user" | "assistant" | "compactionSummary" | "toolCall" | "toolResult";
 
 export interface ContextMessage {
@@ -96,8 +96,10 @@ export function capSessionContext(ctx: SessionContext, budgetTokens: number): Se
 
 export type EntryReader = (cursor: number) => EntryRow | null;
 
-export function buildSessionContext(leaf: number, readEntry: EntryReader): SessionContext {
+export function buildSessionContext(leaf: number, readEntry: EntryReader, project?: ProjectContextSource | null): SessionContext {
   const context: SessionContext = { messages: [], model: null, thinking: "off", toolNames: null, skipped: [], truncated: false, dropped: 0 };
+  const section = project === undefined || project === null ? null : loadProjectContextMessage(project);
+  if (section !== null) context.messages.push(section);
   if (!Number.isInteger(leaf) || leaf <= 0) {
     return context;
   }
@@ -184,10 +186,79 @@ export function buildSessionContext(leaf: number, readEntry: EntryReader): Sessi
   return context;
 }
 
-export function buildSessionContextFromEntries(entries: readonly EntryRow[], leaf: number): SessionContext {
+export function buildSessionContextFromEntries(entries: readonly EntryRow[], leaf: number, project?: ProjectContextSource | null): SessionContext {
   const byCursor = new Map<number, EntryRow>();
   for (const entry of entries) {
     byCursor.set(entry.cursor, entry);
   }
-  return buildSessionContext(leaf, (cursor) => byCursor.get(cursor) ?? null);
+  return buildSessionContext(leaf, (cursor) => byCursor.get(cursor) ?? null, project);
+}
+
+export type BranchEntryReader = (sessionId: string) => EntryRow[];
+
+// Root-first session lineage via parentSessionId. An absent column throws
+// BLOCKED naming parentSessionId instead of inferring lineage from entries.
+export function sessionLineage(sql: EntriesSql, sid: string): string[] {
+  const chain: string[] = [sid];
+  let current = sid;
+  for (;;) {
+    let parent: unknown = null;
+    try {
+      const row = readSingleRow(sql, "SELECT parentSessionId FROM sessions WHERE sid = ? LIMIT 1", current);
+      parent = row === null ? null : row.parentSessionId;
+    } catch (e) {
+      if (e instanceof Error && /no such column:?\s*parentSessionId/i.test(e.message)) {
+        throw new Error("branch reads BLOCKED: sessions.parentSessionId column absent; refusing to infer lineage from entries");
+      }
+      throw e;
+    }
+    if (typeof parent !== "string" || parent.length === 0 || chain.includes(parent)) return chain.reverse();
+    chain.push(parent);
+    current = parent;
+  }
+}
+
+// Branch-scoped reads: stitch each lineage session's chain onto its parent's
+// leaf (copies, never stored rows) and run the shared walk, so a fork sees
+// ancestors in chain order while sibling sessions stay out of the map.
+export function buildBranchSessionContext(sql: EntriesSql, sid: string, leaf: number, readSessionEntries: BranchEntryReader, project?: ProjectContextSource | null): SessionContext {
+  const lineage = sessionLineage(sql, sid);
+  const perSession: EntryRow[][] = lineage.map((sessionId) => readSessionEntries(sessionId));
+  const leafOf = (index: number): number => {
+    const row = readSingleRow(sql, "SELECT leaf FROM sessions WHERE sid = ? LIMIT 1", lineage[index]);
+    if (row !== null && typeof row.leaf === "number" && Number.isInteger(row.leaf) && row.leaf > 0) return row.leaf;
+    let max = 0;
+    for (const e of perSession[index]) if (e.cursor > max) max = e.cursor;
+    return max;
+  };
+  const byCursor = new Map<number, EntryRow>();
+  for (const entries of perSession) {
+    for (const e of entries) {
+      if (!byCursor.has(e.cursor)) byCursor.set(e.cursor, { ...e });
+    }
+  }
+  const leaves = lineage.map((_, index) => leafOf(index));
+  for (let i = lineage.length - 1; i > 0; i--) {
+    const target = leaves[i - 1];
+    if (target <= 0) continue;
+    let start: EntryRow | null = null;
+    for (const e of perSession[i]) {
+      const anchor = byCursor.get(e.cursor);
+      if (anchor === undefined) continue;
+      if (typeof anchor.parent === "number" && anchor.parent > 0 && byCursor.has(anchor.parent)) continue;
+      if (start === null || anchor.cursor < start.cursor) start = anchor;
+    }
+    if (start !== null) start.parent = target;
+  }
+  let startLeaf = leaf;
+  if (!Number.isInteger(startLeaf) || startLeaf <= 0) {
+    startLeaf = 0;
+    for (let i = lineage.length - 1; i >= 0; i--) {
+      if (leaves[i] > 0) {
+        startLeaf = leaves[i];
+        break;
+      }
+    }
+  }
+  return buildSessionContext(startLeaf, (cursor) => byCursor.get(cursor) ?? null, project);
 }

@@ -1,6 +1,6 @@
 // stream-engine.ts — turn policy over the stream codec: prompt/abort/steer
-// frames, executeTurn plus the ledger open/commit wrapper, tool-aware
-// redrive, and the recovery driver. Separated from the frame codec
+// frames, executeTurn plus the ledger open/commit wrapper, redrive
+// and the recovery driver. Separated from the frame codec
 // (stream-codec.ts) so turn policy can evolve without touching transport
 // framing. Import through ./stream, which re-exports both halves.
 import { bumpSessionTotals, closeRun, entryHead, listEntries, openRun, sessionLeaf, type EntriesSql, type EntryRow } from "pi-cf/store/entries";
@@ -8,11 +8,8 @@ import { commitPiRun, openPiRun } from "pi-cf/store/runs";
 import type { RedriveInput } from "pi-cf/store/recovery";
 import { RECOVERY_JOB, RECOVERY_SCAN_MS, scheduleJob } from "./alarm-mux";
 import { enforceFence } from "pi-cf/store/fence";
-import { createAgentSession, sessionTools, type SessionRunBudgets, type SessionTurn } from "pi-cf/agent/session";
+import { createAgentSession, type SessionRunBudgets, type SessionTurn } from "pi-cf/agent/session";
 import { clampThinkingLevel, defaultTurnModel, keyedProviders, resolveCatalogModel, resolveKeyedModel, resolveProviderKey, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
-import { planStubTurn } from "pi-cf/agent/stub-plan";
-import { textOf, type ToolContext } from "pi-cf/tools/tools";
-import { ComputerExecutionEnv } from "pi-cf/runtime/env";
 import { compactionPending, maybeMarkForCompaction } from "./compaction";
 import { broadcast, CLOSE_CONFLICT, CLOSE_FENCED, CLOSE_UNKNOWN, emitEntry, wrapSocket, type StreamAttachment, type StreamHost, type StreamSocket } from "./stream-codec";
 
@@ -59,23 +56,80 @@ export function resolveTurnModel(env: RuntimeEnv, catalog: RuntimeModel | null):
   const m = resolveKeyedModel(env, catalog.provider, catalog.id);
   return { model: m, provider: m.provider, stub: false, like: catalog };
 }
+// Model fallback chain: an unknown-model 404 on the turn's preferred catalog
+// entry cycles the other keyed models in catalog order, then the stub, so the
+// turn still runs. Anything else (unknown provider, bad MODEL_ID, invalid
+// models.json) is a genuine config error and rethrows to keep surfacing.
+function isUnknownModel(e: unknown): boolean {
+  if (e === null || typeof e !== "object" || !("error" in e)) return false;
+  const error = e.error;
+  return typeof error === "string" && error.startsWith("unknown model");
+}
+
+export interface ModelFallback {
+  want: string;
+  used: string;
+}
+
+function fallbackCatalogs(env: RuntimeEnv, want: string): Array<RuntimeModel | null> {
+  const out: Array<RuntimeModel | null> = [];
+  for (const provider of keyedProviders(env)) {
+    for (const id of [...provider.catalog.keys()].sort()) {
+      if (`${provider.id}/${id}` !== want) out.push(provider.catalog.get(id) as RuntimeModel);
+    }
+  }
+  out.push(null);
+  return out;
+}
+
+// Preferred-model tracking across turns, keyed by sid like the steer queues:
+// a cycled turn records what it fell back from and to; the next turn that
+// resolves the preferred entry clears the row and reports the restore.
+const fallbackActive = new Map<string, ModelFallback>();
+
+function chainCatalog(env: RuntimeEnv, triple: { provider: string; id: string } | null): { catalog: RuntimeModel | null; want: string | null; fallback: ModelFallback | null } {
+  if (triple === null) return { catalog: null, want: null, fallback: null };
+  const want = `${triple.provider}/${triple.id}`;
+  try {
+    return { catalog: resolveCatalogModel(triple.provider, triple.id), want, fallback: null };
+  } catch (e) {
+    if (!isUnknownModel(e)) throw e;
+  }
+  const fell = fallbackCatalogs(env, want)[0] ?? null;
+  return { catalog: fell, want, fallback: { want, used: fell === null ? "stub" : `${fell.provider}/${fell.id}` } };
+}
 
 const BUDGET_CAPS = { maxTurns: 200, maxToolCalls: 1000, maxDurationMs: 1800000, maxCost: 100 } as const;
 
 export function parseBudgets(raw: unknown): { ok: true; budgets: SessionRunBudgets | undefined } | { ok: false; error: string; hint: string } {
   if (raw === undefined) return { ok: true, budgets: undefined };
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    return { ok: false, error: "bad budgets", hint: 'retry with {"budgets": {"maxTurns": 25}}; every field must be a finite number > 0' };
+    return { ok: false, error: "bad budgets", hint: 'retry with {"budgets": {"maxTurns": 25}}; numeric fields must be finite numbers >= 0, toolExecution "sequential" or "parallel"' };
   }
   const rec = raw as Record<string, unknown>;
   const budgets: SessionRunBudgets = {};
   for (const field of ["maxTurns", "maxToolCalls", "maxDurationMs", "maxCost"] as const) {
     const value = rec[field];
     if (value === undefined) continue;
-    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-      return { ok: false, error: `bad budgets.${field}`, hint: `set budgets.${field} to a finite number > 0, capped at ${BUDGET_CAPS[field]}` };
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+      return { ok: false, error: `bad budgets.${field}`, hint: `set budgets.${field} to a finite number >= 0, capped at ${BUDGET_CAPS[field]}` };
     }
     budgets[field] = Math.min(value, BUDGET_CAPS[field]);
+  }
+  for (const field of ["maxRetries", "maxRetryDelayMs", "timeoutMs"] as const) {
+    const value = rec[field];
+    if (value === undefined) continue;
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+      return { ok: false, error: `bad budgets.${field}`, hint: `set budgets.${field} to a finite number >= 0` };
+    }
+    budgets[field] = value;
+  }
+  const toolExecution = rec["toolExecution"];
+  if (toolExecution !== undefined) {
+    if (toolExecution !== "sequential" && toolExecution !== "parallel") {
+      return { ok: false, error: "bad budgets.toolExecution", hint: 'set budgets.toolExecution to "sequential" or "parallel"' };
+    }
+    budgets.toolExecution = toolExecution;
   }
   return { ok: true, budgets };
 }
@@ -150,6 +204,18 @@ export function acceptStream(request: Request, host: StreamHost, state: DurableO
   return new Response(null, { status: 101, webSocket: client });
 }
 
+// Follow-up steer queue: steers that arrive before the agent attaches wait
+// here in arrival order and drain into agent.steer on attach, so every
+// mid-turn steer applies in order instead of only reaching a live agent.
+// Keyed by runId; the turn's finally deletes its row. Done/abort acks
+// reconcile applied vs still-pending so no steer goes silent.
+const steerQueues = new Map<string, { text: string; applied: boolean }[]>();
+
+function steerOutcome(runId: string): { applied: number; pending: string[] } {
+  const queue = steerQueues.get(runId) ?? [];
+  return { applied: queue.filter((s) => s.applied).length, pending: queue.filter((s) => !s.applied).map((s) => s.text) };
+}
+
 export async function socketMessage(
   host: StreamHost,
   sock: StreamSocket,
@@ -193,12 +259,19 @@ export async function socketMessage(
       return;
     }
     emitEntry(host, sock, "steer", { runId, text });
+    let queue = steerQueues.get(runId);
+    if (queue === undefined) {
+      queue = [];
+      steerQueues.set(runId, queue);
+    }
     const live = host.live.get(host.sid);
     if (live?.agent !== undefined) {
       live.agent.steer({ role: "user", content: text, timestamp: Date.now() });
-      sock.send({ steered: true, runId });
+      queue.push({ text, applied: true });
+      sock.send({ steered: true, runId, steer: queue.length });
     } else {
-      sock.send({ steered: false, runId, hint: "no live agent to steer mid-turn; the steer text is persisted and applied on the next turn" });
+      queue.push({ text, applied: false });
+      sock.send({ steered: false, runId, queued: queue.filter((s) => !s.applied).length, hint: "no live agent yet; the steer is queued in order, persists with the turn, and applies on attach or on the next turn" });
     }
     return;
   }
@@ -229,6 +302,12 @@ export interface TurnInput {
   turnId: string;
   signal?: AbortSignal;
   budgets?: SessionRunBudgets; plan?: boolean;
+  // Preferred-model identity the caller resolved (startTurn's stored triple):
+  // lets the engine record a fallback episode and report the restore when the
+  // preferred entry resolves again. Absent on callers that only carry the
+  // validated catalog, which the engine derives the identity from instead.
+  want?: string | null;
+  fallback?: ModelFallback | null;
 }
 
 export interface TurnRuntime {
@@ -238,6 +317,8 @@ export interface TurnRuntime {
   thinking: string | null;
   stub: boolean;
   hint?: string;
+  fallback?: string;
+  restored?: string;
 }
 
 export interface TurnSink {
@@ -299,88 +380,14 @@ export async function executeTurn(host: StreamHost, input: TurnInput, sink: Turn
     await host.releaseKeepalive();
   }
 }
-// Tool-aware stub continuation for the continue path. The stub plan is
-// deterministic (read seed.txt, then the bash marker), so the resumed run
-// replays it step by step against the resume record instead of regenerating
-// and dropping a prefix: completed pairs reuse their committed output with
-// no re-execution and no re-emit, in-flight calls re-execute once with only
-// the toolResult emitted (the call entry already committed), and fresh steps
-// emit both halves. Everything emitted here is a post-commit delta landing
-// on chunk seqs continuing at nextSeq, so the turn completes byte-exact
-// with contiguous seqs and no duplicated committed entry. Model (keyed)
-// turns cannot pre-seed the agent loop this way and keep the
-// regenerate-and-drop path in redriveTurn.
-async function redriveStubContinue(
-  host: StreamHost,
-  sock: StreamSocket,
-  input: RedriveInput,
-  signal: AbortSignal,
-  thinking: string | null,
-  catalog: RuntimeModel | null,
-  resolved: TurnModel,
-): Promise<void> {
-  const env = new ComputerExecutionEnv(host.files, host.ws, host.shell);
-  const context: ToolContext = { env };
-  const readFn = sessionTools.read;
-  const bashFn = sessionTools.bash;
-  const t0 = Date.now();
-  const outputs: string[] = [];
-  let n = 0;
-  let ri = 0;
-  for (const step of planStubTurn(input.prompt as string)) {
-    signal.throwIfAborted();
-    n += 1;
-    const id = `session-${n}`;
-    const tool = step.kind;
-    const args = step.kind === "read" ? { path: step.path } : { command: step.command };
-    const toolFn = step.kind === "read" ? readFn : bashFn;
-    const head = ri < input.resume.length ? input.resume[ri] : undefined;
-    if (head !== undefined && head.tool === tool && JSON.stringify(head.args) === JSON.stringify(args)) {
-      ri += 1;
-      if (head.output !== null) {
-        outputs.push(head.output);
-        continue;
-      }
-      const retried = await toolFn.execute(id, args, signal, undefined, context);
-      const retriedOutput = textOf(retried);
-      outputs.push(retriedOutput);
-      emitEntry(host, sock, "toolResult", { runId: input.turnId, id, tool, args, output: retriedOutput });
-      continue;
-    }
-    // Plan diverged from the record (non-deterministic tools): fall back to
-    // executing and emitting the step. Best-effort; the deterministic stub
-    // plan always matches.
-    emitEntry(host, sock, "toolCall", { runId: input.turnId, id, tool, args });
-    const result = await toolFn.execute(id, args, signal, undefined, context);
-    const output = textOf(result);
-    outputs.push(output);
-    emitEntry(host, sock, "toolResult", { runId: input.turnId, id, tool, args, output });
-  }
-  const usage = {
-    inTokens: 0, outTokens: 0, cacheRead: 0, costTotal: 0, elapsedMs: 0, tokensPerSec: null,
-    retention: host.retention, sqlMs: 0, inferenceMs: Date.now() - t0, frameMs: 0,
-  };
-  const runtime = {
-    via: "createAgentSession", model: resolved.model.id, provider: resolved.provider, thinking, stub: true,
-    ...(catalog !== null ? { hint: `no key for provider ${resolved.provider}; running the stub model` } : {}),
-  };
-  emitEntry(host, sock, "result", { runId: input.turnId, result: outputs.join("\n"), usage, runtime });
-  try {
-    closeRun(host.sql, host.sid, input.turnId);
-  } catch {
-  }
-  try {
-    bumpSessionTotals(host.sql, host.sid, usage);
-  } catch {
-  }
-}
 // Re-drives an orphaned turn to completion under its original turnId. The
 // fresh model run regenerates the turn's bytes; the first skipDeltas pushes
 // are dropped (prompt plus already-committed prefix, never re-emitted), the
 // rest land as entries with chunk seqs continuing at startSeq. Exact under
-// deterministic output, best-effort otherwise. A continue-path stub turn
-// instead resumes tool-aware through redriveStubContinue above, so committed
-// tools never re-execute. Runs inside the session queue
+// deterministic output, best-effort otherwise. Stub turns are deterministic
+// (read seed.txt, then the bash marker), so the same path covers them:
+// re-execution is side-effect-free and the prefix drop keeps every
+// committed entry single. Runs inside the session queue
 // so it never interleaves a live turn; rotates no fence and sends no socket
 // frames (alarm context has neither). Failures throw so the scan records the
 // attempt; success closes the ledger row via executeTurn's done wrapper.
@@ -402,18 +409,6 @@ export async function redriveTurn(host: StreamHost, input: RedriveInput & { skip
       };
       const catalog = host.model === null ? null : resolveCatalogModel(host.model.provider, host.model.id);
       const effThinking = host.thinking === null ? null : clampThinkingLevel(catalog ?? {}, host.thinking);
-      const resolved = resolveTurnModel(host.runtimeEnv, catalog);
-      if (!input.fresh && resolved.stub) {
-        // Deterministic stub on the continue path: resume tool-aware so
-        // committed tools never re-execute. Mirrors executeTurn's
-        // keepalive release; the scan owns commit and re-arm.
-        try {
-          await redriveStubContinue(host, dummySock, input, turnController.signal, effThinking, catalog, resolved);
-        } finally {
-          await host.releaseKeepalive();
-        }
-        return;
-      }
       await executeTurn(
         host,
         { prompt: input.prompt as string, catalog, thinking: effThinking, runId: input.turnId, turnId: input.turnId, signal: turnController.signal },
@@ -547,6 +542,20 @@ async function executeTurnInner(host: StreamHost, input: TurnInput, sink: TurnSi
     sink.fail(input.runId, out.error, out.hint, 404, false);
     return;
   }
+  const wantNow = input.want ?? (input.catalog === null ? null : `${input.catalog.provider}/${input.catalog.id}`);
+  const fell = input.fallback ?? null;
+  let fallbackNote: string | null = null;
+  let restoredNote: string | null = null;
+  if (fell !== null) {
+    fallbackActive.set(host.sid, fell);
+    fallbackNote = `unknown model ${fell.want}; fell back to ${fell.used}`;
+  } else if (wantNow !== null) {
+    const prev = fallbackActive.get(host.sid);
+    if (prev !== undefined) {
+      fallbackActive.delete(host.sid);
+      restoredNote = `back on ${wantNow} after falling back from ${prev.want} to ${prev.used}`;
+    }
+  }
   try {
     const session = createAgentSession({
       files: host.files,
@@ -565,7 +574,14 @@ async function executeTurnInner(host: StreamHost, input: TurnInput, sink: TurnSi
       budgets: input.budgets,
       onAgent: (agent) => {
         const live = host.live.get(host.sid);
-        if (live !== undefined && live.controller.signal === input.signal) live.agent = agent;
+        if (live === undefined || live.controller.signal !== input.signal) return;
+        live.agent = agent;
+        if (input.signal?.aborted === true) return;
+        for (const s of steerQueues.get(input.runId) ?? []) {
+          if (s.applied) continue;
+          agent.steer({ role: "user", content: s.text, timestamp: Date.now() });
+          s.applied = true;
+        }
       },
       onUpdate: (event) => {
         if (event.kind === "toolCall") sink.push("toolCall", { runId: input.runId, id: event.id, tool: event.tool, args: event.args });
@@ -582,6 +598,8 @@ async function executeTurnInner(host: StreamHost, input: TurnInput, sink: TurnSi
       thinking: input.thinking,
       stub: resolved.stub,
       ...(resolved.stub && input.catalog !== null ? { hint: `no key for provider ${resolved.provider}; running the stub model` } : {}),
+      ...(fallbackNote === null ? {} : { fallback: fallbackNote }),
+      ...(restoredNote === null ? {} : { restored: restoredNote }),
     });
     if (maybeMarkForCompaction(host.sql, host.sid)) await host.scheduleAlarm();
     else if (compactionPending(host.sql, host.sid)) await host.scheduleAlarm();
@@ -641,6 +659,7 @@ async function startTurn(
             bumpSessionTotals(host.sql, host.sid, turn.usage);
           } catch {
           }
+          const steers = steerOutcome(doneId);
           if (held !== null) {
             const next = { fence: crypto.randomUUID(), revision: held.revision + 1 };
             if (!host.casRotateFence(held.fence, held.revision, next)) {
@@ -649,8 +668,8 @@ async function startTurn(
               sock.close(CLOSE_CONFLICT, "concurrent rotation mid-turn");
               return;
             }
-            sock.send({ done: true, turnId, fence: next.fence, revision: next.revision, result: turn.result, runtime, usage: turn.usage, ...(turn.halt ? { halt: turn.halt } : {}) });
-          } else sock.send({ done: true, turnId, result: turn.result, runtime, usage: turn.usage, ...(turn.halt ? { halt: turn.halt } : {}) });
+            sock.send({ done: true, turnId, fence: next.fence, revision: next.revision, result: turn.result, runtime, usage: turn.usage, steers, ...(turn.halt ? { halt: turn.halt } : {}) });
+          } else sock.send({ done: true, turnId, result: turn.result, runtime, usage: turn.usage, steers, ...(turn.halt ? { halt: turn.halt } : {}) });
         },
         fail: (failId, error, hint) => {
           try {
@@ -661,12 +680,12 @@ async function startTurn(
             closeRun(host.sql, host.sid, failId);
           } catch {
           }
-          sock.send({ error, hint });
+          sock.send({ error, hint, steers: steerOutcome(failId) });
         },
         aborted: (abortId) => {
           host.sql.exec("UPDATE runs SET status = ? WHERE sid = ? AND runId = ?", "interrupted", host.sid, abortId);
           emit("interrupted", { runId: abortId });
-          sock.send({ aborted: true, runId: abortId });
+          sock.send({ aborted: true, runId: abortId, steers: steerOutcome(abortId) });
         },
       };
       // Ledger row opens before the first entry lands: a kill between the
@@ -678,16 +697,16 @@ async function startTurn(
       await host.pokeAlarm();
       openRun(host.sql, host.sid, runId);
       emit("prompt", { runId, prompt });
-      let catalog: RuntimeModel | null;
+      let chained: { catalog: RuntimeModel | null; want: string | null; fallback: ModelFallback | null };
       try {
-        catalog = host.model === null ? null : resolveCatalogModel(host.model.provider, host.model.id);
+        chained = chainCatalog(host.runtimeEnv, host.model);
       } catch (e) {
         const out = shaped(e, "run failed", "retry the prompt with a simpler request");
         sink.fail(runId, out.error, out.hint, 404, true);
         return;
       }
-      const effThinking = host.thinking === null ? null : clampThinkingLevel(catalog ?? {}, host.thinking);
-      await executeTurn(host, { prompt, catalog, thinking: effThinking, runId, turnId, signal: turnController.signal, budgets }, sink);
+      const effThinking = host.thinking === null ? null : clampThinkingLevel(chained.catalog ?? {}, host.thinking);
+      await executeTurn(host, { prompt, catalog: chained.catalog, thinking: effThinking, runId, turnId, signal: turnController.signal, budgets, want: chained.want, fallback: chained.fallback }, sink);
     } catch (e) {
       const out = shaped(e, "turn failed", "retry the prompt with a simpler request");
       try {
@@ -701,6 +720,7 @@ async function startTurn(
       sock.send({ error: out.error, hint: out.hint });
     } finally {
       if (host.live.get(host.sid)?.controller === turnController) host.live.delete(host.sid);
+      steerQueues.delete(runId);
     }
   });
 }

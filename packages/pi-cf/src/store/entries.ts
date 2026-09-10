@@ -1,6 +1,7 @@
 import type { SessionHalt, SessionUsage } from "../agent/session";
 import type { EntryRow } from "./sql-util.ts";
-import { CREATE_TABLES, ensureTables, existsBy, mapEntryRows, numField, parseJsonObject, readScalar, readSingleRow, toEntryRow } from "./sql-util.ts";
+import { CREATE_TABLES, drainPages, ensureTables, existsBy, mapEntryRows, numField, parseJsonObject, readScalar, readSingleRow, toEntryRow } from "./sql-util.ts";
+import { checkEntry } from "./entry-validation.ts";
 
 export interface EntriesSql {
   exec(query: string, ...bindings: unknown[]): Iterable<unknown>;
@@ -22,6 +23,7 @@ export function appendEntry(
   type: string,
   body: unknown,
 ): number {
+  checkEntry(sql, sid, type, body);
   const stored = typeof body === "string" ? body : JSON.stringify(body);
   let cursor = -1;
   runInSyncTx(sql, () => {
@@ -249,6 +251,81 @@ export function sumResultUsage(sql: EntriesSql, sid: string): SessionUsage {
     tokensPerSec: null,
     ...zeroSplit,
   };
+}
+
+export interface UsageBucket {
+  model: string;
+  cause: string;
+  turns: number;
+  inTokens: number;
+  outTokens: number;
+  cacheRead: number;
+  costTotal: number;
+  elapsedMs: number;
+}
+
+// Read-only split of past turns by model and halt cause. Model follows the
+// model_change timeline (session row when never switched, unknown when the
+// mint model is gone); cause follows the halt reason rows carry, stop when
+// the turn completed. Buckets sum back to the session_totals row while the
+// prefix is live; compaction reaps entries but never the totals.
+export function sumUsageByModel(sql: EntriesSql, sid: string): UsageBucket[] {
+  const label = (provider: unknown, id: unknown): string | null => {
+    if (typeof id !== "string" || id.length === 0) return null;
+    return typeof provider === "string" && provider.length > 0 ? `${provider}/${id}` : id;
+  };
+  const changeModel = (body: string, key: string): string | null => {
+    const obj = parseJsonObject(body);
+    if (obj === null) return null;
+    const side = obj[key];
+    if (side === null || typeof side !== "object") return null;
+    const rec = side as Record<string, unknown>;
+    return label(rec.provider, rec.id);
+  };
+  const live = drainPages((after) => listEntries(sql, sid, { after, limit: 1000 }));
+  let model: string | null = null;
+  for (const e of live) {
+    if (e.type !== "model_change") continue;
+    model = changeModel(e.body, "from");
+    break;
+  }
+  if (model === null) {
+    const session = readSingleRow(sql, "SELECT modelProvider, modelId FROM sessions WHERE sid = ? LIMIT 1", sid);
+    if (session !== null) model = label(session.modelProvider, session.modelId);
+  }
+  let current = model ?? "unknown";
+  const buckets: UsageBucket[] = [];
+  for (const e of live) {
+    if (e.type === "model_change") {
+      const next = changeModel(e.body, "to");
+      if (next !== null) current = next;
+      continue;
+    }
+    if (e.type !== "result") continue;
+    const usage = parseResultUsage(e.body);
+    const parsed = parseJsonObject(e.body);
+    const halt = parsed !== null && typeof parsed.halt === "object" && parsed.halt !== null ? (parsed.halt as Record<string, unknown>) : null;
+    const rawReason = halt !== null ? halt.reason : null;
+    const reason = typeof rawReason === "string" && rawReason.length > 0 ? rawReason : "stop";
+    let bucket: UsageBucket | null = null;
+    for (const b of buckets) {
+      if (b.model === current && b.cause === reason) {
+        bucket = b;
+        break;
+      }
+    }
+    if (bucket === null) {
+      bucket = { model: current, cause: reason, turns: 0, inTokens: 0, outTokens: 0, cacheRead: 0, costTotal: 0, elapsedMs: 0 };
+      buckets.push(bucket);
+    }
+    bucket.turns += 1;
+    bucket.inTokens += usage.inTokens;
+    bucket.outTokens += usage.outTokens;
+    bucket.cacheRead += usage.cacheRead;
+    bucket.costTotal += usage.costTotal;
+    bucket.elapsedMs += usage.elapsedMs;
+  }
+  return buckets;
 }
 
 // One-time backfill: totals rows only exist for turns recorded after the
