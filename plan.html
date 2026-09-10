@@ -55,6 +55,27 @@
   </p>
   <div class="sub">refs/ cloned at <code>refs/pi</code> · <code>refs/computer</code> · <code>refs/nanocodex</code>. This doc is the build contract. Nothing here runs node/python locally at runtime.</div>
 </header>
+<section>
+  <h2>0 — progress board</h2>
+  <div class="body">
+    <p>Live tracker. Updated on every merge. ✓ landed on main. ◐ staged or in review. ○ queued.</p>
+    <table>
+      <tr><th>Lane</th><th>Issue</th><th>State</th></tr>
+      <tr><td>store</td><td>A-EXEC-DEL, B7-SANITIZE, B12-VERIFY-RUNS</td><td class="k">✓✓✓ done</td></tr>
+      <tr><td>recovery</td><td>A-PINS-TRIM</td><td class="k">✓ done</td></tr>
+      <tr><td>schema</td><td>C13-NAME, C1-CWD, C2-FORK, C17-CONFIG</td><td class="k">✓✓✓✓ done</td></tr>
+      <tr><td>context</td><td>C5-TOKEN-TRIGGER, C12-MODEL-SUMMARY, C11-USAGE-SPLIT, C4-CONTEXT-FILES, C14-BRANCH-READS</td><td class="k">✓✓✓✓✓ done</td></tr>
+      <tr><td>proofs</td><td>B9-BLOCKED-STATUS, B10-EVICTION-LABEL, B11-CONDITION-POLLS, A-EVICT-DEL, A-DOCS-ARCHIVE</td><td class="k">✓✓✓✓✓ done</td></tr>
+      <tr><td>tools</td><td>C21-PLAN-FLAG, C15-PROJECTORS, C18-SNAPSHOT-BUS</td><td>◐◐◐ staged, merges at engine drain</td></tr>
+      <tr><td>engine</td><td>C9-PROMPT-BUILDER</td><td class="k">✓ landed</td></tr>
+      <tr><td>branch</td><td>C6-CHECKPOINTS</td><td>◐ in progress</td></tr>
+      <tr><td>engine</td><td>B1, B2, B13, B8, C22, C20</td><td class="k">✓✓✓✓✓✓ done</td></tr>
+      <tr><td>engine</td><td>C9-PROMPT-BUILDER</td><td>◐ in review</td></tr>
+      <tr><td>engine</td><td>C10-STEERING, C16-MODEL-FALLBACK, A-STUB-TRIM</td><td>○ queued</td></tr>
+    </table>
+    <p class="dim">Score: 26 of 33 on main. 3 staged. 4 to go.</p>
+  </div>
+</section>
 
 <section>
   <h2>0 — goal / non-goals</h2>
