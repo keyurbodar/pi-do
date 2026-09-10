@@ -22,12 +22,14 @@ import { fileRoutes } from "./routes/files";
 import { sessionRoutes } from "./routes/sessions";
 import { turnRoutes } from "./routes/turns";
 import { opRoutes } from "./routes/ops";
+import { doctorRoutes } from "./routes/doctor";
 
 const ROUTES: Record<string, RouteHandler> = {
   ...fileRoutes,
   ...sessionRoutes,
   ...turnRoutes,
   ...opRoutes,
+  ...doctorRoutes,
 };
 
 export class WorkspaceBase implements DurableObject {
