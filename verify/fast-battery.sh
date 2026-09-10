@@ -6,6 +6,14 @@
 # Excluded on purpose: bg-process (kill-storm crashes wrangler dev, see
 # worker/src/shell-exec.ts bgKill), keyed-* plus live-models (real provider
 # inference, minutes each), hibernate-proof (needs a manual dev restart).
+# Chaos map (kill scripts): sigkill-e2e owns its server on :8793 and kill -9s
+# it mid-turn, keyed-spark-eviction owns or takes over its port and kill -9s
+# workerd, bg-process kill-storms the shared server, hibernate-proof needs a
+# manual dev restart, and eviction-repro needs an operator restart on an
+# isolated keyed BASE — none of them run in this tier. quota-refusal is the
+# exception that proves the rule: shared-dev safe (boots/kills nothing), so it
+# stays eligible for the parallel keyed tier, never this local-only tier (which
+# takes no inference at all).
 set -u
 BASE="${1:-http://127.0.0.1:8787}"
 OUTDIR="artifacts/fast-battery"

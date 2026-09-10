@@ -22,6 +22,14 @@
 # the house 8787 which runs main-checkout code).
 # Exit 1 with a LOST headline on current behavior, 0 on pass/heal or on a
 # named quota/missing-secret block. Writes artifacts/RUN_ID/eviction-repro/.
+# Wave 2 gap record (recovery scan merged; this script predates it and stays
+# unextended by design): it proves produced-frames versus survived-rows plus the
+# missing result/done, but covers none of the scan contract — no orphan-age wait
+# (it re-reads entries right after the reboot, never past ORPHAN_AFTER_MS), no
+# redrive assertion (same-chain resume shows only as healed, never as a redrive),
+# and no attempts observation (the scan records attempts pre-redrive and deletes
+# the row on commit, which only sigkill-e2e.sh latches). quota-refusal.sh covers
+# the orphan-age-quiet half of that contract on a refused turn.
 set -u
 BASE="${1:-http://127.0.0.1:8791}"
 RUN_ID="verify-$(date +%s)"

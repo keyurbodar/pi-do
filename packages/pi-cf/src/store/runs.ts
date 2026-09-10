@@ -12,7 +12,7 @@
 // cursor fell into the archived prefix (cursor <= toCursor), except live
 // turns the caller hands in, so the census stays flat across compactions.
 import type { EntriesSql } from "./entries.ts";
-import { readSingleRow } from "./sql-util.ts";
+import { execPrepared, readSingleRow } from "./sql-util.ts";
 
 export const PI_RUNS_DDL =
   "CREATE TABLE IF NOT EXISTS pi_runs(turnId TEXT PRIMARY KEY, sid TEXT NOT NULL, fence TEXT NOT NULL, cursor INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, updatedAt INTEGER NOT NULL, nextRunAt INTEGER NOT NULL DEFAULT 0)";
@@ -78,7 +78,7 @@ const PI_RUN_COLUMNS = "turnId, sid, fence, cursor, attempts, updatedAt, nextRun
 // redrive through executeTurn collision-free; a genuinely reused turnId still
 // collides loudly at the first chunk append on (sid, turnId, seq).
 export function openPiRun(sql: EntriesSql, sid: string, turnId: string, fence: string, cursor: number, nowMs: number = Date.now()): void {
-  sql.exec(
+  execPrepared(sql,
     "INSERT OR IGNORE INTO pi_runs(turnId, sid, fence, cursor, attempts, updatedAt, nextRunAt) VALUES (?, ?, ?, ?, 0, ?, 0)",
     turnId,
     sid,
@@ -99,14 +99,14 @@ export function nextRunAtMin(sql: EntriesSql): number | null {
 // ideally inside the same transaction as the flush so updatedAt never runs
 // ahead of durable data. Matches zero rows when the turn already committed.
 export function touchPiRun(sql: EntriesSql, turnId: string, nowMs: number = Date.now()): void {
-  sql.exec("UPDATE pi_runs SET updatedAt = ? WHERE turnId = ?", nowMs, turnId);
+  execPrepared(sql, "UPDATE pi_runs SET updatedAt = ? WHERE turnId = ?", nowMs, turnId);
 }
 
 // Deletes the ledger row. Called only after the turn's commit landed; a row
 // left behind by a crash between commit and delete reads as a
 // fully-committed orphan whose suffix merge emits zero deltas.
 export function commitPiRun(sql: EntriesSql, turnId: string): void {
-  sql.exec("DELETE FROM pi_runs WHERE turnId = ?", turnId);
+  execPrepared(sql, "DELETE FROM pi_runs WHERE turnId = ?", turnId);
 }
 
 export function getPiRun(sql: EntriesSql, turnId: string): PiRunRow | null {

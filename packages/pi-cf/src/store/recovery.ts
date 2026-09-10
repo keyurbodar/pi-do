@@ -17,7 +17,13 @@
 //   turn always looks fresh; only a dead turn goes stale.
 // - continue: chunk seqs form 0..N contiguous. The driver replays only the
 //   suffix after the last committed seq, so committed entries are never
-//   duplicated. Success deletes the row; failure records one attempt.
+//   duplicated, and carries the resume record (ResumeTool per committed
+//   toolCall, in order): completed pairs replay from the record and never
+//   re-execute, in-flight calls re-execute once with only the result
+//   emitted. A suffix-empty orphan whose prefix already holds a result or
+//   error died between commit and row delete and just closes the row; a
+//   suffix-empty orphan without one died mid-turn and still re-drives.
+//   Success deletes the row; failure records one attempt.
 // - retry: chunk seqs have gaps (or are empty), so no safe resume point
 //   exists. Records one attempt, then the driver starts a fresh turn under
 //   the same turnId (never re-open: the start cursor stays the resume
@@ -27,7 +33,8 @@
 // deltas after the last committed seq, resolved per chunk through the
 // pi_chunks.cursor pin (cursor <= live head means the mirrored entry
 // exists), with a count fallback for pre-migration rows whose cursor is
-// NULL.
+// NULL. The resume record extends the same guarantee to tool execution:
+// completed tools never run twice.
 //
 // Alarm wiring: RECOVERY_JOB fires through the mux like keepalive and
 // compaction (earliest-deadline wins; scheduleJob never pushes a deadline
@@ -54,6 +61,21 @@ export const ORPHAN_AFTER_MS = 2 * RECOVERY_SCAN_MS;
 // next arming.
 export const RECOVERY_MAX_PER_SCAN = 10;
 
+export interface ResumeTool {
+  // One committed toolCall delta, in chunk-seq order. Survives the crash
+  // because chunk and entry land in one transaction: a surviving toolCall
+  // chunk always has its mirrored entry.
+  id: string;
+  tool: string;
+  args: Record<string, unknown>;
+  // Committed output for a completed toolCall/toolResult pair. Null when the
+  // call committed but its result never landed (kill landed mid-tool): the
+  // driver re-executes that tool once and emits only its result, so the
+  // committed call entry is never duplicated. Non-null pairs are never
+  // re-executed and never re-emitted.
+  output: string | null;
+}
+
 export interface RedriveInput {
   sid: string;
   turnId: string;
@@ -67,6 +89,14 @@ export interface RedriveInput {
   // Uncommitted deltas only (seqs after the last committed seq) on
   // continue; empty on retry, where the driver starts from the prompt.
   suffix: ChunkRow[];
+  // Tool-aware resume record: committed toolCall deltas from the prefix at
+  // or below the last committed seq, in order. Completed pairs (output
+  // non-null) are replayed from the record, never re-executed; in-flight
+  // calls (output null) are re-executed once with only the result emitted.
+  // Empty on retry, where there is no safe resume point. Contract addition
+  // for the tool-aware continuation lane: the driver ignores it on paths
+  // that regenerate from the prompt.
+  resume: ResumeTool[];
   // Next free chunk seq for the turnId namespace (max seq + 1). Old chunk
   // rows are kept for the byte-math proof; post-wake deltas continue the
   // sequence so the (sid, turnId, seq) primary key never collides.
@@ -214,6 +244,57 @@ export function suffixForTurn(
   return chunks.filter((chunk) => chunk.seq > last);
 }
 
+// Tool-aware resume record over the committed prefix (chunks at or below
+// the last committed seq, in order). Pairs a toolCall delta with its
+// toolResult by id: both halves committed means the tool already ran, so
+// the pair survives with its output and must never re-execute. A call with
+// no later result is in-flight (kill landed mid-tool): it survives with a
+// null output so the driver re-executes it once and emits only the result.
+// Non-tool deltas (prompt, text, result) carry no tool field and are
+// ignored; an orphan result with no call is ignored. Unreadable bodies are
+// skipped, never healed.
+export function resumeToolsForPrefix(prefix: readonly ChunkRow[]): ResumeTool[] {
+  const out: ResumeTool[] = [];
+  const pending = new Map<string, number>();
+  for (const chunk of prefix) {
+    const obj = parseJsonObject(chunk.body);
+    if (obj === null) continue;
+    const id = strField(obj, "id");
+    const tool = strField(obj, "tool");
+    if (id === null || tool === null) continue;
+    const rawArgs = obj["args"];
+    if (rawArgs === null || typeof rawArgs !== "object" || Array.isArray(rawArgs)) continue;
+    const args = rawArgs as Record<string, unknown>;
+    const output = strField(obj, "output");
+    if (output !== null) {
+      const slot = pending.get(id);
+      if (slot !== undefined) {
+        out[slot] = { id, tool, args: out[slot]?.args ?? args, output };
+        pending.delete(id);
+      }
+      continue;
+    }
+    pending.set(id, out.length);
+    out.push({ id, tool, args, output: null });
+  }
+  return out;
+}
+
+// True when the committed prefix already holds the turn's terminal delta:
+// a result on success, an error on failure. A suffix-empty orphan past this
+// point died between commit and row delete, so the scan just closes the row
+// like before. A suffix-empty orphan WITHOUT one died before finishing
+// (every delta committed, no terminal delta): it still needs a re-drive,
+// which the resume record lets complete without re-executing anything.
+export function prefixIsTerminal(prefix: readonly ChunkRow[]): boolean {
+  for (const chunk of prefix) {
+    const obj = parseJsonObject(chunk.body);
+    if (obj === null) continue;
+    if (strField(obj, "result") !== null || strField(obj, "error") !== null) return true;
+  }
+  return false;
+}
+
 // The turn's prompt: first prompt entry after the start cursor. Null when
 // it never committed or compacted away; the driver then fails the re-drive
 // instead of hallucinating a prompt.
@@ -259,13 +340,18 @@ export async function scanTurns(sql: EntriesSql, nowMs: number, driver: Recovery
     const prompt = readTurnPrompt(sql, run.sid, run.cursor);
     if (isContiguous(chunks)) {
       const suffix = suffixForTurn(sql, run.sid, run.cursor, run.turnId, chunks);
-      if (suffix.length === 0) {
+      const prefix = chunks.slice(0, chunks.length - suffix.length);
+      if (suffix.length === 0 && prefixIsTerminal(prefix)) {
         // Fully committed: the crash landed between commit and row delete.
         // Nothing to re-drive; just close the row.
         commitPiRun(sql, run.turnId);
         summary.continued.push(run.turnId);
         continue;
       }
+      // Suffix-empty without a terminal delta means the kill landed after
+      // the last delta commit but before the turn finished: the resume
+      // record below still completes it without re-executing anything.
+      const resume = resumeToolsForPrefix(prefix);
       try {
         await driver.redrive({
           sid: run.sid,
@@ -274,6 +360,7 @@ export async function scanTurns(sql: EntriesSql, nowMs: number, driver: Recovery
           cursor: run.cursor,
           prompt,
           suffix,
+          resume,
           nextSeq: chunks.length,
           fresh: false,
         });
@@ -298,6 +385,7 @@ export async function scanTurns(sql: EntriesSql, nowMs: number, driver: Recovery
         cursor: run.cursor,
         prompt,
         suffix: [],
+        resume: [],
         nextSeq,
         fresh: true,
       });

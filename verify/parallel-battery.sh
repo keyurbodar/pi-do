@@ -5,6 +5,14 @@
 # redundant; eviction needs its own port, live-models takes no BASE arg).
 # width is 2: one provider key rate-limits, and contention flakes when three
 # or more keyed scripts race it.
+# Chaos map: the keyed smoke tier above shares one BASE at width 2, so any
+# script that kills or owns its server stays out — sigkill-e2e (kill -9s its
+# own :8793 server mid-turn; same reason bg-process and hibernate-proof are
+# excluded from shared tiers), keyed-spark-eviction (kill -9s workerd on its
+# port, owned or taken over), eviction-repro (manual operator-restart lane on
+# an isolated BASE, never kills itself). quota-refusal is shared-dev safe and
+# parallel-eligible (no boots/kills, one cheap capped turn plus a passive scan
+# window); it runs solo until the root adopts it into the default set above.
 set -u
 BASE="${1:-http://127.0.0.1:8787}"
 if [ "$#" -gt 0 ]; then shift; fi

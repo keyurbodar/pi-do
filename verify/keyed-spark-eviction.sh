@@ -15,6 +15,13 @@
 # and still removes a temp secret file it created on exit.
 # Exit 0 on pass (or a named quota/missing-secret block), 1 otherwise. Writes
 # artifacts/RUN_ID/keyed-spark-eviction/.
+# Wave 2 gap record (recovery scan merged; this script predates it and stays
+# unextended by design): case A proves kill plus same-chain retry with the killed
+# run healed to interrupted, but it retries immediately after the reboot (no
+# orphan-age threshold asserted), never observes attempts (the retry path records
+# one pre-redrive; only sigkill-e2e.sh latches it), never touches the poison
+# threshold, and never distinguishes continue (contiguous chunks, no attempt) from
+# retry (gapped chunks, one attempt) or cursor-pin suffix merges.
 set -u
 BASE="${1:-}"
 RUN_ID="verify-$(date +%s)"
