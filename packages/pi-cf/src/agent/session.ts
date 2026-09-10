@@ -14,6 +14,7 @@ import { bgTool } from "../tools/bg-tools.ts";
 import { findTool, grepTool } from "../tools/search-tools.ts";
 import { planStubTurn, planTools } from "./stub-plan.ts";
 import { registerProjector, type EntryProjection } from "./projectors.ts";
+import { emitRunStart } from "./snapshots.ts";
 import { buildSessionContextFromEntries, capSessionContext, estimateTokens, type ContextMessage } from "./context.ts";
 export const sessionTools = {
   read: readTool, write: writeTool, edit: editTool, list: listTool, remove: removeTool, bash: bashTool,
@@ -163,6 +164,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
 
   async function run(prompt: string, runOptions?: SessionRunOptions): Promise<SessionTurn> {
     const signal = runOptions?.signal;
+    const runEnd = emitRunStart(options.sessionId ?? options.ws, prompt);
     const apiKey = options.apiKey;
     const retention = options.cacheRetention ?? "short";
     const tools: Record<string, AgentHarnessTool<ToolContext, any, any>> = options.plan === true ? planTools({ ...sessionTools, ...options.tools }) : { ...sessionTools, ...options.tools };
@@ -215,8 +217,8 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
           : base.messages.filter((message) => message.role === "compactionSummary");
     }
     const keyed = model.api !== "stub" && typeof apiKey === "string" && apiKey.length > 0;
-    if (keyed) return runModelTurn(prompt, apiKey, signal, onUpdate, runOptions?.thinking ?? null, tools, history, runOptions?.budgets, retention, runOptions?.onAgent, timing);
-    return runStubTurn(prompt, signal, onUpdate, tools, retention, timing);
+    if (keyed) return runEnd(runModelTurn(prompt, apiKey, signal, onUpdate, runOptions?.thinking ?? null, tools, history, runOptions?.budgets, retention, runOptions?.onAgent, timing));
+    return runEnd(runStubTurn(prompt, signal, onUpdate, tools, retention, timing));
   }
 
   async function runStubTurn(

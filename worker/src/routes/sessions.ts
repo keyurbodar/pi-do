@@ -3,6 +3,7 @@ import { buildRuntime, clampThinkingLevel, resolveCatalogModel, supportedThinkin
 import { archiveMeta, compactionPending } from "../compaction";
 import { checkedRotate } from "../stream";
 import { MINT_WS_HINT, err, fmtModel, fmtSettings, fmtThinking, fmtUsage, json, saveSettings, type RouteHandler } from "./_shared";
+import { readEvents, readSnapshot } from "pi-cf/agent/snapshots";
 
 const sessions: RouteHandler = async (ctx, request, url) => {
   if (request.method !== "POST") return null;
@@ -279,6 +280,18 @@ const meta: RouteHandler = (ctx, request, url) => {
   const usage = fmtUsage(sumResultUsage(sql, sid), ctx.sessionContextWindow(triple));
   return json({ sid, ws, created, name, cwd, head, count, leaf, openRun, model: { provider: triple?.provider ?? null, id: triple?.id ?? null }, thinking: triple?.thinking ?? null, retention: triple?.retention ?? "short", usage, compaction: { pending: compactionPending(sql, sid), archivePages: archive.pages, archiveTotal: archive.total } });
 };
+const snapshot: RouteHandler = (ctx, request, url) => {
+  if (request.method !== "GET") return null;
+  const ws = url.searchParams.get("ws") ?? "";
+  const sid = url.searchParams.get("sid") ?? "";
+  const bad = ctx.requireSession(ws, sid, "retry as GET /workspaces/:id/sessions/:sid/snapshot on the Worker instead", MINT_WS_HINT);
+  if (bad) return bad;
+  const since = Number(url.searchParams.get("since") ?? "0");
+  if (!Number.isInteger(since) || since < 0) {
+    return err("bad since", "retry with ?since=N where N is a non-negative event seq, e.g. ?since=0", 400);
+  }
+  return json({ snapshot: readSnapshot(sid), events: readEvents(sid, since) });
+};
 
 export const sessionRoutes: Record<string, RouteHandler> = {
   "/sessions": sessions,
@@ -287,4 +300,5 @@ export const sessionRoutes: Record<string, RouteHandler> = {
   "/thinking": modelOrThinking,
   "/settings": settings,
   "/meta": meta,
+  "/snapshot": snapshot,
 };
