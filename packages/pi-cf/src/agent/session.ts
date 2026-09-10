@@ -13,6 +13,7 @@ import { definitionTool, diagnosticsCompilerTool, referencesTool } from "../tool
 import { bgTool } from "../tools/bg-tools.ts";
 import { findTool, grepTool } from "../tools/search-tools.ts";
 import { planStubTurn, planTools } from "./stub-plan.ts";
+import { registerProjector, type EntryProjection } from "./projectors.ts";
 import { buildSessionContextFromEntries, capSessionContext, estimateTokens, type ContextMessage } from "./context.ts";
 export const sessionTools = {
   read: readTool, write: writeTool, edit: editTool, list: listTool, remove: removeTool, bash: bashTool,
@@ -30,7 +31,7 @@ export interface SessionModel {
 export interface CreateAgentSessionOptions {
   files: FileStoreLike; ws: string; shell: ShellLike; model: SessionModel; tools?: Partial<SessionTools>;
   apiKey?: string; history?: { leaf: number; readEntries: (after: number, limit: number) => EntryRow[] };
-  sessionId?: string; cacheRetention?: "short" | "long"; plan?: boolean;
+  sessionId?: string; cacheRetention?: "short" | "long"; plan?: boolean; projectors?: Record<string, EntryProjection>;
 }
 
 export interface SessionToolCall {
@@ -158,6 +159,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
   const { files, ws, shell, model } = options;
   const env = new ComputerExecutionEnv(files, ws, shell);
   const context: ToolContext = { env };
+  if (options.projectors !== undefined) for (const [type, proj] of Object.entries(options.projectors)) registerProjector(type, proj);
 
   async function run(prompt: string, runOptions?: SessionRunOptions): Promise<SessionTurn> {
     const signal = runOptions?.signal;

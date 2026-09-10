@@ -1,5 +1,6 @@
 import type { EntryRow } from "../store/entries.ts";
-import { ENTRY_PROJECTION, parseJsonObject, strField } from "../store/sql-util.ts";
+import { projectEntry } from "./projectors.ts";
+import { parseJsonObject, strField } from "../store/sql-util.ts";
 
 export type ContextRole = "user" | "assistant" | "compactionSummary" | "toolCall" | "toolResult";
 
@@ -165,7 +166,7 @@ export function buildSessionContext(leaf: number, readEntry: EntryReader): Sessi
   for (let i = windowStart; i < chain.length; i++) {
     const entry = chain[i];
     if (entry.type === "thinking_level_change" || entry.type === "model_change") continue;
-    const proj = ENTRY_PROJECTION[entry.type];
+    const proj = projectEntry(entry.type);
     if (proj === undefined) {
       context.skipped.push({ cursor: entry.cursor, type: entry.type, reason: "unprojected" });
       continue;
