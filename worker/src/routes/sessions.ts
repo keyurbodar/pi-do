@@ -1,4 +1,5 @@
-import { appendEntry, listEntries, runInSyncTx, sumResultUsage, entryHead } from "pi-cf/store/entries";
+import { appendEntry, listEntries, runInSyncTx, sessionLeaf, sumResultUsage, entryHead } from "pi-cf/store/entries";
+import { createCheckpoint, getCheckpoint, listCheckpoints, rewindSession } from "pi-cf/store/checkpoints";
 import { drainPages, readSingleRow } from "pi-cf/store/sql-util";
 import { buildRuntime, clampThinkingLevel, resolveCatalogModel, supportedThinkingLevels, THINKING_LEVELS, type RuntimeEnv, type RuntimeModel } from "../model-runtime";
 import { archiveMeta, compactionPending } from "../compaction";
@@ -329,6 +330,88 @@ const branch = (copyEntries: boolean): RouteHandler => async (ctx, request, url)
 
 const fork: RouteHandler = branch(false);
 const clone: RouteHandler = branch(true);
+const checkpoints: RouteHandler = async (ctx, request, url) => {
+  const ws = url.searchParams.get("ws") ?? "";
+  const sid = url.searchParams.get("sid") ?? "";
+  const bad = ctx.requireSession(ws, sid, "call /workspaces/:id/sessions/:sid/checkpoints on the Worker instead", MINT_WS_HINT);
+  if (bad) return bad;
+  const sql = ctx.state.storage.sql;
+  if (request.method === "GET") return json({ checkpoints: listCheckpoints(sql, sid) });
+  if (request.method !== "POST") return null;
+  let body: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = await request.json();
+    if (parsed !== null && typeof parsed === "object") body = parsed as Record<string, unknown>;
+  } catch {
+    body = {};
+  }
+  const label = body.label === undefined || body.label === null ? null : body.label;
+  if (label !== null && typeof label !== "string") {
+    return err("bad label", "retry with a string label, or omit it", 400);
+  }
+  let cursor: number;
+  if (body.cursor === undefined) {
+    cursor = sessionLeaf(sql, sid);
+  } else if (typeof body.cursor !== "number" || !Number.isInteger(body.cursor) || body.cursor < 0) {
+    return err("checkpoint_bad_cursor", "retry with cursor 0 or an entry cursor of this session", 400);
+  } else {
+    cursor = body.cursor;
+  }
+  try {
+    return json(createCheckpoint(sql, sid, crypto.randomUUID(), cursor, label));
+  } catch (e) {
+    if (e !== null && typeof e === "object" && "error" in e && typeof e.error === "string") {
+      const hint = "hint" in e && typeof e.hint === "string" ? e.hint : "retry with cursor 0 or an entry cursor of this session";
+      return json({ error: e.error, hint }, 400);
+    }
+    throw e;
+  }
+};
+
+const rewind: RouteHandler = async (ctx, request, url) => {
+  if (request.method !== "POST") return null;
+  const ws = url.searchParams.get("ws") ?? "";
+  const sid = url.searchParams.get("sid") ?? "";
+  const bad = ctx.requireSession(ws, sid, "call POST /workspaces/:id/sessions/:sid/rewind on the Worker instead", MINT_WS_HINT);
+  if (bad) return bad;
+  let body: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = await request.json();
+    if (parsed !== null && typeof parsed === "object") body = parsed as Record<string, unknown>;
+  } catch {
+    body = {};
+  }
+  const hasCursor = body.cursor !== undefined;
+  const hasCheckpoint = typeof body.checkpointId === "string" && body.checkpointId.length > 0;
+  if (hasCursor === hasCheckpoint) {
+    return err("bad rewind target", "retry with exactly one of {cursor} or {checkpointId}", 400);
+  }
+  const sql = ctx.state.storage.sql;
+  let cursor: number;
+  if (hasCheckpoint) {
+    const cp = getCheckpoint(sql, sid, body.checkpointId as string);
+    if (cp === null) return err("unknown checkpoint", "list checkpoints with GET /workspaces/:id/sessions/:sid/checkpoints, then retry with a checkpoint id of this session", 404);
+    cursor = cp.cursor;
+  } else if (typeof body.cursor !== "number" || !Number.isInteger(body.cursor) || body.cursor < 0) {
+    return err("checkpoint_bad_cursor", "retry with cursor 0 or an entry cursor of this session", 400);
+  } else {
+    cursor = body.cursor;
+  }
+  try {
+    let out: unknown = null;
+    runInSyncTx(sql, () => {
+      out = rewindSession(sql, sid, cursor);
+    });
+    return json(out);
+  } catch (e) {
+    if (e !== null && typeof e === "object" && "error" in e && typeof e.error === "string") {
+      const hint = "hint" in e && typeof e.hint === "string" ? e.hint : "retry with a cursor at or behind the session leaf";
+      return json({ error: e.error, hint }, 400);
+    }
+    throw e;
+  }
+};
+
 
 export const sessionRoutes: Record<string, RouteHandler> = {
   "/sessions": sessions,
@@ -339,4 +422,6 @@ export const sessionRoutes: Record<string, RouteHandler> = {
   "/meta": meta,
   "/fork": fork,
   "/clone": clone,
+  "/checkpoints": checkpoints,
+  "/rewind": rewind,
 };

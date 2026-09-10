@@ -9,6 +9,7 @@ import { ensureEntriesSchema, entryHead } from "pi-cf/store/entries";
 import { ensureChunksSchema } from "pi-cf/store/chunks";
 import { ensureRunsSchema } from "pi-cf/store/runs";
 import { ensureWorkspaceSchema } from "pi-cf/store/sql-util";
+import { ensureCheckpointsSchema } from "pi-cf/store/checkpoints";
 import { ensureCompactionSchema, runPendingCompactions } from "./compaction";
 import { COMPACTION_JOB, COMPACTION_REARM_MS, KEEPALIVE_JOB, KEEPALIVE_MS, cancelJob, earliestDeadline, runDueJobs, scheduleJob } from "./alarm-mux";
 import { makeSidLiveCheck, RECOVERY_JOB, scanTurns } from "pi-cf/store/recovery";
@@ -66,6 +67,7 @@ export class WorkspaceBase implements DurableObject {
     ensureEntriesSchema(sql);
     ensureChunksSchema(sql);
     ensureRunsSchema(sql);
+    ensureCheckpointsSchema(sql);
     ensureCompactionSchema(sql);
     sql.exec("DROP TABLE IF EXISTS pi_owners");
   }
