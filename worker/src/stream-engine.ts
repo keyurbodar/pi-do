@@ -59,6 +59,48 @@ export function resolveTurnModel(env: RuntimeEnv, catalog: RuntimeModel | null):
   const m = resolveKeyedModel(env, catalog.provider, catalog.id);
   return { model: m, provider: m.provider, stub: false, like: catalog };
 }
+// Model fallback chain: an unknown-model 404 on the turn's preferred catalog
+// entry cycles the other keyed models in catalog order, then the stub, so the
+// turn still runs. Anything else (unknown provider, bad MODEL_ID, invalid
+// models.json) is a genuine config error and rethrows to keep surfacing.
+function isUnknownModel(e: unknown): boolean {
+  if (e === null || typeof e !== "object" || !("error" in e)) return false;
+  const error = e.error;
+  return typeof error === "string" && error.startsWith("unknown model");
+}
+
+export interface ModelFallback {
+  want: string;
+  used: string;
+}
+
+function fallbackCatalogs(env: RuntimeEnv, want: string): Array<RuntimeModel | null> {
+  const out: Array<RuntimeModel | null> = [];
+  for (const provider of keyedProviders(env)) {
+    for (const id of [...provider.catalog.keys()].sort()) {
+      if (`${provider.id}/${id}` !== want) out.push(provider.catalog.get(id) as RuntimeModel);
+    }
+  }
+  out.push(null);
+  return out;
+}
+
+// Preferred-model tracking across turns, keyed by sid like the steer queues:
+// a cycled turn records what it fell back from and to; the next turn that
+// resolves the preferred entry clears the row and reports the restore.
+const fallbackActive = new Map<string, ModelFallback>();
+
+function chainCatalog(env: RuntimeEnv, triple: { provider: string; id: string } | null): { catalog: RuntimeModel | null; want: string | null; fallback: ModelFallback | null } {
+  if (triple === null) return { catalog: null, want: null, fallback: null };
+  const want = `${triple.provider}/${triple.id}`;
+  try {
+    return { catalog: resolveCatalogModel(triple.provider, triple.id), want, fallback: null };
+  } catch (e) {
+    if (!isUnknownModel(e)) throw e;
+  }
+  const fell = fallbackCatalogs(env, want)[0] ?? null;
+  return { catalog: fell, want, fallback: { want, used: fell === null ? "stub" : `${fell.provider}/${fell.id}` } };
+}
 
 const BUDGET_CAPS = { maxTurns: 200, maxToolCalls: 1000, maxDurationMs: 1800000, maxCost: 100 } as const;
 
@@ -263,6 +305,12 @@ export interface TurnInput {
   turnId: string;
   signal?: AbortSignal;
   budgets?: SessionRunBudgets;
+  // Preferred-model identity the caller resolved (startTurn's stored triple):
+  // lets the engine record a fallback episode and report the restore when the
+  // preferred entry resolves again. Absent on callers that only carry the
+  // validated catalog, which the engine derives the identity from instead.
+  want?: string | null;
+  fallback?: ModelFallback | null;
 }
 
 export interface TurnRuntime {
@@ -272,6 +320,8 @@ export interface TurnRuntime {
   thinking: string | null;
   stub: boolean;
   hint?: string;
+  fallback?: string;
+  restored?: string;
 }
 
 export interface TurnSink {
@@ -581,6 +631,20 @@ async function executeTurnInner(host: StreamHost, input: TurnInput, sink: TurnSi
     sink.fail(input.runId, out.error, out.hint, 404, false);
     return;
   }
+  const wantNow = input.want ?? (input.catalog === null ? null : `${input.catalog.provider}/${input.catalog.id}`);
+  const fell = input.fallback ?? null;
+  let fallbackNote: string | null = null;
+  let restoredNote: string | null = null;
+  if (fell !== null) {
+    fallbackActive.set(host.sid, fell);
+    fallbackNote = `unknown model ${fell.want}; fell back to ${fell.used}`;
+  } else if (wantNow !== null) {
+    const prev = fallbackActive.get(host.sid);
+    if (prev !== undefined) {
+      fallbackActive.delete(host.sid);
+      restoredNote = `back on ${wantNow} after falling back from ${prev.want} to ${prev.used}`;
+    }
+  }
   try {
     const session = createAgentSession({
       files: host.files,
@@ -622,6 +686,8 @@ async function executeTurnInner(host: StreamHost, input: TurnInput, sink: TurnSi
       thinking: input.thinking,
       stub: resolved.stub,
       ...(resolved.stub && input.catalog !== null ? { hint: `no key for provider ${resolved.provider}; running the stub model` } : {}),
+      ...(fallbackNote === null ? {} : { fallback: fallbackNote }),
+      ...(restoredNote === null ? {} : { restored: restoredNote }),
     });
     if (maybeMarkForCompaction(host.sql, host.sid)) await host.scheduleAlarm();
     else if (compactionPending(host.sql, host.sid)) await host.scheduleAlarm();
@@ -719,16 +785,16 @@ async function startTurn(
       await host.pokeAlarm();
       openRun(host.sql, host.sid, runId);
       emit("prompt", { runId, prompt });
-      let catalog: RuntimeModel | null;
+      let chained: { catalog: RuntimeModel | null; want: string | null; fallback: ModelFallback | null };
       try {
-        catalog = host.model === null ? null : resolveCatalogModel(host.model.provider, host.model.id);
+        chained = chainCatalog(host.runtimeEnv, host.model);
       } catch (e) {
         const out = shaped(e, "run failed", "retry the prompt with a simpler request");
         sink.fail(runId, out.error, out.hint, 404, true);
         return;
       }
-      const effThinking = host.thinking === null ? null : clampThinkingLevel(catalog ?? {}, host.thinking);
-      await executeTurn(host, { prompt, catalog, thinking: effThinking, runId, turnId, signal: turnController.signal, budgets }, sink);
+      const effThinking = host.thinking === null ? null : clampThinkingLevel(chained.catalog ?? {}, host.thinking);
+      await executeTurn(host, { prompt, catalog: chained.catalog, thinking: effThinking, runId, turnId, signal: turnController.signal, budgets, want: chained.want, fallback: chained.fallback }, sink);
     } catch (e) {
       const out = shaped(e, "turn failed", "retry the prompt with a simpler request");
       try {
