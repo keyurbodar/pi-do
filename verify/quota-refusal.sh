@@ -238,10 +238,32 @@ if (meta.count !== entries.length) throw new Error("meta count " + meta.count + 
 console.log("ledger ok: " + fresh.length + " fresh rows (prompt..result-with-halt), cursors 1.." + entries.length + " gapless, openRun null");
 EOF
 OUT="${OUT}" BEFORE_COUNT="${BEFORE_COUNT}" node "${OUT}/assert-ledger.mjs" || exit 1
-echo "### 11 orphan-age quiet: one full scan window (75s past the 60s orphan age) must add no rows"
+echo "### 11 orphan-age quiet: poll one full scan window (75s past the 60s orphan age); any added/rewritten row fails fast, quiet only if the full window elapses unchanged"
 cp "${OUT}/entries-after.json" "${OUT}/entries-quiet-before.json"
 cp "${OUT}/meta-after.json" "${OUT}/meta-quiet-before.json"
-sleep 75
+QW=0
+while [ "${QW}" -lt 15 ]; do
+  sleep 5
+  QW=$((QW + 1))
+  ${CLI} entries --ws "${WS}" --sid "${SID}" --after 0 --limit 1000 --base "${BASE}" --json > "${OUT}/entries-quiet-poll.json" || exit 1
+  ${CLI} meta --ws "${WS}" --sid "${SID}" --base "${BASE}" --json > "${OUT}/meta-quiet-poll.json" || exit 1
+  QW="${QW}" node -e "
+const fs = require('node:fs');
+const before = JSON.parse(fs.readFileSync('${OUT}/entries-quiet-before.json', 'utf8')).entries;
+const after = JSON.parse(fs.readFileSync('${OUT}/entries-quiet-poll.json', 'utf8')).entries;
+if (after.length !== before.length) { console.error('RED orphan redrive at poll ' + process.env.QW + '/15: ' + before.length + ' -> ' + after.length + ' rows (no rerun)'); process.exit(1); }
+for (let i = 0; i < after.length; i++) {
+  if (after[i].cursor !== before[i].cursor || after[i].type !== before[i].type || after[i].body !== before[i].body) {
+    console.error('RED scan window rewrote cursor ' + before[i].cursor + ' at poll ' + process.env.QW + '/15 (no rerun)'); process.exit(1);
+  }
+}
+const mBefore = JSON.parse(fs.readFileSync('${OUT}/meta-quiet-before.json', 'utf8'));
+const mAfter = JSON.parse(fs.readFileSync('${OUT}/meta-quiet-poll.json', 'utf8'));
+if (mAfter.openRun !== null) { console.error('RED stuck open run at poll ' + process.env.QW + '/15 (no rerun)'); process.exit(1); }
+if (mAfter.count !== mBefore.count || mAfter.leaf !== mBefore.leaf) { console.error('RED meta moved at poll ' + process.env.QW + '/15 (no rerun)'); process.exit(1); }
+console.log('quiet poll ' + process.env.QW + '/15: ' + after.length + ' rows unchanged');
+" || exit 1
+done
 QUIET_ENTRIES="$(${CLI} entries --ws "${WS}" --sid "${SID}" --after 0 --limit 1000 --base "${BASE}" --json)" || exit 1
 printf '%s' "${QUIET_ENTRIES}" > "${OUT}/entries-quiet-after.json"
 QUIET_META="$(${CLI} meta --ws "${WS}" --sid "${SID}" --base "${BASE}" --json)" || exit 1

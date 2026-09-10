@@ -279,11 +279,24 @@ echo "### 16 stream one live turn over the CLI (piped prompt, entry+done)"
 printf 'read seed.txt\n' | ${CLI} stream --ws "${WS}" --sid "${SID}" --base "${BASE}" > "${OUT}/stream.out" 2> "${OUT}/stream.stderr" &
 STREAM_PID=$!
 N=0
+STREAM_PREMATURE=0
 while [ "${N}" -lt 30 ]; do
   if grep -q "^done" "${OUT}/stream.out" 2>/dev/null; then break; fi
+  if ! kill -0 "${STREAM_PID}" 2>/dev/null; then
+    wait "${STREAM_PID}" 2>/dev/null || true
+    if grep -q "^done" "${OUT}/stream.out" 2>/dev/null; then break; fi
+    echo "FAIL: stream process ended before done (premature completion after ${N}s of the 30s deadline, no rerun)"
+    STREAM_PREMATURE=1
+    break
+  fi
   sleep 1
   N=$((N + 1))
 done
+if [ "${STREAM_PREMATURE}" = "1" ]; then exit 1; fi
+if [ "${N}" -ge 30 ] && ! grep -q "^done" "${OUT}/stream.out" 2>/dev/null; then
+  echo "FAIL: no done frame within the 30s deadline (no rerun)"
+  exit 1
+fi
 kill "${STREAM_PID}" 2>/dev/null || true
 wait "${STREAM_PID}" 2>/dev/null || true
 echo "--- stream stdout ---"
@@ -314,3 +327,4 @@ console.log('persisted ok: ' + before.count + ' -> ' + after.count + ' entries, 
 
 echo "PASS ${RUN_ID} ws=${WS} sid=${SID}"
 } 2>&1 | tee "${OUT}/transcript.txt"
+exit "${PIPESTATUS[0]}"
