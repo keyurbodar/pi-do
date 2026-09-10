@@ -1,5 +1,7 @@
 #!/bin/sh
-# keyed-spark-eviction.sh — proves keyed WS turns survive a full workerd eviction mid-turn.
+# keyed-spark-eviction.sh — CASE-A-ONLY eviction evidence, not general eviction proof.
+# One keyed WS turn surviving one mid-turn workerd kill plus same-chain retry.
+# General eviction claims require sigkill-e2e plus soak; this script alone proves nothing general.
 # One session on opencode-go/muse-spark-1.3-contributor under a server this script owns
 # (it kill -9s workerd mid-turn, so it must control the pid). Case A starts a long keyed
 # WS stream turn, kills -9 wrangler dev mid-turn, reboots on the same port, reconnects
@@ -22,6 +24,7 @@
 # one pre-redrive; only sigkill-e2e.sh latches it), never touches the poison
 # threshold, and never distinguishes continue (contiguous chunks, no attempt) from
 # retry (gapped chunks, one attempt) or cursor-pin suffix merges.
+# Label: CASE-A-ONLY (gaps above are the boundary; sigkill plus soak required for eviction claims).
 set -u
 BASE="${1:-}"
 RUN_ID="verify-$(date +%s)"
@@ -132,6 +135,7 @@ fi
 trap 'reap_port || true; if [ -f "${OUT}/created-dev-vars" ]; then rm -f worker/.dev.vars; fi' EXIT INT TERM
 {
 echo "### 0 key presence by length only, lsof required for port-scoped kills"
+echo "CASE-A-ONLY: one mid-turn kill plus same-chain retry; general eviction claims require sigkill plus soak"
 if [ -z "${OPENCODE_API_KEY:-}" ]; then
 echo "caller env carries no OPENCODE_API_KEY"
 else
@@ -278,7 +282,7 @@ launch_dev
 echo "restart 1 done: server killed mid-turn and rebooted on ${BASE}"
 kill "${CLIENT_A}" 2>/dev/null || true
 wait "${CLIENT_A}" 2>/dev/null || true
-echo "### 7 case A: meta re-read after eviction proves the chain survived"
+echo "### 7 case A: meta re-read after eviction shows the case-A chain survived (case-A-only, not general proof)"
 META_A_JSON="$(${CLI} meta --ws "${WS}" --sid "${SID}" --base "${BASE}" --json)" || exit 1
 printf '%s' "${META_A_JSON}" > "${OUT}/meta-a-post.json"
 echo "${META_A_JSON}"
@@ -341,7 +345,7 @@ OUT="${OUT}" node "${OUT}/assert-chain-a.mjs" || exit 1
 F1="$(node -p "JSON.parse(require('node:fs').readFileSync('${OUT}/turn-a.json','utf8')).fence")"
 R1="$(node -p "JSON.parse(require('node:fs').readFileSync('${OUT}/turn-a.json','utf8')).revision")"
 echo "F1=${F1} R1=${R1}"
-echo "### 10 case A above is the eviction proof: mid-turn kill plus same-chain retry with usage quoted."
+echo "### 10 case A above is case-A-only eviction evidence: mid-turn kill plus same-chain retry with usage quoted (not general eviction proof)."
 echo "### 11 totals for case A"
 node -e "
 const fs = require('node:fs');
@@ -350,6 +354,6 @@ const ea = JSON.parse(fs.readFileSync('${OUT}/entries-a.json', 'utf8')).entries.
 console.log('case A entries=' + ea + ' usage in=' + a.inTokens + ' out=' + a.outTokens + ' costTotal=' + a.costTotal);
 " || exit 1
 echo "### 12 redaction grep over the artifacts"
-echo "PASS ${RUN_ID} ws=${WS} sid=${SID}"
+echo "PASS ${RUN_ID} ws=${WS} sid=${SID} case-A-only"
 } 2>&1 | tee "${OUT}/transcript.txt"
 exit "${PIPESTATUS[0]}"
