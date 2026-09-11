@@ -436,6 +436,123 @@ const ea = JSON.parse(fs.readFileSync('${OUT}/entries-a.json', 'utf8')).entries.
 console.log('case A entries=' + ea + ' usage in=' + a.inTokens + ' out=' + a.outTokens + ' costTotal=' + a.costTotal);
 " || exit 1
 echo "### 12 redaction grep over the artifacts"
+echo "### 13 stale fence stays dead: the rotated-out fence rejects, the surfaced live fence re-claims, fresh creds handshake clean"
+STALE_URL="${WS_BASE}/workspaces/${WS}/sessions/${SID}/stream?fence=${F0}&expected=${R0}"
+cat > "${OUT}/ws-stale.mjs" <<'EOF'
+const WS_URL = process.env.WS_URL;
+const OUTFILE = process.env.OUTFILE;
+const PROMPT = process.env.PROMPT;
+const FENCE = process.env.FENCE;
+const EXPECTED = Number(process.env.EXPECTED);
+import { writeFileSync } from "node:fs";
+const frames = [];
+let close = null;
+let settled = false;
+function save() {
+  writeFileSync(OUTFILE, JSON.stringify({ frames, close }, null, 2) + "\n");
+}
+function finish(code) {
+  if (settled) return;
+  settled = true;
+  clearTimeout(timer);
+  save();
+  process.exit(code);
+}
+const timer = setTimeout(() => finish(1), 60000);
+const sock = new WebSocket(WS_URL);
+sock.onopen = () => {
+  try { sock.send(JSON.stringify({ prompt: PROMPT, fence: FENCE, expected: EXPECTED })); } catch {}
+};
+sock.onmessage = (event) => {
+  const frame = JSON.parse(String(event.data));
+  frames.push(frame);
+  save();
+  if (frame.error !== undefined) {
+    try { sock.close(1000, "stale probe done"); } catch {}
+    setTimeout(() => finish(0), 1000);
+  }
+};
+sock.onclose = (event) => {
+  close = { code: event.code, reason: event.reason, wasClean: event.wasClean };
+  finish(0);
+};
+sock.onerror = () => {};
+EOF
+WS_URL="${STALE_URL}" PROMPT="${LONG_A}" FENCE="${F0}" EXPECTED="${R0}" OUTFILE="${OUT}/frames-stale.json" node "${OUT}/ws-stale.mjs" || exit 1
+cat "${OUT}/frames-stale.json"
+cat > "${OUT}/assert-stale.mjs" <<'EOF'
+import { readFileSync } from "node:fs";
+const OUT = process.env.OUT;
+const F1 = process.env.F1;
+const R1 = Number(process.env.R1);
+const b = JSON.parse(readFileSync(OUT + "/frames-stale.json", "utf8"));
+const rej = b.frames.find((f) => f.error === "fence mismatch");
+if (!rej) throw new Error("stale fence must reject with {error fence mismatch}");
+if (rej.fence !== F1) throw new Error("rejection must surface the live fence, got " + JSON.stringify(rej.fence));
+if (rej.revision !== R1) throw new Error("rejection must surface the live revision " + R1 + ", got " + JSON.stringify(rej.revision));
+if (!b.close || b.close.code !== 4403) throw new Error("stale fence must close 4403, got " + JSON.stringify(b.close));
+console.log("stale rejected: 403 body surfaces live fence " + String(F1).slice(0, 8) + " revision " + R1 + ", close 4403");
+EOF
+OUT="${OUT}" F1="${F1}" R1="${R1}" node "${OUT}/assert-stale.mjs" || exit 1
+echo "### 13b re-claim with the surfaced live fence plus revision"
+SURF_F="$(node -p "JSON.parse(require('node:fs').readFileSync('${OUT}/frames-stale.json','utf8')).frames.find((f) => f.error === 'fence mismatch').fence")"
+SURF_R="$(node -p "JSON.parse(require('node:fs').readFileSync('${OUT}/frames-stale.json','utf8')).frames.find((f) => f.error === 'fence mismatch').revision")"
+if [ "${SURF_F}" != "${F1}" ] || [ "${SURF_R}" != "${R1}" ]; then echo "surfaced creds differ from the live pair"; exit 1; fi
+CLAIM_JSON="$(${CLI} claim --ws "${WS}" --sid "${SID}" --fence "${SURF_F}" --expected "${SURF_R}" --base "${BASE}" --json)" || exit 1
+printf '%s' "${CLAIM_JSON}" > "${OUT}/claim-fresh.json"
+echo "${CLAIM_JSON}"
+F2="$(node -p "JSON.parse(require('node:fs').readFileSync('${OUT}/claim-fresh.json','utf8')).fence")"
+R2="$(node -p "JSON.parse(require('node:fs').readFileSync('${OUT}/claim-fresh.json','utf8')).revision")"
+if [ "${R2}" != "$((R1 + 1))" ]; then echo "claim must bump revision ${R1}->$((R1 + 1)), got ${R2}"; exit 1; fi
+echo "re-claim ok: surfaced fence claimed, revision ${R1}->${R2}"
+echo "### 13c fresh creds handshake clean with no turn and no error frame"
+cat > "${OUT}/ws-handshake.mjs" <<'EOF'
+const WS_URL = process.env.WS_URL;
+const OUTFILE = process.env.OUTFILE;
+import { writeFileSync } from "node:fs";
+const frames = [];
+let open = false;
+let close = null;
+let settled = false;
+function save() {
+  writeFileSync(OUTFILE, JSON.stringify({ open, frames, close }, null, 2) + "\n");
+}
+function finish(code) {
+  if (settled) return;
+  settled = true;
+  clearTimeout(timer);
+  save();
+  process.exit(code);
+}
+const timer = setTimeout(() => finish(1), 30000);
+const sock = new WebSocket(WS_URL);
+sock.onopen = () => {
+  open = true;
+  save();
+  setTimeout(() => { try { sock.close(1000, "handshake ok"); } catch {} setTimeout(() => finish(0), 1000); }, 1500);
+};
+sock.onmessage = (event) => {
+  frames.push(JSON.parse(String(event.data)));
+  save();
+};
+sock.onclose = (event) => {
+  close = { code: event.code, reason: event.reason, wasClean: event.wasClean };
+  finish(0);
+};
+sock.onerror = () => {};
+EOF
+WS_URL="${WS_BASE}/workspaces/${WS}/sessions/${SID}/stream?fence=${F2}&expected=${R2}" OUTFILE="${OUT}/frames-fresh.json" node "${OUT}/ws-handshake.mjs" || exit 1
+cat "${OUT}/frames-fresh.json"
+node -e "
+const fs = require('node:fs');
+const b = JSON.parse(fs.readFileSync('${OUT}/frames-fresh.json', 'utf8'));
+if (b.open !== true) throw new Error('fresh creds never opened (no 101)');
+if (b.frames.some((f) => f.error !== undefined)) throw new Error('fresh creds drew an error frame: ' + JSON.stringify(b.frames));
+if (!b.close || b.close.code !== 1000) throw new Error('fresh creds must close 1000, got ' + JSON.stringify(b.close));
+console.log('fresh creds ok: 101 open, no error frame, clean close 1000, no turn spent');
+" || exit 1
+echo "### 13d redaction grep over the artifacts including the new stale plus reclaim files"
+redact || exit 1
 echo "PASS ${RUN_ID} ws=${WS} sid=${SID} case-A-only"
 } 2>&1 | tee "${OUT}/transcript.txt"
 exit "${PIPESTATUS[0]}"
