@@ -311,14 +311,18 @@ export async function executeTurn(host: StreamHost, input: TurnInput, sink: Turn
     await host.releaseKeepalive();
   }
 }
-// Re-drives an orphaned turn to completion under its original turnId. The
+// Re-drives an orphaned turn to completion reusing its original turnId for the
+// pi_runs ledger row, the chunk namespace, and the emitted entry runIds. The
 // fresh model run regenerates the turn's bytes; the first skipDeltas pushes
 // are dropped (prompt plus already-committed prefix, never re-emitted), the
-// rest land as entries with chunk seqs continuing at startSeq. Exact under
+// rest land as entries with chunk seqs continuing at nextSeq. Exact under
 // deterministic output, best-effort otherwise. Stub turns are deterministic
 // (read seed.txt, then the bash marker), so the same path covers them:
 // re-execution is side-effect-free and the prefix drop keeps every
-// committed entry single. Runs inside the session queue
+// committed entry single. The runs-table row is NOT reused: it stays keyed by
+// the fresh runId minted at open (redrive opens no runs row, so
+// closeRun(turnId) matches nothing) and a later client open sweeps it to
+// interrupted. Runs inside the session queue
 // so it never interleaves a live turn; rotates no fence and sends no socket
 // frames (alarm context has neither). Failures throw so the scan records the
 // attempt; success closes the ledger row via executeTurn's done wrapper.
@@ -582,7 +586,7 @@ async function startTurn(
             const next = { fence: crypto.randomUUID(), revision: held.revision + 1 };
             if (!host.casRotateFence(held.fence, held.revision, next)) {
               const cur = host.readFence();
-              sock.send({ error: "revision conflict", hint: "a concurrent holder rotated mid-turn; re-claim and retry", revision: cur?.revision ?? 0 });
+              sock.send({ error: "revision conflict", hint: "a concurrent holder rotated mid-turn; re-claim and retry", revision: cur?.revision ?? 0, fence: cur?.fence ?? null });
               sock.close(CLOSE_CONFLICT, "concurrent rotation mid-turn");
               return;
             }
