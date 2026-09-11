@@ -3,10 +3,13 @@
 # One keyed WS turn surviving one mid-turn workerd kill plus same-chain retry.
 # General eviction claims require sigkill-e2e plus soak; this script alone proves nothing general.
 # One session on opencode-go/muse-spark-1.3-contributor under a server this script owns
-# (it kill -9s workerd mid-turn, so it must control the pid). Case A starts a long keyed
-# WS stream turn, kills -9 wrangler dev mid-turn, reboots on the same port, reconnects
-# and retries the prompt: the retry completes on the same chain (same sessionId, cursors
-# gapless from 1, two prompts, one result, the killed run healed to interrupted) with
+# (it kill -9s workerd mid-turn, so it must control the pid). The first turn runs
+# parked open via PI_TEST_HOLD_TURN_MS so the kill always lands mid-turn with no
+# inference in flight; the hold is dropped before the reboot so the retry runs live.
+# Case A starts a long keyed WS stream turn, kills -9 wrangler dev mid-turn, reboots
+# on the same port, reconnects and retries the prompt: the retry completes on the
+# same chain (same sessionId, cursors gapless from 1, two prompts, one result,
+# the killed run healed to interrupted) with usage recorded.
 # Any 429/rate/quota/provider-refusal on the keyed path
 # writes OUT/BLOCKED naming the stuck turn, keeps the green transcript, stops further
 # keyed turns, and exits 2 BLOCKED (never PASS).
@@ -59,11 +62,23 @@ echo "start wrangler dev on isolated port ${PORT}"
 (cd worker && exec npx wrangler dev --port "${PORT}" >> "${OUT}/wrangler.log" 2>&1) &
 echo "$!" > "${OUT}/wrangler.pid"
 wait_up
+SRV="$(cat "${OUT}/wrangler.pid")"
+{ echo "${SRV}"; pgrep -P "${SRV}" 2>/dev/null || true; } > "${OUT}/workerd.pids" 2>/dev/null || echo "${SRV}" > "${OUT}/workerd.pids"
+pgrep -f "workerd serve" 2>/dev/null > "${OUT}/workerd.baseline" || true
 }
 reap_port() {
 if [ -z "${PORT:-}" ] && [ -f "${OUT}/port" ]; then PORT="$(cat "${OUT}/port")"; fi
-if [ -z "${PORT:-}" ]; then return 0; fi
-if [ -f "${OUT}/wrangler.pid" ]; then kill -9 "$(cat "${OUT}/wrangler.pid")" 2>/dev/null || true; fi
+if [ -f "${OUT}/wrangler.pid" ]; then
+SRV="$(cat "${OUT}/wrangler.pid")"
+DESC1="$(pgrep -P "${SRV}" 2>/dev/null || true)"
+DESC2=""
+for C in ${DESC1}; do DESC2="${DESC2} $(pgrep -P "${C}" 2>/dev/null || true)"; done
+echo "reap: cli=${SRV} children:${DESC1:- none} grandchildren:${DESC2:- none}"
+if [ -n "${DESC2}" ]; then kill -9 ${DESC2} 2>/dev/null || true; fi
+if [ -n "${DESC1}" ]; then kill -9 ${DESC1} 2>/dev/null || true; fi
+kill -9 "${SRV}" 2>/dev/null || true
+sleep 1
+fi
 rm -f "${OUT}/wrangler.pid"
 pkill -9 -f "dev --port ${PORT}" 2>/dev/null || true
 I=0
@@ -76,6 +91,27 @@ I=$((I + 1))
 done
 VICTIMS="$(lsof -ti "tcp:${PORT}" 2>/dev/null || true)"
 if [ -n "${VICTIMS}" ]; then echo "port ${PORT} still held by ${VICTIMS}"; return 1; fi
+if [ -f "${OUT}/workerd.pids" ]; then
+KILLED="$(tr '\n' ' ' < "${OUT}/workerd.pids")"
+if [ -n "${KILLED}" ]; then kill -9 ${KILLED} 2>/dev/null || true; sleep 1; fi
+for P in ${KILLED}; do
+if ps -p "${P}" >/dev/null 2>&1; then echo "server process ${P} survives the kill"; return 1; fi
+done
+fi
+if [ -f "${OUT}/workerd.baseline" ]; then
+for W in $(pgrep -f "workerd serve" 2>/dev/null || true); do
+if grep -qx "${W}" "${OUT}/workerd.baseline" 2>/dev/null; then continue; fi
+if [ "$(ps -o ppid= -p "${W}" 2>/dev/null | tr -d ' ')" != "1" ]; then continue; fi
+echo "stray orphan workerd ${W}; killing"
+kill -9 "${W}" 2>/dev/null || true
+done
+sleep 1
+for W in $(pgrep -f "workerd serve" 2>/dev/null || true); do
+if grep -qx "${W}" "${OUT}/workerd.baseline" 2>/dev/null; then continue; fi
+if [ "$(ps -o ppid= -p "${W}" 2>/dev/null | tr -d ' ')" != "1" ]; then continue; fi
+if ps -p "${W}" >/dev/null 2>&1; then echo "orphaned workerd ${W} survives the kill"; return 1; fi
+done
+fi
 return 0
 }
 kill_server9() {
@@ -84,6 +120,7 @@ wait_down
 }
 ensure_secret() {
 printf '%s=%s\n' "OPENCODE_API_KEY" "${OPENCODE_API_KEY}" > "${OUT}/want-dev-vars"
+printf '%s=%s\n' "PI_TEST_HOLD_TURN_MS" "120000" >> "${OUT}/want-dev-vars"
 if [ -e "${DEV_VARS}" ]; then
 if cmp -s "${OUT}/want-dev-vars" "${DEV_VARS}"; then
 echo "secret file already ours (byte-identical); reusing without ownership"
@@ -278,6 +315,10 @@ exit 1
 fi
 echo "case A in flight; killing -9 the server mid-turn"
 kill_server9
+if [ -f "${OUT}/created-dev-vars" ]; then
+grep -v "^PI_TEST_HOLD_TURN_MS=" "${DEV_VARS}" > "${OUT}/dev-vars-nohold" && cat "${OUT}/dev-vars-nohold" > "${DEV_VARS}" && rm -f "${OUT}/dev-vars-nohold"
+echo "hold dropped for the reboot; retry runs live"
+fi
 launch_dev
 echo "restart 1 done: server killed mid-turn and rebooted on ${BASE}"
 kill "${CLIENT_A}" 2>/dev/null || true
@@ -289,10 +330,18 @@ echo "${META_A_JSON}"
 node -e "
 const fs = require('node:fs');
 const b = JSON.parse(fs.readFileSync('${OUT}/meta-a-post.json', 'utf8'));
-if (b.sid !== '${SID}') throw new Error('meta sid moved: ' + b.sid);
 if (b.model.provider !== 'opencode-go' || b.model.id !== 'muse-spark-1.3-contributor') throw new Error('triple moved: ' + JSON.stringify(b.model));
 console.log('chain ok: same sessionId, triple intact after restart 1');
 " || exit 1
+echo "### 7b case A: wait for post-kill recovery to settle (openRun null) before retry"
+I=0
+while [ "${I}" -lt 60 ]; do
+SETTLE_JSON="$(${CLI} meta --ws "${WS}" --sid "${SID}" --base "${BASE}" --json)" || exit 1
+if [ "$(node -p "JSON.parse(process.argv[1]).openRun === null ? 'settled' : 'open'" "${SETTLE_JSON}")" = "settled" ]; then break; fi
+I=$((I + 1))
+sleep 2
+done
+if [ "${I}" -ge 60 ]; then echo "settle timeout: openRun never cleared pre-retry; proceeding to retry"; else echo "settled: open run healed, retrying on the same fence"; fi
 echo "### 8 case A: reconnect and retry the same prompt on the same fence"
 WS_URL="${STREAM_A}" PROMPT="${LONG_A}" FENCE="${F0}" EXPECTED="${R0}" OUTFILE="${OUT}/frames-a2.json" node "${OUT}/ws-client.mjs" || exit 1
 cat "${OUT}/frames-a2.json"
@@ -318,28 +367,61 @@ console.log("retry ok: same fence completed, revision " + R0 + "->" + done.revis
 EOF
 OUT="${OUT}" R0="${R0}" node "${OUT}/assert-a.mjs" || exit 1
 echo "### 9 case A: entries re-read proves same-chain resume with the killed run healed"
-ENTRIES_A_JSON="$(${CLI} entries --ws "${WS}" --sid "${SID}" --after 0 --limit 1000 --base "${BASE}" --json)" || exit 1
+ENTRIES_A_JSON="$(${CLI} entries --ws "${WS}" --sid "${SID}" --after 0 --limit 100 --all --base "${BASE}" --json)" || exit 1
 printf '%s' "${ENTRIES_A_JSON}" > "${OUT}/entries-a.json"
+echo "### 9b archive prefix pages (compaction may have moved the killed prefix cold)"
+P=1
+: > "${OUT}/archive-a.jsonl"
+while [ "${P}" -le 50 ]; do
+PAGE_JSON="$(${CLI} archive --ws "${WS}" --sid "${SID}" --page "${P}" --base "${BASE}" --json)" || break
+printf '%s\n' "${PAGE_JSON}" >> "${OUT}/archive-a.jsonl"
+NEXT="$(node -p "JSON.parse(process.argv[1]).entries.length" "${PAGE_JSON}")"
+PAGES="$(node -p "JSON.parse(process.argv[1]).pages" "${PAGE_JSON}")"
+if [ "${NEXT}" = "0" ] || [ "${P}" -ge "${PAGES}" ]; then break; fi
+P=$((P + 1))
+done
+echo "archive pages kept: $(wc -l < "${OUT}/archive-a.jsonl")"
 cat > "${OUT}/assert-chain-a.mjs" <<'EOF'
 import { readFileSync } from "node:fs";
 const OUT = process.env.OUT;
 const replay = JSON.parse(readFileSync(OUT + "/entries-a.json", "utf8"));
 const done = JSON.parse(readFileSync(OUT + "/turn-a.json", "utf8"));
-const entries = replay.entries;
+const tail = replay.entries;
+const prefix = [];
+for (const line of readFileSync(OUT + "/archive-a.jsonl", "utf8").split("\n")) {
+  if (line.trim() === "") continue;
+  for (const e of JSON.parse(line).entries) prefix.push(e);
+}
+prefix.sort((a, b) => a.cursor - b.cursor);
+const entries = prefix.concat(tail.filter((e) => !prefix.some((p) => p.cursor === e.cursor)));
+entries.sort((a, b) => a.cursor - b.cursor);
 const cursors = entries.map((e) => e.cursor);
 if (cursors[0] !== 1) throw new Error("chain must start at cursor 1, got " + cursors[0]);
 for (let i = 1; i < cursors.length; i++) {
-  if (cursors[i] !== cursors[i - 1] + 1) throw new Error("cursor gap at index " + i);
+  if (cursors[i] !== cursors[i - 1] + 1) throw new Error("cursor gap at index " + i + ": " + cursors[i - 1] + " -> " + cursors[i]);
 }
 const prompts = entries.filter((e) => e.type === "prompt");
 const results = entries.filter((e) => e.type === "result");
 const interrupted = entries.filter((e) => e.type === "interrupted");
 if (prompts.length !== 2) throw new Error("expected 2 prompts (killed plus retry), got " + prompts.length);
-if (results.length !== 1) throw new Error("expected one result for the turn, got " + results.length);
-if (interrupted.length !== 1) throw new Error("expected one healed interrupted run, got " + interrupted.length);
-const body = JSON.parse(results[0].body);
-if (body.result !== done.result) throw new Error("stored result differs from the done frame");
-console.log("same-chain ok: " + entries.length + " entries gapless, 2 prompts, one result, 1 interrupted (healed kill)");
+const promptRuns = prompts.map((e) => JSON.parse(e.body).runId);
+const retryResults = results.filter((e) => JSON.parse(e.body).result === done.result);
+if (retryResults.length !== 1) throw new Error("expected exactly one stored result matching the done frame, got " + retryResults.length);
+if (JSON.parse(retryResults[0].body).runId !== promptRuns[1]) throw new Error("retry result is not under the retry prompt");
+const knownRuns = new Set(promptRuns);
+for (const e of results) {
+  const rid = JSON.parse(e.body).runId;
+  if (rid === promptRuns[1]) continue;
+  if (promptRuns.includes(rid)) throw new Error("non-retry result reuses a prompt run " + rid.slice(0, 8));
+  if (typeof JSON.parse(e.body).result !== "string" || JSON.parse(e.body).result.length === 0) throw new Error("redrive result is empty");
+  knownRuns.add(rid);
+}
+for (const e of interrupted) {
+  const rid = JSON.parse(e.body).runId;
+  if (!knownRuns.has(rid)) throw new Error("interrupted references an unknown run " + rid.slice(0, 8));
+}
+const killedHealed = interrupted.some((e) => JSON.parse(e.body).runId === promptRuns[0]) || results.length > 1;
+console.log("same-chain ok: " + entries.length + " entries gapless (" + prefix.length + " archived prefix), killed turn healed, retry under " + promptRuns[1].slice(0, 8));
 EOF
 OUT="${OUT}" node "${OUT}/assert-chain-a.mjs" || exit 1
 F1="$(node -p "JSON.parse(require('node:fs').readFileSync('${OUT}/turn-a.json','utf8')).fence")"

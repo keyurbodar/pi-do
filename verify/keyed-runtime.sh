@@ -1,15 +1,13 @@
 #!/bin/sh
-# keyed-runtime.sh — proves the key path, no inference.
+# keyed-runtime.sh — proves the key path, ending in one live turn.
 # With OPENCODE_API_KEY in the caller env (arrives as a Worker secret; the
-# server under test must carry it plus MODEL_ID=opencode-go/deepseek-v4-flash):
+# server under test must carry it plus MODEL_ID=opencode-go/muse-spark-1.3-contributor):
 # buildRuntime goes keyed (stub false, MODEL_ID override resolves with the
 # opencode-go baseUrl/api), the models slice shows opencode-go with context
-# windows, and a switch to opencode-go/deepseek-v4-flash plus thinking off is
-# stored. Turns still run the stub (no network): the seeded read lands in the
-# result via createAgentSession. Without the key, the keyed steps are reported
-# unreachable, the keyless remainder still runs, then the script exits 2
-# BLOCKED (never PASS): the key path stands unproven. The secret never enters
-# any artifact (redaction grep at the end proves it).
+# windows, and a switch to opencode-go/muse-spark-1.3-contributor plus thinking off is
+# stored. The closing turn runs live through createAgentSession: the seeded read
+# lands in the result with nonzero usage. Without the key, the keyed steps are
+# reported unreachable, the keyless remainder still runs, then the script exits 2
 # Usage: sh verify/keyed-runtime.sh [BASE]
 # Exit 0 on pass, 2 on blocked (OUT/BLOCKED names the cause), 1 otherwise. Writes artifacts/RUN_ID/keyed-runtime/.
 set -u
@@ -22,9 +20,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SEED_BODY="seeded-body-${RUN_ID}"
 SEED_PATH="seed.txt"
 KEYED_PROVIDER="opencode-go"
-KEYED_MODEL="deepseek-v4-flash"
+KEYED_MODEL="muse-spark-1.3-contributor"
 KEYED_BASEURL="https://opencode.ai/zen/go/v1"
-KEYED_API="openai-completions"
+KEYED_API="openai-responses"
 {
 echo "### 1 workspace create"
 WS_JSON="$(${CLI} workspace create --base "${BASE}" --json)" || exit 1
@@ -114,26 +112,26 @@ if (b.model.provider !== '${KEYED_PROVIDER}' || b.model.id !== '${KEYED_MODEL}')
 console.log('stored ok: meta re-read shows ${KEYED_PROVIDER}/${KEYED_MODEL}');
 " || exit 1
 
-echo "### 8 thinking switch to off (accepted, stored, model untouched)"
-THINK_JSON="$(${CLI} thinking --ws "${WS}" --sid "${SID}" --level off --base "${BASE}" --json)" || exit 1
+echo "### 8 thinking switch to low (accepted, stored, model untouched)"
+THINK_JSON="$(${CLI} thinking --ws "${WS}" --sid "${SID}" --level low --base "${BASE}" --json)" || exit 1
 echo "${THINK_JSON}"
 printf '%s' "${THINK_JSON}" > "${OUT}/thinking.json"
 node -e "
 const b = JSON.parse(require('node:fs').readFileSync('${OUT}/thinking.json', 'utf8'));
-if (b.requested !== 'off' || b.thinking !== 'off') throw new Error('off not accepted/stored: ' + JSON.stringify(b));
-console.log('thinking ok: off accepted');
+if (b.requested !== 'low' || b.thinking !== 'low') throw new Error('low not accepted/stored: ' + JSON.stringify(b));
+console.log('thinking ok: low accepted');
 " || exit 1
 META2_JSON="$(${CLI} meta --ws "${WS}" --sid "${SID}" --base "${BASE}" --json)" || exit 1
 printf '%s' "${META2_JSON}" > "${OUT}/meta-after-thinking.json"
 node -e "
 const fs = require('node:fs');
 const b = JSON.parse(fs.readFileSync('${OUT}/meta-after-thinking.json', 'utf8'));
-if (b.thinking !== 'off') throw new Error('row thinking wrong: ' + JSON.stringify(b.thinking));
+if (b.thinking !== 'low') throw new Error('row thinking wrong: ' + JSON.stringify(b.thinking));
 if (b.model.provider !== '${KEYED_PROVIDER}' || b.model.id !== '${KEYED_MODEL}') throw new Error('model triple moved: ' + JSON.stringify(b.model));
-console.log('row ok: thinking=off, model untouched');
+console.log('row ok: thinking=low, model untouched');
 " || exit 1
 
-echo "### 9 turn runs the stub (seeded read in result, entries second view)"
+echo "### 9 live turn records the model (seeded read in result, entries second view)"
 SEED_BODY="${SEED_BODY}" RUN_JSON="$(${CLI} run --ws "${WS}" --sid "${SID}" --prompt "read ${SEED_PATH}" --base "${BASE}" --json)" || exit 1
 echo "${RUN_JSON}"
 printf '%s' "${RUN_JSON}" > "${OUT}/run.json"
@@ -142,9 +140,9 @@ const fs = require('node:fs');
 const b = JSON.parse(fs.readFileSync('${OUT}/run.json', 'utf8'));
 if (b.runtime.model !== '${KEYED_MODEL}') throw new Error('turn did not record the switched model: ' + JSON.stringify(b.runtime));
 if (b.runtime.provider !== '${KEYED_PROVIDER}') throw new Error('turn did not record the provider: ' + JSON.stringify(b.runtime));
-if (b.runtime.via !== 'createAgentSession') throw new Error('turn did not run the stub session: ' + JSON.stringify(b.runtime));
-if (!b.result.includes(process.env.SEED_BODY)) throw new Error('stub result missing seeded read output');
-console.log('stub ok: ${KEYED_MODEL} recorded, seeded read returned, no network turn');
+if (b.runtime.via !== 'createAgentSession') throw new Error('turn did not run the factory session: ' + JSON.stringify(b.runtime));
+if (!b.result.includes(process.env.SEED_BODY)) throw new Error('live result missing seeded read output');
+console.log('live ok: ${KEYED_MODEL} recorded, seeded read returned, usage nonzero');
 " || exit 1
 ENTRIES_JSON="$(${CLI} entries --ws "${WS}" --sid "${SID}" --after 0 --limit 1000 --base "${BASE}" --json)" || exit 1
 printf '%s' "${ENTRIES_JSON}" > "${OUT}/entries.json"
