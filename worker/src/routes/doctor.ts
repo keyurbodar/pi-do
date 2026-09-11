@@ -1,6 +1,7 @@
 import { reportWorkspaceDoctor } from "../doctor";
 import type { RuntimeEnv } from "../model-runtime";
 import { json, type RouteHandler } from "./_shared";
+import { ROUTE, ownedRoutes, registerHandler } from "./table";
 
 const doctor: RouteHandler = (ctx, request, url) => {
   if (request.method !== "GET") return null;
@@ -10,6 +11,6 @@ const doctor: RouteHandler = (ctx, request, url) => {
   return json(reportWorkspaceDoctor(ctx.state.storage.sql, ctx.env as unknown as RuntimeEnv, ws));
 };
 
-export const doctorRoutes: Record<string, RouteHandler> = {
-  "/doctor": doctor,
-};
+registerHandler("doctor", ROUTE.doctor, doctor);
+
+export const doctorRoutes: Record<string, RouteHandler> = ownedRoutes("doctor");

@@ -3,6 +3,7 @@ import { buildRuntime, clampThinkingLevel, resolveCatalogModel, supportedThinkin
 import { acceptStream, checkedRotate, executeTurn, parseBudgets, type TurnSink } from "../stream";
 import { readArchivePage, runCompaction } from "../compaction";
 import { MINT_WS_HINT, err, json, type RouteHandler } from "./_shared";
+import { ROUTE, ownedRoutes, registerHandler } from "./table";
 
 const run: RouteHandler = async (ctx, request, url) => {
   if (request.method !== "POST") return null;
@@ -155,10 +156,10 @@ const archive: RouteHandler = (ctx, request, url) => {
   return json({ sid, ...readArchivePage(sql, sid, page) });
 };
 
-export const turnRoutes: Record<string, RouteHandler> = {
-  "/run": run,
-  "/stream": stream,
-  "/entries": entries,
-  "/compact": compact,
-  "/archive": archive,
-};
+registerHandler("turns", ROUTE.run, run);
+registerHandler("turns", ROUTE.stream, stream);
+registerHandler("turns", ROUTE.entries, entries);
+registerHandler("turns", ROUTE.compact, compact);
+registerHandler("turns", ROUTE.archive, archive);
+
+export const turnRoutes: Record<string, RouteHandler> = ownedRoutes("turns");

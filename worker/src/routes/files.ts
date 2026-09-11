@@ -1,5 +1,6 @@
 import { normalizeWorkspacePath } from "pi-cf/tools/tools";
 import { FILE_TOO_LARGE_HINT, MAX_FILE_BYTES, err, json, type RouteHandler } from "./_shared";
+import { ROUTE, ownedRoutes, registerHandler } from "./table";
 
 const create: RouteHandler = async (ctx, request) => {
   if (request.method !== "POST") return null;
@@ -107,8 +108,8 @@ const files: RouteHandler = async (ctx, request, url) => {
   return null;
 };
 
-export const fileRoutes: Record<string, RouteHandler> = {
-  "/create": create,
-  "/exists": exists,
-  "/files": files,
-};
+registerHandler("files", ROUTE.create, create);
+registerHandler("files", ROUTE.exists, exists);
+registerHandler("files", ROUTE.files, files);
+
+export const fileRoutes: Record<string, RouteHandler> = ownedRoutes("files");

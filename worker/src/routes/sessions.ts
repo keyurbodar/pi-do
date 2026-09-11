@@ -5,6 +5,7 @@ import { buildRuntime, clampThinkingLevel, resolveCatalogModel, supportedThinkin
 import { archiveMeta, compactionPending } from "../compaction";
 import { checkedRotate } from "../stream";
 import { MINT_WS_HINT, err, fmtModel, fmtSettings, fmtThinking, fmtUsage, json, saveSettings, type RouteHandler } from "./_shared";
+import { ROUTE, ownedRoutes, registerHandler } from "./table";
 import { readEvents, readSnapshot } from "pi-cf/agent/snapshots";
 
 const sessions: RouteHandler = async (ctx, request, url) => {
@@ -68,7 +69,7 @@ const claim: RouteHandler = async (ctx, request, url) => {
 
 const modelOrThinking: RouteHandler = async (ctx, request, url) => {
   if (request.method !== "POST") return null;
-  const isThinking = url.pathname === "/thinking";
+  const isThinking = url.pathname === ROUTE.thinking.inner;
   const ws = url.searchParams.get("ws") ?? "";
   const sid = url.searchParams.get("sid") ?? "";
   const bad = ctx.requireSession(
@@ -426,16 +427,16 @@ const rewind: RouteHandler = async (ctx, request, url) => {
 };
 
 
-export const sessionRoutes: Record<string, RouteHandler> = {
-  "/sessions": sessions,
-  "/claim": claim,
-  "/model": modelOrThinking,
-  "/thinking": modelOrThinking,
-  "/settings": settings,
-  "/meta": meta,
-  "/snapshot": snapshot,
-  "/fork": fork,
-  "/clone": clone,
-  "/checkpoints": checkpoints,
-  "/rewind": rewind,
-};
+registerHandler("sessions", ROUTE.sessions, sessions);
+registerHandler("sessions", ROUTE.claim, claim);
+registerHandler("sessions", ROUTE.model, modelOrThinking);
+registerHandler("sessions", ROUTE.thinking, modelOrThinking);
+registerHandler("sessions", ROUTE.settings, settings);
+registerHandler("sessions", ROUTE.meta, meta);
+registerHandler("sessions", ROUTE.snapshot, snapshot);
+registerHandler("sessions", ROUTE.fork, fork);
+registerHandler("sessions", ROUTE.clone, clone);
+registerHandler("sessions", ROUTE.checkpoints, checkpoints);
+registerHandler("sessions", ROUTE.rewind, rewind);
+
+export const sessionRoutes: Record<string, RouteHandler> = ownedRoutes("sessions");

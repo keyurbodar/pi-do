@@ -4,6 +4,7 @@ import { createWorkspaceFs, gateArgv, hasGitDir, notARepoBody, NotARepoError, ru
 import { bgSchema, execSchema, handleSchema, sidSchema } from "../schemas";
 import { EXEC_TIMEOUT_MS } from "../shell-exec";
 import { MINT_WS_HINT, err, json, readValidated, type RouteHandler } from "./_shared";
+import { ROUTE, ownedRoutes, registerHandler } from "./table";
 
 const git: RouteHandler = async (ctx, request, url) => {
   if (request.method !== "POST") return null;
@@ -197,12 +198,14 @@ const models: RouteHandler = (ctx, request, url) => {
   return json({ models: found, keyed });
 };
 
-export const opRoutes: Record<string, RouteHandler> = {
-  "/git": git,
-  "/exec": exec,
-  "/exec/kill": execKill,
-  "/exec/dispose": execDispose,
-  "/bg": bg,
-  "/bg/kill": bgKill,
-  "/models": models,
-};
+registerHandler("ops", ROUTE.git, git);
+registerHandler("ops", ROUTE.exec, exec);
+registerHandler("ops", ROUTE.execKill, execKill);
+registerHandler("ops", ROUTE.execDispose, execDispose);
+// POST and GET share the bg handler and inner path; the two forward shapes
+// are declared separately as ROUTE.bgPost and ROUTE.bgGet.
+registerHandler("ops", ROUTE.bgPost, bg);
+registerHandler("ops", ROUTE.bgKill, bgKill);
+registerHandler("ops", ROUTE.modelsInner, models);
+
+export const opRoutes: Record<string, RouteHandler> = ownedRoutes("ops");
