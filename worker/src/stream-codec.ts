@@ -52,6 +52,9 @@ export interface StreamHost {
 export interface LiveTurn {
   controller: AbortController;
   agent?: Agent;
+  // Which open path armed this entry: a client turn preempts a live
+  // redrive, never another client turn (racing clients resolve via 409).
+  origin: "client" | "redrive";
   chunkTurn: { turnId: string; seq: number } | null;
   // Packed chunk deltas awaiting a boundary flush (perf pack: text and
   // thinking deltas buffer here instead of one INSERT per delta; tool and

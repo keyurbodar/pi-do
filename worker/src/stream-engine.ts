@@ -342,7 +342,7 @@ export async function redriveTurn(host: StreamHost, input: RedriveInput & { skip
   }
   const dummySock: StreamSocket = { send() {}, close() {} };
   const turnController = new AbortController();
-  host.live.set(host.sid, { controller: turnController, chunkTurn: null, chunkBuf: [] });
+  host.live.set(host.sid, { controller: turnController, origin: "redrive", chunkTurn: null, chunkBuf: [] });
   try {
     await host.enqueue(async () => {
       const armed = host.live.get(host.sid);
@@ -538,7 +538,12 @@ async function startTurn(
   const runId = crypto.randomUUID();
   const turnId = crypto.randomUUID();
   const turnController = new AbortController();
-  host.live.set(host.sid, { controller: turnController, chunkTurn: null, chunkBuf: [] });
+  // User intent preempts background replay: abort a live redrive for this
+  // sid before arming the client turn. Client-origin entries are never
+  // aborted here; racing clients still resolve through the fence below.
+  const live = host.live.get(host.sid);
+  if (live !== undefined && live.origin === "redrive") live.controller.abort();
+  host.live.set(host.sid, { controller: turnController, origin: "client", chunkTurn: null, chunkBuf: [] });
   await host.enqueue(async () => {
     const armed = host.live.get(host.sid);
     if (armed !== undefined && armed.controller.signal === turnController.signal) armed.chunkTurn = { turnId, seq: 0 };
