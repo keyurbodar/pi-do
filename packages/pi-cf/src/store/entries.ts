@@ -98,6 +98,15 @@ export function sessionLeaf(sql: EntriesSql, sid: string): number {
   return entryHead(sql, sid).head;
 }
 
+export function sessionCwd(sql: EntriesSql, sid: string): string | null {
+  try {
+    const row = readSingleRow(sql, "SELECT cwd FROM sessions WHERE sid = ? LIMIT 1", sid);
+    if (row !== null && typeof row.cwd === "string" && row.cwd.length > 0) return row.cwd;
+  } catch {
+  }
+  return null;
+}
+
 // Re-entrant: appendEntry runs its own tx, so callers that already hold the
 // tx (recordTurnWithOpen, routes) must not open a nested SQLite transaction.
 const txActive = new WeakSet<object>();

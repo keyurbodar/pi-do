@@ -6,6 +6,7 @@ import {
   listEntries,
   openRun,
   recordTurnWithOpen,
+  sessionCwd,
   sessionLeaf,
   sumResultUsage,
   withSessionRates,
@@ -350,7 +351,7 @@ export function createPiCf(options: CreatePiCfOptions = {}): new (
           }
           const runId = crypto.randomUUID();
           try {
-            const session = createAgentSession({ files: this.files, ws, shell, model, tools, apiKey, plan, history: { leaf: sessionLeaf(sql, sid), readEntries: (after, limit) => listEntries(sql, sid, { after, limit }) } });
+            const session = createAgentSession({ files: this.files, ws, shell, model, tools, apiKey, plan, cwd: sessionCwd(sql, sid), history: { leaf: sessionLeaf(sql, sid), readEntries: (after, limit) => listEntries(sql, sid, { after, limit }) } });
             const turn = await session.run(prompt);
             recordTurnWithOpen(sql, sid, runId, prompt, turn.toolCalls, turn.result, turn.usage, turn.halt ?? null);
             const out = {

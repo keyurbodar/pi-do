@@ -50,7 +50,10 @@ export const bgTool: AgentHarnessTool<ToolContext, any, any> = {
           hint: 'retry bg with {action:start, command} e.g. {action:start, command:"sleep 30"}',
         };
       }
-      const out = await context.env.bgStart({ command: params.command, cwd: params.cwd, env: params.env });
+      // Explicit per-call cwd wins verbatim; otherwise the session cwd is the
+      // default (undefined keeps today's shell-root behavior when unset).
+      const sessionCwd = context.env.cwd;
+      const out = await context.env.bgStart({ command: params.command, cwd: params.cwd ?? (sessionCwd === "" ? undefined : sessionCwd), env: params.env });
       if (signal?.aborted) {
         await context.env.bgKill({ handle: out.handle });
       }

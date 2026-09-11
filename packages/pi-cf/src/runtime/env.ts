@@ -56,6 +56,9 @@ export class ComputerExecutionEnv {
   private store: FileStoreLike;
   private ws: string;
   private shell: ShellLike | undefined;
+  // Session working directory: workspace-relative default for relative tool
+  // paths. "" is the workspace root (today's behavior).
+  cwd = "";
 
   constructor(store: FileStoreLike, ws: string, shell?: ShellLike) {
     this.store = store;

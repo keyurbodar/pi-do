@@ -28,6 +28,14 @@ import {
 } from "../runtime/validate.ts";
 export { normalizeWorkspacePath };
 
+// Session-cwd defaulting: relative paths resolve under the session cwd.
+// Absolute paths and empty cwd pass through untouched, so absolute still
+// fails closed in normalizeWorkspacePath exactly as today.
+function resolveAgainstCwd(cwd: string, path: unknown): unknown {
+  if (typeof path !== "string" || cwd === "" || path === "" || path.startsWith("/")) return path;
+  return `${cwd}/${path}`;
+}
+
 export interface ToolContext {
   env: ComputerExecutionEnv;
 }
@@ -204,12 +212,15 @@ class CfEnv implements ExecutionEnv {
   async exec(command: string, options?: ShellExecOptions) {
     type ExecOut = { stdout: string; stderr: string; exitCode: number };
     if (options?.abortSignal?.aborted) return err<ExecOut, ExecutionError>(new ExecutionError("aborted", "aborted"));
+    // Explicit per-call cwd passes through verbatim; otherwise the session
+    // cwd is the default ("" falls back to the shell root, as today).
+    const cwd = options?.cwd ?? (this.cwd === "" ? undefined : this.cwd);
     try {
       const signal = options?.abortSignal;
       const out =
         signal === undefined
-          ? await this.inner.exec(command, options?.cwd, { timeout: options?.timeout })
-          : await raceExecAbort(this.inner.exec(command, options?.cwd, { timeout: options?.timeout }), signal);
+          ? await this.inner.exec(command, cwd, { timeout: options?.timeout })
+          : await raceExecAbort(this.inner.exec(command, cwd, { timeout: options?.timeout }), signal);
       if (out === null) {
         return err<ExecOut, ExecutionError>(new ExecutionError("aborted", "aborted"));
       }
@@ -236,7 +247,6 @@ class CfEnv implements ExecutionEnv {
     }
   }
 }
-
 const bridges = new WeakMap<ComputerExecutionEnv, CfEnv>();
 
 function bridgeFor(env: ComputerExecutionEnv): CfEnv {
@@ -245,6 +255,8 @@ function bridgeFor(env: ComputerExecutionEnv): CfEnv {
     bridge = new CfEnv(env);
     bridges.set(env, bridge);
   }
+  // The session cwd is bound after construction; re-sync so later binds win.
+  bridge.cwd = env.cwd;
   return bridge;
 }
 
@@ -384,7 +396,7 @@ export const readTool: AgentHarnessTool<ToolContext, any, { bytes: number }> = {
     onUpdate,
     context,
   ) {
-    const path = normalizeWorkspacePath(params.path);
+    const path = normalizeWorkspacePath(resolveAgainstCwd(context.env.cwd, params.path));
     const offset = checkedOffset(params.offset);
     const limit = checkedLimit(params.limit, "limit");
     const env = bridgeFor(context.env);
@@ -415,7 +427,7 @@ export const writeTool: AgentHarnessTool<ToolContext, any, { bytes: number }> = 
   description: writeInner.description,
   parameters: writeInner.parameters,
   async execute(id, params: { path: string; content: string }, signal, onUpdate, context) {
-    const path = normalizeWorkspacePath(params.path);
+    const path = normalizeWorkspacePath(resolveAgainstCwd(context.env.cwd, params.path));
     if (typeof params.content !== "string") {
       failKey("badContent");
     }
@@ -485,7 +497,7 @@ export const editTool: AgentHarnessTool<
   prepareArguments: prepareEditArguments,
   async execute(id, params: unknown, signal, onUpdate, context) {
     const record = (params ?? {}) as Record<string, unknown>;
-    const path = normalizeWorkspacePath(record["path"]);
+    const path = normalizeWorkspacePath(resolveAgainstCwd(context.env.cwd, record["path"]));
     const edits = normalizeEdits(params);
     const env = bridgeFor(context.env);
     try {
@@ -535,7 +547,9 @@ export const listTool: AgentHarnessTool<ToolContext, any, { count: number }> = {
     context,
   ) {
     void id;
-    const dir = params.path === undefined || params.path === "" ? "" : normalizeWorkspacePath(params.path);
+    const sessionCwd = context.env.cwd;
+    const rawListPath = params.path ?? "";
+    const dir = rawListPath === "" ? (sessionCwd === "" ? "" : normalizeWorkspacePath(sessionCwd)) : normalizeWorkspacePath(resolveAgainstCwd(sessionCwd, rawListPath));
     const recursive = params.recursive ?? false;
     const maxEntries = cappedLimit(params.maxEntries, LIST_DEFAULT_MAX_ENTRIES, LIST_HARD_MAX_ENTRIES, "maxEntries", "entriesLarge");
     const prefix = dir === "" ? "" : `${dir}/`;

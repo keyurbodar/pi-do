@@ -38,8 +38,8 @@ examples:
   doctor: T("pi-do doctor — check the worker is listening", "pi-do doctor [--base URL] [--json]", "Any HTTP response counts as listening (exit 0); connection failure is absent (exit 2)."),
   workspace: T("pi-do workspace — manage workspaces", "pi-do workspace create [--base URL] [--json]"),
   "workspace:create": T("pi-do workspace create — create a workspace", "pi-do workspace create [--base URL] [--json]", `POSTs /workspaces. Stdout is "workspace <id>" (raw JSON with --json).`),
-  session: T("pi-do session — manage sessions", "pi-do session create --ws WS [--retention short|long] [--base URL] [--json]"),
-  "session:create": T("pi-do session create — mint a session in a workspace", "pi-do session create --ws WS [--retention short|long] [--base URL] [--json]", `POSTs /workspaces/:id/sessions. Stdout is "session <id>" (raw JSON with --json).`),
+  session: T("pi-do session — manage sessions", "pi-do session create --ws WS [--retention short|long] [--cwd D] [--base URL] [--json]"),
+  "session:create": T("pi-do session create — mint a session in a workspace", "pi-do session create --ws WS [--retention short|long] [--cwd D] [--base URL] [--json]", `POSTs /workspaces/:id/sessions with {retention, cwd}. Stdout is "session <id>" (raw JSON with --json).`),
   claim: T("pi-do claim — rotate the owner fence via revision CAS", "pi-do claim --ws WS --sid SID --fence F --expected N [--base URL] [--json]", "Wrong fence is 403, stale expected is 409. Success rotates fence and bumps revision."),
   run: T("pi-do run — one headless harness turn in a session", "pi-do run --ws WS --sid SID --prompt T [--plan] [--model provider/id] [--thinking L] [--fence F --expected N] [--base URL] [--json]", "Without --json stdout is the result text; with --json stdout is the raw server JSON. With --plan the turn is read-only: every write tool fails closed."),
   model: T("pi-do model — switch the session model mid-session", "pi-do model --ws WS --sid SID --model provider/id [--fence F --expected N] [--base URL] [--json]"),
@@ -254,7 +254,10 @@ async function doWorkspaceCreate(base, json) {
 async function doSessionCreate(base, json, opts) {
   need(opts.ws, `session create needs --ws WS.`, HELP["session:create"]);
   if (opts.retention !== undefined && opts.retention !== "short" && opts.retention !== "long") failUsage(`session create needs --retention short|long.`, HELP["session:create"]);
-  const data = await postJson(base, json, wsUrl(base, opts.ws, "/sessions"), opts.retention === undefined ? undefined : { retention: opts.retention });
+  const payload = {};
+  if (opts.retention !== undefined) payload.retention = opts.retention;
+  if (opts.cwd !== undefined) payload.cwd = opts.cwd;
+  const data = await postJson(base, json, wsUrl(base, opts.ws, "/sessions"), Object.keys(payload).length > 0 ? payload : undefined);
   R.done(json, data, `session ${data.sessionId} ret ${data.retention ?? "short"}`, `session ${data.sessionId} ret ${data.retention ?? "short"}`);
 }
 async function doRun(base, json, opts) {

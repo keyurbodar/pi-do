@@ -35,6 +35,9 @@ export interface CreateAgentSessionOptions {
   files: FileStoreLike; ws: string; shell: ShellLike; model: SessionModel; tools?: Partial<SessionTools>;
   apiKey?: string; history?: { leaf: number; readEntries: (after: number, limit: number) => EntryRow[] };
   sessionId?: string; cacheRetention?: "short" | "long"; plan?: boolean; projectors?: Record<string, EntryProjection>;
+  // Workspace-relative default for relative tool paths, read from the
+  // sessions row at turn bind. Null/empty keeps the workspace root.
+  cwd?: string | null;
 }
 
 export interface SessionToolCall {
@@ -162,6 +165,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
 } {
   const { files, ws, shell, model } = options;
   const env = new ComputerExecutionEnv(files, ws, shell);
+  env.cwd = options.cwd ?? "";
   const context: ToolContext = { env };
   if (options.projectors !== undefined) for (const [type, proj] of Object.entries(options.projectors)) registerProjector(type, proj);
 

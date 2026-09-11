@@ -11,6 +11,9 @@ import { composePrompt, registerPromptSection, registerPromptSnippet } from "../
 import { projectEntry, registerProjector } from "../src/agent/projectors.ts";
 import { BUDGET_CAPS, DEFAULT_RUN_BUDGETS, parseBudgets, resolveRunLimits } from "../src/agent/budgets.ts";
 import { createAgentSession } from "../src/agent/session.ts";
+import { ComputerExecutionEnv } from "../src/runtime/env.ts";
+import { bashTool, editTool, listTool, readTool, writeTool } from "../src/tools/tools.ts";
+import { bgTool } from "../src/tools/bg-tools.ts";
 
 function makeSql() {
   const db = new DatabaseSync(":memory:");
@@ -123,4 +126,124 @@ test("projector registry serves custom types and falls back for the rest", () =>
   assert.deepEqual(projectEntry("t-widget"), { field: "widget", role: "user" });
   assert.deepEqual(projectEntry("prompt"), { field: "prompt", role: "user" });
   assert.equal(projectEntry("t-no-such-type"), undefined);
+});
+
+function makeMemFiles(seed = {}, ws = "w") {
+  const map = new Map();
+  const key = (w, path) => `${w}\0${path}`;
+  for (const [path, text] of Object.entries(seed)) map.set(key(ws, path), new TextEncoder().encode(text));
+  return {
+    map,
+    put(ws, path, body) {
+      const bytes = body instanceof Uint8Array ? body : new TextEncoder().encode(body);
+      map.set(key(ws, path), bytes);
+      return bytes.byteLength;
+    },
+    get(ws, path) { return map.get(key(ws, path)); },
+    list(ws, dir) {
+      const out = [];
+      for (const [k, bytes] of map) {
+        const sep = k.indexOf("\0");
+        if (k.slice(0, sep) !== ws) continue;
+        const path = k.slice(sep + 1);
+        if (!path.startsWith(dir)) continue;
+        out.push({ path, bytes: bytes.byteLength });
+      }
+      out.sort((a, b) => (a.path < b.path ? -1 : 1));
+      return out;
+    },
+    exists(ws, path) { return map.has(key(ws, path)); },
+    remove(ws, path) { return map.delete(key(ws, path)); },
+  };
+}
+
+function makeMockShell() {
+  const execs = [];
+  const bgStarts = [];
+  return {
+    execs,
+    bgStarts,
+    exec: async (input) => { execs.push(input); return { stdout: "out\n", stderr: "", exit: 0, timedOut: false }; },
+    bgStart: async (input) => { bgStarts.push(input); return { handle: "h-1" }; },
+    bgRead: async () => ({ done: true, stdout: "out\n", exit: 0 }),
+    bgKill: async () => ({ killed: true }),
+  };
+}
+
+function makeCwdEnv({ cwd = "", seed = {} } = {}) {
+  const store = makeMemFiles(seed);
+  const shell = makeMockShell();
+  const env = new ComputerExecutionEnv(store, "w", shell);
+  env.cwd = cwd;
+  return { env, store, shell };
+}
+
+test("relative read and write resolve under the session cwd", async () => {
+  const { env, store } = makeCwdEnv({ cwd: "sub", seed: { "sub/f.txt": "hello\n" } });
+  const out = await readTool.execute("r1", { path: "f.txt" }, undefined, undefined, { env });
+  assert.match(out.content[0].text, /hello/);
+  await writeTool.execute("w1", { path: "g.txt", content: "hi" }, undefined, undefined, { env });
+  assert.ok(store.map.has("w\0sub/g.txt"));
+  assert.ok(!store.map.has("w\0g.txt"));
+});
+
+test("relative edit resolves under the session cwd", async () => {
+  const { env, store } = makeCwdEnv({ cwd: "sub", seed: { "sub/e.txt": "aaa\n" } });
+  await editTool.execute("e1", { path: "e.txt", edits: [{ oldText: "aaa", newText: "bbb" }] }, undefined, undefined, { env });
+  assert.equal(new TextDecoder().decode(store.map.get("w\0sub/e.txt")), "bbb\n");
+});
+
+test("list defaults to the session cwd", async () => {
+  const { env } = makeCwdEnv({ cwd: "sub", seed: { "sub/a.txt": "a", "root.txt": "r" } });
+  for (const params of [{}, { path: "" }]) {
+    const out = await listTool.execute("l1", params, undefined, undefined, { env });
+    assert.match(out.content[0].text, /sub\/a\.txt/);
+    assert.doesNotMatch(out.content[0].text, /root\.txt/);
+    assert.equal(out.details.count, 1);
+  }
+});
+
+test("absolute tool paths still fail closed under a session cwd", async () => {
+  const { env } = makeCwdEnv({ cwd: "sub", seed: { "sub/f.txt": "hello\n" } });
+  const readErr = await readTool.execute("r1", { path: "/f.txt" }, undefined, undefined, { env }).then(() => null, (e) => e);
+  assert.equal(readErr?.error, "bad path");
+  const writeErr = await writeTool.execute("w1", { path: "/g.txt", content: "hi" }, undefined, undefined, { env }).then(() => null, (e) => e);
+  assert.equal(writeErr?.error, "bad path");
+});
+
+test("bash defaults to the session cwd", async () => {
+  const { env, shell } = makeCwdEnv({ cwd: "sub" });
+  await bashTool.execute("b1", { command: "pwd" }, undefined, undefined, { env });
+  assert.equal(shell.execs[0].cwd, "sub");
+});
+
+test("bg start defaults to the session cwd; explicit cwd wins", async () => {
+  const { env, shell } = makeCwdEnv({ cwd: "sub" });
+  await bgTool.execute("g1", { action: "start", command: "sleep 30" }, undefined, undefined, { env });
+  assert.equal(shell.bgStarts[0].cwd, "sub");
+  await bgTool.execute("g2", { action: "start", command: "sleep 30", cwd: "other" }, undefined, undefined, { env });
+  assert.equal(shell.bgStarts[1].cwd, "other");
+});
+
+test("empty session cwd keeps workspace-root behavior", async () => {
+  const { env, shell } = makeCwdEnv({ seed: { "f.txt": "root\n" } });
+  const out = await readTool.execute("r1", { path: "f.txt" }, undefined, undefined, { env });
+  assert.match(out.content[0].text, /root/);
+  await bashTool.execute("b1", { command: "pwd" }, undefined, undefined, { env });
+  assert.equal(shell.execs[0].cwd, "");
+});
+test("createAgentSession binds the session cwd for turn tools", async () => {
+  const store = makeMemFiles({ "sub/seed.txt": "cwd-probe\n" });
+  const shell = makeMockShell();
+  const session = createAgentSession({
+    files: store,
+    ws: "w",
+    shell,
+    model: { id: "t", provider: "stub" },
+    cwd: "sub",
+  });
+  const turn = await session.run("hi");
+  assert.equal(turn.toolCalls.length, 2);
+  assert.match(turn.toolCalls[0].output, /cwd-probe/);
+  assert.equal(shell.execs[0].cwd, "sub");
 });

@@ -3,7 +3,7 @@
 // and the recovery driver. Separated from the frame codec
 // (stream-codec.ts) so turn policy can evolve without touching transport
 // framing. Import through ./stream, which re-exports both halves.
-import { bumpSessionTotals, closeRun, entryHead, listEntries, openRun, sessionLeaf, type EntriesSql } from "pi-cf/store/entries";
+import { bumpSessionTotals, closeRun, entryHead, listEntries, openRun, sessionCwd, sessionLeaf, type EntriesSql } from "pi-cf/store/entries";
 import { commitPiRun, openPiRun } from "pi-cf/store/runs";
 import { clearFallback, clearSteers, enqueueSteer, getFallback, listSteers, markSteerApplied, setFallback, steerOutcome } from "pi-cf/store/episode";
 import type { RedriveInput } from "pi-cf/store/recovery";
@@ -484,6 +484,7 @@ async function executeTurnInner(host: StreamHost, input: TurnInput, sink: TurnSi
       sessionId: host.sid,
       cacheRetention: host.retention,
       plan: input.plan,
+      cwd: sessionCwd(host.sql, host.sid),
     });
     const turn = await session.run(input.prompt, {
       signal: input.signal,
