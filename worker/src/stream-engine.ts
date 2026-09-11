@@ -3,7 +3,7 @@
 // and the recovery driver. Separated from the frame codec
 // (stream-codec.ts) so turn policy can evolve without touching transport
 // framing. Import through ./stream, which re-exports both halves.
-import { bumpSessionTotals, closeRun, entryHead, listEntries, openRun, sessionLeaf, type EntriesSql, type EntryRow } from "pi-cf/store/entries";
+import { bumpSessionTotals, closeRun, entryHead, listEntries, openRun, sessionLeaf, type EntriesSql } from "pi-cf/store/entries";
 import { commitPiRun, openPiRun } from "pi-cf/store/runs";
 import type { RedriveInput } from "pi-cf/store/recovery";
 import { RECOVERY_JOB, RECOVERY_SCAN_MS, scheduleJob } from "./alarm-mux";
@@ -440,10 +440,12 @@ export async function redriveTurn(host: StreamHost, input: RedriveInput & { skip
   }
 }
 
-// WS frame batching for ephemeral live (toolUpdate) frames: a synchronous
-// burst of partial-tool updates coalesces to the latest frame per live
-// turn, flushed on a microtask. Entry/result/error frames bypass this and
-// stay synchronous, so durable broadcast order never changes.
+// WS frame batching for ephemeral live (toolUpdate) frames: the first
+// partial per live turn waits a microtask, but a second partial arriving
+// while one is held flushes the held frame synchronously in order and holds
+// the newcomer, so a burst delivers every update instead of only the latest.
+// Entry/result/error frames bypass this and stay synchronous, so durable
+// broadcast order never changes.
 interface LiveBatch {
   pending: unknown;
   queued: boolean;
@@ -464,6 +466,11 @@ function emitLive(host: StreamHost, frame: unknown): void {
   if (batch === undefined) {
     batch = { pending: frame, queued: false, host, sid: host.sid, turn };
     liveBatches.set(turn, batch);
+  } else if (batch.pending !== undefined) {
+    const held = batch.pending;
+    batch.pending = frame;
+    batch.host = host;
+    broadcast(host, held);
   } else {
     batch.pending = frame;
     batch.host = host;
@@ -480,56 +487,6 @@ function emitLive(host: StreamHost, frame: unknown): void {
     if (host.live.get(current.sid) !== current.turn) return;
     if (pending !== undefined) broadcast(current.host, pending);
   });
-}
-
-// Context-build cache across polls: history page reads are immutable while
-// the session leaf is unchanged (append-only entries; any append, steer,
-// or compaction cutover moves the leaf and invalidates). Consecutive turns
-// or retries over the same leaf serve every page from memory: one leaf
-// probe, zero page execs. Bounded per database so a long-lived isolate
-// cannot grow without limit.
-interface HistoryPages {
-  leaf: number;
-  pages: Map<string, EntryRow[]>;
-}
-
-const historyPages = new WeakMap<object, Map<string, HistoryPages>>();
-const HISTORY_SIDS_CAP = 32;
-const HISTORY_PAGES_CAP = 16;
-
-function pageReader(sql: EntriesSql, sid: string, pages: Map<string, EntryRow[]>): (after: number, limit: number) => EntryRow[] {
-  return (after, limit) => {
-    const key = `${after}:${limit}`;
-    const hit = pages.get(key);
-    if (hit !== undefined) return hit;
-    const rows = listEntries(sql, sid, { after, limit });
-    if (pages.size >= HISTORY_PAGES_CAP) {
-      const oldest = pages.keys().next();
-      if (!oldest.done) pages.delete(oldest.value);
-    }
-    pages.set(key, rows);
-    return rows;
-  };
-}
-
-function cachedHistory(sql: EntriesSql, sid: string): { leaf: number; readEntries: (after: number, limit: number) => EntryRow[] } {
-  const leaf = sessionLeaf(sql, sid);
-  let bySid = historyPages.get(sql);
-  if (bySid === undefined) {
-    bySid = new Map();
-    historyPages.set(sql, bySid);
-  }
-  const cached = bySid.get(sid);
-  if (cached !== undefined && cached.leaf === leaf) {
-    return { leaf, readEntries: pageReader(sql, sid, cached.pages) };
-  }
-  const fresh: HistoryPages = { leaf, pages: new Map() };
-  bySid.set(sid, fresh);
-  if (bySid.size > HISTORY_SIDS_CAP) {
-    const oldest = bySid.keys().next();
-    if (!oldest.done) bySid.delete(oldest.value);
-  }
-  return { leaf, readEntries: pageReader(sql, sid, fresh.pages) };
 }
 
 async function executeTurnInner(host: StreamHost, input: TurnInput, sink: TurnSink): Promise<void> {
@@ -563,7 +520,7 @@ async function executeTurnInner(host: StreamHost, input: TurnInput, sink: TurnSi
       shell: host.shell,
       model: resolved.model,
       apiKey: resolved.stub ? undefined : resolveProviderKey(host.runtimeEnv, resolved.provider),
-      history: cachedHistory(host.sql, host.sid),
+      history: { leaf: sessionLeaf(host.sql, host.sid), readEntries: (after, limit) => listEntries(host.sql, host.sid, { after, limit }) },
       sessionId: host.sid,
       cacheRetention: host.retention,
       plan: input.plan,
