@@ -33,6 +33,36 @@ export interface DisposeResult {
   stdoutBytes: number;
   stderrBytes: number;
 }
+export type StaleHandleCode = "stale-exec-session" | "stale-bg-process";
+
+// Unknown handles are stale post-restart handles: an isolate restart wipes the
+// maps below, so name the restart instead of a bare "no such".
+export class StaleHandleError extends Error {
+  readonly code: StaleHandleCode;
+  readonly hint: string;
+  constructor(code: StaleHandleCode, message: string, hint: string) {
+    super(message);
+    this.name = "StaleHandleError";
+    this.code = code;
+    this.hint = hint;
+  }
+}
+
+function staleSession(sid: string): StaleHandleError {
+  return new StaleHandleError(
+    "stale-exec-session",
+    `no such exec session: ${sid} (isolate restarted or sid never used: shell sessions do not survive restarts; run one command with that sid to recreate it)`,
+    "run one command with that sid first to create the session",
+  );
+}
+
+function staleBg(handle: string): StaleHandleError {
+  return new StaleHandleError(
+    "stale-bg-process",
+    `no such bg process: ${handle} (isolate restarted or handle already reaped: shell handles do not survive restarts; start a new one to respawn it)`,
+    "start one with POST /workspaces/:id/bg first, or it was killed",
+  );
+}
 
 function resolveRoot(raw: string | undefined): string {
   if (typeof raw !== "string" || !raw.startsWith("/")) return WORKSPACE_ROOT;
@@ -200,7 +230,7 @@ export class ShellWorker<Env = unknown> extends WorkerEntrypoint<Env> {
     const sid = input?.sid;
     if (typeof sid !== "string" || sid.length === 0) throw new Error("kill needs a session id string");
     const session = this.sessions.get(sid);
-    if (session === undefined) throw new Error(`no such exec session: ${sid}`);
+    if (session === undefined) throw staleSession(sid);
     if (session.current === null) return { killed: false };
     session.killRequested = true;
     session.current.controller.abort(new Error("Execution killed"));
@@ -269,7 +299,7 @@ export class ShellWorker<Env = unknown> extends WorkerEntrypoint<Env> {
     const handle = input?.handle;
     if (typeof handle !== "string" || handle.length === 0) throw new Error("bg needs a handle string");
     const entry = bgProcesses.get(handle);
-    if (entry === undefined) throw new Error(`no such bg process: ${handle}`);
+    if (entry === undefined) throw staleBg(handle);
     if (!entry.done || entry.result === null) return { done: false };
     const out = { done: true, stdout: entry.result.stdout, stderr: entry.result.stderr, exit: entry.result.exit, timedOut: entry.result.timedOut, killed: entry.result.killed };
     if (entry.killRequested) bgProcesses.delete(handle);
@@ -280,7 +310,7 @@ export class ShellWorker<Env = unknown> extends WorkerEntrypoint<Env> {
     const handle = input?.handle;
     if (typeof handle !== "string" || handle.length === 0) throw new Error("bg needs a handle string");
     const entry = bgProcesses.get(handle);
-    if (entry === undefined) throw new Error(`no such bg process: ${handle}`);
+    if (entry === undefined) throw staleBg(handle);
     if (!entry.done) {
       entry.killRequested = true;
       entry.scope.dispose();
