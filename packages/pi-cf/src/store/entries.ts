@@ -11,10 +11,23 @@ export interface EntriesSql {
 
 export type { EntryRow };
 
+const backfilled = new WeakSet<object>();
+
+function backfillOnce(sql: EntriesSql): void {
+  if (backfilled.has(sql)) return;
+  try {
+    backfillSessionLeafs(sql);
+    backfillSessionTotals(sql);
+  } catch (e) {
+    if (e instanceof Error && /busy|locked/i.test(e.message)) return;
+    throw e;
+  }
+  backfilled.add(sql);
+}
+
 export function ensureEntriesSchema(sql: EntriesSql): void {
   ensureTables(sql, [CREATE_TABLES.piEntries, CREATE_TABLES.runs, CREATE_TABLES.piEntriesSidId, CREATE_TABLES.sessionTotals]);
-  backfillSessionLeafs(sql);
-  backfillSessionTotals(sql);
+  backfillOnce(sql);
 }
 
 export function appendEntry(
