@@ -171,3 +171,85 @@ test("usage buckets sum back to session totals", () => {
     assert.equal(buckets.reduce((n, b) => n + b[key], 0), totals[key]);
   }
 });
+
+// Backfill hygiene: ensure probes before writing so a clean database sees
+// zero writes (no SQLITE_BUSY window) while legacy rows still get fixed.
+// Each ensure uses a fresh adapter object to defeat the per-object once-gate,
+// the way per-request adapters do in production.
+function wrapDb(db) {
+  return {
+    exec(query, ...bindings) {
+      const text = String(query);
+      const stmt = db.prepare(text);
+      if (/^\s*(SELECT|PRAGMA|EXPLAIN|WITH)\b/i.test(text)) return stmt.all(...bindings);
+      stmt.run(...bindings);
+      return [];
+    },
+    transactionSync(fn) {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        fn();
+      } catch (e) {
+        db.exec("ROLLBACK");
+        throw e;
+      }
+      db.exec("COMMIT");
+    },
+  };
+}
+
+function changeCount(db) {
+  return db.prepare("SELECT total_changes() AS n").get().n;
+}
+
+test("ensure performs zero writes on a clean database", () => {
+  const db = new DatabaseSync(":memory:");
+  const sql = wrapDb(db);
+  ensureWorkspaceSchema(sql);
+  ensureEntriesSchema(sql);
+  sql.exec("INSERT OR IGNORE INTO sessions(sid) VALUES (?)", "s1");
+  recordTurnWithOpen(sql, "s1", "r1", "hi", [], "done",
+    { inTokens: 10, outTokens: 20, cacheRead: 5, costTotal: 0.5, elapsedMs: 100, tokensPerSec: null });
+  const before = changeCount(db);
+  ensureEntriesSchema(wrapDb(db));
+  assert.equal(changeCount(db), before);
+});
+
+test("ensure backfills legacy leaf-zero sessions with entries", () => {
+  const db = new DatabaseSync(":memory:");
+  const sql = wrapDb(db);
+  ensureWorkspaceSchema(sql);
+  ensureEntriesSchema(sql);
+  sql.exec("INSERT OR IGNORE INTO sessions(sid) VALUES (?)", "legacy");
+  db.prepare("INSERT INTO pi_entries(sid, parent, type, body) VALUES (?, ?, ?, ?)")
+    .run("legacy", 0, "prompt", JSON.stringify({ runId: "r0", prompt: "old" }));
+  db.prepare("INSERT INTO pi_entries(sid, parent, type, body) VALUES (?, ?, ?, ?)")
+    .run("legacy", 1, "prompt", JSON.stringify({ runId: "r0", prompt: "older" }));
+  const head = db.prepare("SELECT MAX(id) AS m FROM pi_entries WHERE sid = ?").get("legacy").m;
+  ensureEntriesSchema(wrapDb(db));
+  assert.equal(db.prepare("SELECT leaf FROM sessions WHERE sid = ?").get("legacy").leaf, head);
+  const before = changeCount(db);
+  ensureEntriesSchema(wrapDb(db));
+  assert.equal(changeCount(db), before);
+});
+
+test("ensure seeds totals for sids missing them without touching existing rows", () => {
+  const db = new DatabaseSync(":memory:");
+  const sql = wrapDb(db);
+  ensureWorkspaceSchema(sql);
+  ensureEntriesSchema(sql);
+  sql.exec("INSERT OR IGNORE INTO sessions(sid) VALUES (?)", "sA");
+  sql.exec("INSERT OR IGNORE INTO sessions(sid) VALUES (?)", "sB");
+  recordTurnWithOpen(sql, "sA", "rA", "a", [], "one",
+    { inTokens: 10, outTokens: 20, cacheRead: 5, costTotal: 0.5, elapsedMs: 100, tokensPerSec: null });
+  const body = JSON.stringify({ runId: "rB", result: "old", usage: { inTokens: 3, outTokens: 4, cacheRead: 1, costTotal: 0.1, elapsedMs: 30 } });
+  db.prepare("INSERT INTO pi_entries(sid, parent, type, body) VALUES (?, ?, ?, ?)")
+    .run("sB", 0, "result", body);
+  const kept = db.prepare("SELECT * FROM session_totals WHERE sid = ?").get("sA");
+  ensureEntriesSchema(wrapDb(db));
+  const seeded = db.prepare("SELECT * FROM session_totals WHERE sid = ?").get("sB");
+  assert.equal(seeded.turns, 1);
+  assert.equal(seeded.inTokens, 3);
+  assert.equal(seeded.outTokens, 4);
+  assert.deepEqual(db.prepare("SELECT * FROM session_totals WHERE sid = ?").get("sA"), kept);
+});

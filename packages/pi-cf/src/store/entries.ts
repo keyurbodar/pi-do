@@ -342,13 +342,14 @@ export function sumUsageByModel(sql: EntriesSql, sid: string): UsageBucket[] {
 }
 
 // One-time backfill: totals rows only exist for turns recorded after the
-// table landed, so seed from result entries while the table is still empty.
+// table landed, so seed the sids that still lack one from result entries.
+// Probe first: the tx below takes a write lock, so skip it when every result
+// entry already has a totals row.
 function backfillSessionTotals(sql: EntriesSql): void {
-  if (existsBy(sql, "SELECT 1 FROM session_totals LIMIT 1")) return;
-  if (!existsBy(sql, "SELECT 1 FROM pi_entries WHERE type = 'result' LIMIT 1")) return;
+  if (!existsBy(sql, "SELECT 1 FROM pi_entries WHERE type = 'result' AND sid IS NOT NULL AND NOT EXISTS (SELECT 1 FROM session_totals WHERE session_totals.sid = pi_entries.sid) LIMIT 1")) return;
   runInSyncTx(sql, () => {
     const totals = new Map<string, { inTokens: number; outTokens: number; cacheRead: number; costTotal: number; elapsedMs: number; turns: number }>();
-    for (const row of sql.exec("SELECT sid, body FROM pi_entries WHERE type = 'result'")) {
+    for (const row of sql.exec("SELECT sid, body FROM pi_entries WHERE type = 'result' AND sid IS NOT NULL AND NOT EXISTS (SELECT 1 FROM session_totals WHERE session_totals.sid = pi_entries.sid)")) {
       if (row === null || typeof row !== "object" || !("sid" in row) || typeof row.sid !== "string" || !("body" in row)) continue;
       const usage = parseResultUsage(typeof row.body === "string" ? row.body : "");
       const t = totals.get(row.sid) ?? { inTokens: 0, outTokens: 0, cacheRead: 0, costTotal: 0, elapsedMs: 0, turns: 0 };
@@ -377,7 +378,9 @@ function backfillSessionTotals(sql: EntriesSql): void {
 
 // sessions.leaf defaulted to 0 when the column was added by migration; without
 // this fixup appendEntry would restart the parent chain for legacy sessions.
+// Probe first: the UPDATE takes a write lock, so skip it when no session needs it.
 function backfillSessionLeafs(sql: EntriesSql): void {
+  if (!existsBy(sql, "SELECT 1 FROM sessions WHERE leaf = 0 AND EXISTS (SELECT 1 FROM pi_entries WHERE pi_entries.sid = sessions.sid) LIMIT 1")) return;
   sql.exec(
     "UPDATE sessions SET leaf = (SELECT MAX(id) FROM pi_entries WHERE pi_entries.sid = sessions.sid) WHERE leaf = 0 AND EXISTS (SELECT 1 FROM pi_entries WHERE pi_entries.sid = sessions.sid)",
   );
