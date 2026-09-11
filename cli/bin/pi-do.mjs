@@ -1,6 +1,23 @@
 #!/usr/bin/env node
 import { readFile, writeFile } from "node:fs/promises";
 
+// Large stdout past the 64KB pipe buffer was lost when process.exit(0) cut
+// the drain short (entries --all on long sessions). Success paths set exitCode
+// and return so natural exit drains; the socket path below cannot rely on the
+// loop draining (stdin stays open), so it exits through drainExit instead.
+const realExit = process.exit.bind(process);
+function drainExit(code) {
+  const c = code ?? 0;
+  if (c !== 0) realExit(c);
+  else {
+    process.exitCode = 0;
+    try {
+      process.stdout.write("", () => realExit(0));
+    } catch {
+      realExit(0);
+    }
+  }
+}
 const DEFAULT_BASE = "http://127.0.0.1:8787";
 const T = (t, u, ...b) => `${t}\nusage: ${u}\n${b.length ? `${b.join("\n")}\n` : ""}`;
 const HELP = {
@@ -51,7 +68,7 @@ const R = {
     if (json) { R.json(data); if (hint !== undefined) R.note(hint); }
     else if (text) R.out(text);
   },
-  done(json, data, text, hint) { R.show(json, data, text, hint); process.exit(0); },
+  done(json, data, text, hint) { R.show(json, data, text, hint); process.exitCode = 0; return; },
   entries(es) { for (const e of es) process.stdout.write(`${e.cursor} ${e.type} ${e.body}\n`); },
   list(items, fn, empty) { return items.length === 0 ? empty : items.map(fn).join("\n"); },
   settings(s) { return `model ${s.modelProvider ?? "null"}/${s.modelId ?? "null"} thinking ${s.thinkingLevel ?? "null"}`; },
@@ -228,7 +245,7 @@ async function doDoctor(base, json) {
   }
   if (json) R.json({ ok: true, base, status: res.status });
   R.note(`ok — server listening at ${base} (status ${res.status})`);
-  process.exit(0);
+  process.exitCode = 0; return;
 }
 async function doWorkspaceCreate(base, json) {
   const data = await postJson(base, json, `${stripBase(base)}/workspaces`);
@@ -258,7 +275,7 @@ async function doRun(base, json, opts) {
     if (data.usage) R.note(`usage ${R.usage(data.usage)}`);
     if (data.halt) R.note(`halted: ${data.halt.reason ?? data.halt} - result may be incomplete`);
   }
-  process.exit(0);
+  process.exitCode = 0; return;
 }
 async function doClaim(base, json, opts) {
   needWsSid(opts, "claim", HELP.claim);
@@ -300,6 +317,7 @@ async function doSettings(base, json, opts) {
   if (opts.model === undefined && opts.level === undefined) {
     const data = await getJson(base, json, url);
     R.done(json, data, R.settings(data.settings ?? {}), `settings shown`);
+    return;
   }
   const patch = {};
   if (opts.model !== undefined) {
@@ -345,7 +363,7 @@ async function doFilesGet(base, json, opts) {
     R.note(`${bytes.length} bytes from ${opts.path}`);
     if (json) R.note(JSON.stringify({ path: opts.path, bytes: bytes.length }));
   }
-  process.exit(0);
+  process.exitCode = 0; return;
 }
 async function doFilesLs(base, json, opts) {
   need(opts.ws, `files ls needs --ws WS.`, HELP["files:ls"]);
@@ -377,7 +395,7 @@ async function doEntries(base, json, opts) {
     R.show(json, data);
     if (!json) R.entries(entries);
     R.note(`entries ${entries.length} (after ${after} limit ${limit} head ${data.head} count ${data.count})`);
-    process.exit(0);
+    process.exitCode = 0; return;
   }
   const entries = [];
   let cursor = after;
@@ -395,21 +413,21 @@ async function doEntries(base, json, opts) {
   }
   R.show(json, { entries, head, count });
   R.note(`entries ${entries.length} (after ${after} limit ${limit} head ${head} count ${count})`);
-  process.exit(0);
+  process.exitCode = 0; return;
 }
 async function doMeta(base, json, opts) {
   needWsSid(opts, "meta", HELP.meta);
   const data = await getJson(base, json, sessUrl(base, opts.ws, opts.sid, "/meta"));
   R.show(json, data, `sid ${data.sid}\nws ${data.ws}\ncreated ${data.created}\nhead ${data.head}\ncount ${data.count}\nopenRun ${data.openRun ?? "null"}`, `meta head ${data.head} count ${data.count} openRun ${data.openRun ?? "null"}`);
   if (!json) R.note(`meta head ${data.head} count ${data.count}`);
-  process.exit(0);
+  process.exitCode = 0; return;
 }
 async function doCompact(base, json, opts) {
   needWsSid(opts, "compact", HELP.compact);
   const data = await postJson(base, json, sessUrl(base, opts.ws, opts.sid, "/compact"));
   R.show(json, data, `compacted ${data.compacted} live ${data.live} archived ${data.archived} summary ${data.summaryCursor ?? "null"} pages ${data.pages}`);
   R.note(`compacted ${data.compacted} live ${data.live}`);
-  process.exit(0);
+  process.exitCode = 0; return;
 }
 async function doArchive(base, json, opts) {
   needWsSid(opts, "archive", HELP.archive);
@@ -419,7 +437,7 @@ async function doArchive(base, json, opts) {
   R.show(json, data);
   if (!json) R.entries(entries);
   R.note(`archive page ${data.page}/${data.pages} entries ${entries.length} total ${data.total}`);
-  process.exit(0);
+  process.exitCode = 0; return;
 }
 async function doStream(base, json, opts) {
   needWsSid(opts, "stream", HELP.stream);
@@ -455,8 +473,8 @@ async function doStream(base, json, opts) {
   const finish = (code) => {
     if (settled) return;
     settled = true;
-    try { sock.close(); } catch { process.exit(code); }
-    process.exit(code);
+    try { sock.close(); } catch { drainExit(code); return; }
+    drainExit(code);
   };
   // Server close codes map to exit codes: clean 0, fenced 3, conflict 4,
   // unknown 5, anything else non-zero.
@@ -555,7 +573,7 @@ async function doExec(base, json, opts) {
     if (data.stderr) process.stderr.write(data.stderr.endsWith("\n") ? data.stderr : `${data.stderr}\n`);
     R.note(note);
   }
-  process.exit(0);
+  process.exitCode = 0; return;
 }
 const PLAIN = {
   doctor: doDoctor, exec: doExec, entries: doEntries, meta: doMeta,
@@ -568,11 +586,11 @@ async function main() {
   const [cmd, sub, ...extra] = positionals;
   if (opts.help) {
     process.stdout.write(helpFor(cmd, sub));
-    process.exit(0);
+    process.exitCode = 0; return;
   }
   if (!cmd || cmd === "help") {
     process.stdout.write(sub ? helpFor(sub, extra[0]) : HELP.root);
-    process.exit(0);
+    process.exitCode = 0; return;
   }
   if (Object.hasOwn(PLAIN, cmd)) {
     if (sub !== undefined || extra.length > 0) failUsage(`${cmd} takes no subcommand.`, HELP[cmd]);
