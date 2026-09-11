@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --port 8787",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250214.0",

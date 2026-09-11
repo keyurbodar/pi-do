@@ -4,3 +4,4 @@
 // Existing importers keep importing from ./stream.
 export * from "./stream-codec";
 export * from "./stream-engine";
+export * from "./protocol";
