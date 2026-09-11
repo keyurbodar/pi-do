@@ -59,7 +59,7 @@ echo "dev down at ${BASE}"
 }
 launch_dev() {
 echo "start wrangler dev on isolated port ${PORT}"
-(cd worker && exec npx wrangler dev --port "${PORT}" >> "${OUT}/wrangler.log" 2>&1) &
+(cd worker && exec npx wrangler dev --port "${PORT}" --persist-to "${OUT}/persist" >> "${OUT}/wrangler.log" 2>&1) &
 echo "$!" > "${OUT}/wrangler.pid"
 wait_up
 SRV="$(cat "${OUT}/wrangler.pid")"

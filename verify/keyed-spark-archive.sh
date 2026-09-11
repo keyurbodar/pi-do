@@ -114,7 +114,7 @@ if [ "${OWN}" = "1" ]; then
   if [ -z "${PORT}" ]; then echo "no free isolated port 8791-8796"; exit 1; fi
   BASE="http://127.0.0.1:${PORT}"
   echo "start wrangler dev on isolated port ${PORT}"
-  (cd worker && exec npx wrangler dev --port "${PORT}" > "../${OUT}/wrangler.log" 2>&1) &
+  (cd worker && exec npx wrangler dev --port "${PORT}" --persist-to "${OUT}/persist" > "${OUT}/wrangler.log" 2>&1) &
   echo "$!" > "${OUT}/wrangler.pid"
   I=0
   while ! curl -sf --max-time 2 "${BASE}/" >/dev/null 2>&1; do
