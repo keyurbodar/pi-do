@@ -5,6 +5,7 @@
 // framing. Import through ./stream, which re-exports both halves.
 import { bumpSessionTotals, closeRun, entryHead, listEntries, openRun, sessionLeaf, type EntriesSql } from "pi-cf/store/entries";
 import { commitPiRun, openPiRun } from "pi-cf/store/runs";
+import { clearFallback, clearSteers, enqueueSteer, getFallback, listSteers, markSteerApplied, setFallback, steerOutcome } from "pi-cf/store/episode";
 import type { RedriveInput } from "pi-cf/store/recovery";
 import { RECOVERY_JOB, RECOVERY_SCAN_MS, scheduleJob } from "./alarm-mux";
 import { enforceFence } from "pi-cf/store/fence";
@@ -78,10 +79,9 @@ function fallbackCatalogs(env: RuntimeEnv, want: string): Array<RuntimeModel | n
   return out;
 }
 
-// Preferred-model tracking across turns, keyed by sid like the steer queues:
-// a cycled turn records what it fell back from and to; the next turn that
-// resolves the preferred entry clears the row and reports the restore.
-const fallbackActive = new Map<string, ModelFallback>();
+// Preferred-model tracking across turns lives in the model_fallback table
+// (pi-cf/store/episode), keyed by sid like the steer queues, so the
+// fallback position survives an isolate restart mid-episode.
 
 function chainCatalog(env: RuntimeEnv, triple: { provider: string; id: string } | null): { catalog: RuntimeModel | null; want: string | null; fallback: ModelFallback | null } {
   if (triple === null) return { catalog: null, want: null, fallback: null };
@@ -166,16 +166,12 @@ export function acceptStream(request: Request, host: StreamHost, state: DurableO
 }
 
 // Follow-up steer queue: steers that arrive before the agent attaches wait
-// here in arrival order and drain into agent.steer on attach, so every
-// mid-turn steer applies in order instead of only reaching a live agent.
-// Keyed by runId; the turn's finally deletes its row. Done/abort acks
-// reconcile applied vs still-pending so no steer goes silent.
-const steerQueues = new Map<string, { text: string; applied: boolean }[]>();
-
-function steerOutcome(runId: string): { applied: number; pending: string[] } {
-  const queue = steerQueues.get(runId) ?? [];
-  return { applied: queue.filter((s) => s.applied).length, pending: queue.filter((s) => !s.applied).map((s) => s.text) };
-}
+// in the steer_queue table (pi-cf/store/episode) in arrival order and drain
+// into agent.steer on attach, so every mid-turn steer applies in order
+// instead of only reaching a live agent. Keyed by runId; the turn's
+// finally deletes its rows, and rows persist before their frames emit, so
+// a restart mid-episode keeps the queue. Done/abort acks reconcile applied
+// vs still-pending so no steer goes silent.
 
 export async function socketMessage(
   host: StreamHost,
@@ -219,20 +215,16 @@ export async function socketMessage(
       sock.send({ error: "no turn in flight", hint: "send {prompt} first; steer only appends mid-turn" });
       return;
     }
+    const seq = enqueueSteer(host.sql, runId, text);
     emitEntry(host, sock, "steer", { runId, text });
-    let queue = steerQueues.get(runId);
-    if (queue === undefined) {
-      queue = [];
-      steerQueues.set(runId, queue);
-    }
     const live = host.live.get(host.sid);
     if (live?.agent !== undefined) {
       live.agent.steer({ role: "user", content: text, timestamp: Date.now() });
-      queue.push({ text, applied: true });
-      sock.send({ steered: true, runId, steer: queue.length });
+      markSteerApplied(host.sql, runId, seq);
+      sock.send({ steered: true, runId, steer: listSteers(host.sql, runId).length });
     } else {
-      queue.push({ text, applied: false });
-      sock.send({ steered: false, runId, queued: queue.filter((s) => !s.applied).length, hint: "no live agent yet; the steer is queued in order, persists with the turn, and applies on attach or on the next turn" });
+      const outcome = steerOutcome(host.sql, runId);
+      sock.send({ steered: false, runId, queued: outcome.pending.length, hint: "no live agent yet; the steer is queued in order, persists with the turn, and applies on attach or on the next turn" });
     }
     return;
   }
@@ -346,8 +338,24 @@ export async function executeTurn(host: StreamHost, input: TurnInput, sink: Turn
 // so it never interleaves a live turn; rotates no fence and sends no socket
 // frames (alarm context has neither). Failures throw so the scan records the
 // attempt; success closes the ledger row via executeTurn's done wrapper.
-export async function redriveTurn(host: StreamHost, input: RedriveInput & { skipDeltas: number }): Promise<void> {
-  if (input.prompt === null) throw new Error("redrive needs the turn prompt");
+export interface RedriveSink {
+  report(failure: { error: string; hint: string; turnId: string }): void;
+}
+
+export async function redriveTurn(host: StreamHost, input: RedriveInput & { skipDeltas: number }, sink?: RedriveSink | null): Promise<void> {
+  let reported = false;
+  const report = (error: string, hint: string): void => {
+    reported = true;
+    try {
+      sink?.report({ error, hint, turnId: input.turnId });
+    } catch {
+      // Reporting never breaks the throw the recovery scan records.
+    }
+  };
+  if (input.prompt === null) {
+    report("redrive_no_prompt", "the turn prompt never committed; the scan cannot replay a turn without one");
+    throw new Error("redrive needs the turn prompt");
+  }
   const dummySock: StreamSocket = { send() {}, close() {} };
   const turnController = new AbortController();
   host.live.set(host.sid, { controller: turnController, chunkTurn: null, chunkBuf: [] });
@@ -382,15 +390,24 @@ export async function redriveTurn(host: StreamHost, input: RedriveInput & { skip
             }
           },
           fail: () => {
+            report("redrive_failed", "the re-driven turn failed; the scan records the attempt and backs off");
             throw new Error("re-drive failed");
           },
           aborted: () => {
+            report("redrive_aborted", "the re-driven turn aborted; the scan records the attempt and backs off");
             throw new Error("re-drive aborted");
           },
         },
       );
     });
+  } catch (e) {
+    if (!reported) {
+      const out = shaped(e, "re-drive failed", "the scan records the attempt and retries with backoff");
+      report("redrive_error", out.hint);
+    }
+    throw e;
   } finally {
+    clearSteers(host.sql, input.turnId);
     if (host.live.get(host.sid)?.controller === turnController) host.live.delete(host.sid);
   }
 }
@@ -459,12 +476,12 @@ async function executeTurnInner(host: StreamHost, input: TurnInput, sink: TurnSi
   let fallbackNote: string | null = null;
   let restoredNote: string | null = null;
   if (fell !== null) {
-    fallbackActive.set(host.sid, fell);
+    setFallback(host.sql, host.sid, fell.want, fell.used);
     fallbackNote = `unknown model ${fell.want}; fell back to ${fell.used}`;
   } else if (wantNow !== null) {
-    const prev = fallbackActive.get(host.sid);
-    if (prev !== undefined) {
-      fallbackActive.delete(host.sid);
+    const prev = getFallback(host.sql, host.sid);
+    if (prev !== null) {
+      clearFallback(host.sql, host.sid);
       restoredNote = `back on ${wantNow} after falling back from ${prev.want} to ${prev.used}`;
     }
   }
@@ -489,10 +506,10 @@ async function executeTurnInner(host: StreamHost, input: TurnInput, sink: TurnSi
         if (live === undefined || live.controller.signal !== input.signal) return;
         live.agent = agent;
         if (input.signal?.aborted === true) return;
-        for (const s of steerQueues.get(input.runId) ?? []) {
+        for (const s of listSteers(host.sql, input.runId)) {
           if (s.applied) continue;
           agent.steer({ role: "user", content: s.text, timestamp: Date.now() });
-          s.applied = true;
+          markSteerApplied(host.sql, input.runId, s.seq);
         }
       },
       onUpdate: (event) => {
@@ -571,7 +588,7 @@ async function startTurn(
             bumpSessionTotals(host.sql, host.sid, turn.usage);
           } catch {
           }
-          const steers = steerOutcome(doneId);
+          const steers = steerOutcome(host.sql, doneId);
           if (held !== null) {
             const next = { fence: crypto.randomUUID(), revision: held.revision + 1 };
             if (!host.casRotateFence(held.fence, held.revision, next)) {
@@ -592,12 +609,12 @@ async function startTurn(
             closeRun(host.sql, host.sid, failId);
           } catch {
           }
-          sock.send({ error, hint, steers: steerOutcome(failId) });
+          sock.send({ error, hint, steers: steerOutcome(host.sql, failId) });
         },
         aborted: (abortId) => {
           host.sql.exec("UPDATE runs SET status = ? WHERE sid = ? AND runId = ?", "interrupted", host.sid, abortId);
           emit("interrupted", { runId: abortId });
-          sock.send({ aborted: true, runId: abortId, steers: steerOutcome(abortId) });
+          sock.send({ aborted: true, runId: abortId, steers: steerOutcome(host.sql, abortId) });
         },
       };
       // Ledger row opens before the first entry lands: a kill between the
@@ -632,7 +649,7 @@ async function startTurn(
       sock.send({ error: out.error, hint: out.hint });
     } finally {
       if (host.live.get(host.sid)?.controller === turnController) host.live.delete(host.sid);
-      steerQueues.delete(runId);
+      clearSteers(host.sql, runId);
     }
   });
 }

@@ -8,6 +8,7 @@ import { createDofsVfs, type FileStore } from "pi-cf/store/vfs-dofs";
 import { ensureEntriesSchema, entryHead } from "pi-cf/store/entries";
 import { ensureChunksSchema } from "pi-cf/store/chunks";
 import { ensureRunsSchema } from "pi-cf/store/runs";
+import { ensureEpisodeSchema } from "pi-cf/store/episode";
 import { ensureWorkspaceSchema } from "pi-cf/store/sql-util";
 import { ensureCheckpointsSchema } from "pi-cf/store/checkpoints";
 import { ensureCompactionSchema, runPendingCompactions } from "./compaction";
@@ -67,6 +68,7 @@ export class WorkspaceBase implements DurableObject {
     ensureEntriesSchema(sql);
     ensureChunksSchema(sql);
     ensureRunsSchema(sql);
+    ensureEpisodeSchema(sql);
     ensureCheckpointsSchema(sql);
     ensureCompactionSchema(sql);
     sql.exec("DROP TABLE IF EXISTS pi_owners");
