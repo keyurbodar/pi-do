@@ -42,23 +42,31 @@ export default function App() {
 
   if (boot.status === 'loading') {
     return (
-      <main className="main">
-        <div className="thread">
-          <p style={{ color: 'var(--muted-foreground)' }}><Shimmer>Connecting…</Shimmer></p>
-        </div>
-      </main>
+      <div className="shell">
+        <div className="gutter" aria-hidden="true" />
+        <main className="main stage">
+          <div className="thread">
+            <p style={{ color: 'var(--muted-foreground)' }}><Shimmer>Connecting…</Shimmer></p>
+          </div>
+        </main>
+        <div className="gutter" aria-hidden="true" />
+      </div>
     );
   }
 
   if (boot.status === 'unkeyed' || boot.status === 'error') {
     return (
-      <main className="main">
-        <div className="thread" role="alert">
-          <p style={{ color: 'var(--destructive)' }}>
-            {boot.status === 'unkeyed' ? UNKEYED_MESSAGE : boot.message}
-          </p>
-        </div>
-      </main>
+      <div className="shell">
+        <div className="gutter" aria-hidden="true" />
+        <main className="main stage">
+          <div className="thread" role="alert">
+            <p style={{ color: 'var(--destructive)' }}>
+              {boot.status === 'unkeyed' ? UNKEYED_MESSAGE : boot.message}
+            </p>
+          </div>
+        </main>
+        <div className="gutter" aria-hidden="true" />
+      </div>
     );
   }
 
@@ -68,15 +76,19 @@ export default function App() {
 function ReadyThread({ session }: { session: SessionRef }) {
   const thread = useThread(session);
   return (
-    <main className="main">
-      <div className="thread">
-        <Thread turns={thread.turns} pending={thread.pending} conn={thread.conn} onRetry={thread.send} />
-      </div>
-      <footer className="composer-footer">
-        <div className="composer">
-          <PromptInput onSubmit={thread.send} running={thread.running} onAbort={thread.abort} />
+    <div className="shell">
+      <div className="gutter" aria-hidden="true" />
+      <main className="main stage">
+        <div className="thread">
+          <Thread turns={thread.turns} pending={thread.pending} conn={thread.conn} onRetry={thread.send} />
         </div>
-      </footer>
-    </main>
+        <footer className="composer-footer">
+          <div className="composer">
+            <PromptInput onSubmit={thread.send} running={thread.running} onAbort={thread.abort} />
+          </div>
+        </footer>
+      </main>
+      <div className="gutter" aria-hidden="true" />
+    </div>
   );
 }
