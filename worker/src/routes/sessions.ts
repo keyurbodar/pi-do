@@ -283,9 +283,10 @@ const meta: RouteHandler = (ctx, request, url) => {
     }
   }
   const triple = ctx.readTriple(sid);
+  const fenced = ctx.readFence(sid);
   const archive = archiveMeta(sql, sid);
   const usage = fmtUsage(sumResultUsage(sql, sid), ctx.sessionContextWindow(triple));
-  return json({ sid, ws, created, name, cwd, parentSessionId, head, count, leaf, openRun, model: { provider: triple?.provider ?? null, id: triple?.id ?? null }, thinking: triple?.thinking ?? null, retention: triple?.retention ?? "short", usage, compaction: { pending: compactionPending(sql, sid), archivePages: archive.pages, archiveTotal: archive.total } });
+  return json({ sid, ws, created, name, cwd, parentSessionId, head, count, leaf, openRun, model: { provider: triple?.provider ?? null, id: triple?.id ?? null }, thinking: triple?.thinking ?? null, retention: triple?.retention ?? "short", usage, compaction: { pending: compactionPending(sql, sid), archivePages: archive.pages, archiveTotal: archive.total }, fence: fenced?.fence ?? null });
 };
 const snapshot: RouteHandler = (ctx, request, url) => {
   if (request.method !== "GET") return null;

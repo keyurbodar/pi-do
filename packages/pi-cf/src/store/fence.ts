@@ -7,7 +7,7 @@ export interface FenceState {
 
 export type FenceCheck =
   | { fence: string; revision: number }
-  | { status: 403 | 409; body: { error: string; hint: string; revision: number } };
+  | { status: 403 | 409; body: { error: string; hint: string; revision: number; fence: string | null } };
 
 export function enforceFence(
   cur: FenceState | null,
@@ -21,6 +21,7 @@ export function enforceFence(
         error: "fence mismatch",
         hint: "Fenced: stale holder; claim with the live fence or mint a fresh session",
         revision: cur?.revision ?? 0,
+        fence: cur?.fence ?? null,
       },
     };
   }
@@ -31,6 +32,7 @@ export function enforceFence(
         error: "revision conflict",
         hint: `Conflict: expected revision ${String(expected)} but current revision is ${cur.revision}; re-read and retry with expected ${cur.revision}`,
         revision: cur.revision,
+        fence: cur.fence,
       },
     };
   }

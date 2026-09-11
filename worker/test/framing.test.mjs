@@ -1,10 +1,17 @@
 // framing.test.mjs — fast conformance suite for the worker turn protocol:
-// budget parsing plus error shaping. Imports the side-effect-free protocol
-// module only, so plain node runs it without the worker runtime.
+// budget parsing plus error shaping plus fence re-claim surfacing. Imports
+// the side-effect-free protocol module and the fence CAS helper only, so
+// plain node runs it without the worker runtime. The meta payload shape is
+// proven via source read (routes/table.ts precedent): sessions.ts cannot
+// load under plain node (extensionless sibling imports).
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { BUDGET_CAPS, isUnknownModel, parseBudgets, shaped } from "../src/protocol.ts";
 import { BUDGET_CAPS as SINGLE_CAPS, parseBudgets as singleParseBudgets } from "pi-cf/agent/budgets";
+import { enforceFence } from "pi-cf/store/fence";
 
 test("parseBudgets leaves undefined alone and admits explicit zero", () => {
   assert.deepEqual(parseBudgets(undefined), { ok: true, budgets: undefined });
@@ -60,4 +67,37 @@ test("only known unknown-model errors qualify for the 404 path", () => {
   assert.equal(isUnknownModel({ error: "unknown provider foo" }), false);
   assert.equal(isUnknownModel(new Error("unknown model x")), false);
   assert.equal(isUnknownModel(null), false);
+});
+
+test("403 body carries the live fence for re-claim", () => {
+  const res = enforceFence({ fence: "live-1", revision: 7 }, "stale-0", 7);
+  assert.equal("status" in res && res.status, 403);
+  if ("status" in res) {
+    assert.equal(res.body.error, "fence mismatch");
+    assert.equal(res.body.revision, 7);
+    assert.equal(res.body.fence, "live-1");
+  }
+  const missing = enforceFence(null, "stale-0", 0);
+  assert.equal("status" in missing && missing.status, 403);
+  if ("status" in missing) {
+    assert.equal(missing.body.revision, 0);
+    assert.equal(missing.body.fence, null);
+  }
+});
+
+test("409 body carries live fence plus revision for re-claim", () => {
+  const res = enforceFence({ fence: "live-1", revision: 7 }, "live-1", 6);
+  assert.equal("status" in res && res.status, 409);
+  if ("status" in res) {
+    assert.equal(res.body.error, "revision conflict");
+    assert.equal(res.body.revision, 7);
+    assert.equal(res.body.fence, "live-1");
+  }
+});
+
+test("session meta payload carries the live fence", () => {
+  const src = fs.readFileSync(path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), "src/routes/sessions.ts"), "utf8");
+  const meta = src.slice(src.indexOf("const meta:"), src.indexOf("const snapshot:"));
+  assert.ok(meta.includes("ctx.readFence(sid)"), "meta reads the live fence");
+  assert.ok(meta.includes("fence: fenced?.fence ?? null"), "meta payload carries fence");
 });
