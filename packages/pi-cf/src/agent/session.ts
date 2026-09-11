@@ -16,6 +16,7 @@ import { planStubTurn, planTools } from "./stub-plan.ts";
 import { registerProjector, type EntryProjection } from "./projectors.ts";
 import { emitRunStart } from "./snapshots.ts";
 import { buildSessionContextFromEntries, capSessionContext, estimateTokens, type ContextMessage } from "./context.ts";
+import { resolveRunLimits } from "./budgets.ts";
 import { composePrompt } from "./prompt.ts";
 export const sessionTools = {
   read: readTool, write: writeTool, edit: editTool, list: listTool, remove: removeTool, bash: bashTool,
@@ -97,7 +98,6 @@ function abortablePause(signal: AbortSignal | undefined): Promise<void> {
 }
 const MIN_TURN_MS = 100;
 
-const DEFAULT_RUN_BUDGETS = { maxTurns: 25, maxToolCalls: 100, maxDurationMs: 600000, maxCost: 5 };
 const SYSTEM_PROMPT =
   'You are a coding assistant inside a Cloudflare Worker workspace. File paths are workspace-relative ("" is the workspace root). Use the tools to inspect and change files, then answer with a short summary of what you did.';
 
@@ -335,20 +335,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
         ? { result, toolCalls, via: "createAgentSession", model: modelId, usage }
         : { result, toolCalls, via: "createAgentSession", model: modelId, usage, halt: { reason: halt } };
     };
-    const valid = (value: number | undefined, fallback: number): number =>
-      typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback;
-    const validOpt = (value: number | undefined): number | undefined =>
-      typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
-    const limits = {
-      maxTurns: valid(budgets?.maxTurns, DEFAULT_RUN_BUDGETS.maxTurns),
-      maxToolCalls: valid(budgets?.maxToolCalls, DEFAULT_RUN_BUDGETS.maxToolCalls),
-      maxDurationMs: valid(budgets?.maxDurationMs, DEFAULT_RUN_BUDGETS.maxDurationMs),
-      maxCost: valid(budgets?.maxCost, DEFAULT_RUN_BUDGETS.maxCost),
-      maxRetries: validOpt(budgets?.maxRetries),
-      maxRetryDelayMs: validOpt(budgets?.maxRetryDelayMs),
-      timeoutMs: validOpt(budgets?.timeoutMs),
-      toolExecution: budgets?.toolExecution === "sequential" ? ("sequential" as const) : ("parallel" as const),
-    };
+    const limits = resolveRunLimits(budgets);
     if (limits.maxTurns <= 0) return finish("turns");
     if (limits.maxToolCalls <= 0) return finish("tool-calls");
     if (limits.maxDurationMs <= 0) return finish("duration");

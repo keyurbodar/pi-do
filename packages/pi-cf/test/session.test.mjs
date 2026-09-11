@@ -9,6 +9,7 @@ import { ensureWorkspaceSchema } from "../src/store/sql-util.ts";
 import { sessionLineage } from "../src/agent/context.ts";
 import { composePrompt, registerPromptSection, registerPromptSnippet } from "../src/agent/prompt.ts";
 import { projectEntry, registerProjector } from "../src/agent/projectors.ts";
+import { BUDGET_CAPS, DEFAULT_RUN_BUDGETS, parseBudgets, resolveRunLimits } from "../src/agent/budgets.ts";
 import { createAgentSession } from "../src/agent/session.ts";
 
 function makeSql() {
@@ -78,6 +79,32 @@ test("undefined budgets proceed to the agent instead of halting", async () => {
     (e) => e?.name === "AbortError",
   );
   assert.equal(sawAgent, true);
+});
+
+test("single budget validator admits zero, caps, and rejects garbage with typed errors", () => {
+  assert.deepEqual(parseBudgets(undefined), { ok: true, budgets: undefined });
+  assert.deepEqual(parseBudgets({ maxTurns: 0 }), { ok: true, budgets: { maxTurns: 0 } });
+  assert.deepEqual(parseBudgets({ maxTurns: 500 }), { ok: true, budgets: { maxTurns: BUDGET_CAPS.maxTurns } });
+  for (const raw of [null, [], "x", 42]) {
+    const res = parseBudgets(raw);
+    assert.equal(res.ok, false);
+    if (!res.ok) assert.equal(res.error, "bad budgets");
+  }
+  for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, "10"]) {
+    const res = parseBudgets({ maxToolCalls: bad });
+    assert.equal(res.ok, false);
+    if (!res.ok) assert.equal(res.error, "bad budgets.maxToolCalls");
+  }
+});
+
+test("run limits fall back to defaults on garbage but keep explicit zero", () => {
+  assert.deepEqual(resolveRunLimits(undefined), {
+    ...DEFAULT_RUN_BUDGETS, maxRetries: undefined, maxRetryDelayMs: undefined, timeoutMs: undefined, toolExecution: "parallel",
+  });
+  assert.equal(resolveRunLimits({ maxTurns: 0 }).maxTurns, 0);
+  assert.equal(resolveRunLimits({ maxTurns: -1 }).maxTurns, DEFAULT_RUN_BUDGETS.maxTurns);
+  assert.equal(resolveRunLimits({ maxTurns: Number.NaN }).maxTurns, DEFAULT_RUN_BUDGETS.maxTurns);
+  assert.equal(resolveRunLimits({ toolExecution: "sequential" }).toolExecution, "sequential");
 });
 
 test("prompt compose orders base, sections, then snippets", () => {

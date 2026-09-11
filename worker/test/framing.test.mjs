@@ -3,7 +3,8 @@
 // module only, so plain node runs it without the worker runtime.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isUnknownModel, parseBudgets, shaped } from "../src/protocol.ts";
+import { BUDGET_CAPS, isUnknownModel, parseBudgets, shaped } from "../src/protocol.ts";
+import { BUDGET_CAPS as SINGLE_CAPS, parseBudgets as singleParseBudgets } from "pi-cf/agent/budgets";
 
 test("parseBudgets leaves undefined alone and admits explicit zero", () => {
   assert.deepEqual(parseBudgets(undefined), { ok: true, budgets: undefined });
@@ -33,6 +34,12 @@ test("parseBudgets rejects negatives and garbage with typed errors", () => {
     parseBudgets({ toolExecution: "sideways" }),
     { ok: false, error: "bad budgets.toolExecution", hint: 'set budgets.toolExecution to "sequential" or "parallel"' },
   );
+});
+
+test("protocol re-exports the single pi-cf budget validator", () => {
+  assert.equal(parseBudgets, singleParseBudgets);
+  assert.equal(BUDGET_CAPS, SINGLE_CAPS);
+  assert.deepEqual({ ...BUDGET_CAPS }, { maxTurns: 200, maxToolCalls: 1000, maxDurationMs: 1800000, maxCost: 100 });
 });
 
 test("shaper passes messages through, appends causes, and falls back otherwise", () => {
