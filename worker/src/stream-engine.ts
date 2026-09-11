@@ -10,7 +10,7 @@ import type { RedriveInput } from "pi-cf/store/recovery";
 import { RECOVERY_JOB, RECOVERY_SCAN_MS, scheduleJob } from "./alarm-mux";
 import { enforceFence } from "pi-cf/store/fence";
 import { createAgentSession, type SessionRunBudgets, type SessionTurn } from "pi-cf/agent/session";
-import { clampThinkingLevel, defaultTurnModel, keyedProviders, resolveCatalogModel, resolveKeyedModel, resolveProviderKey, type RuntimeEnv, type RuntimeModel } from "./model-runtime";
+import { clampThinkingLevel, keyedProviders, resolveCatalogModel, resolveKeyedModel, resolveProviderKey, resolveTurnModel, type RuntimeEnv, type RuntimeModel, type TurnModel } from "./model-runtime";
 import { compactionPending, maybeMarkForCompaction } from "./compaction";
 import { broadcast, CLOSE_CONFLICT, CLOSE_FENCED, CLOSE_UNKNOWN, emitEntry, wrapSocket, type StreamAttachment, type StreamHost, type StreamSocket } from "./stream-codec";
 import { isUnknownModel, parseBudgets, shaped } from "./protocol";
@@ -20,12 +20,7 @@ export type CheckedFence =
   | { fence: string; revision: number }
   | null;
 
-export interface TurnModel {
-  model: { id: string; name?: string; api?: string; provider?: string; baseUrl?: string };
-  provider: string;
-  stub: boolean;
-  like: RuntimeModel | Record<string, never>;
-}
+export type { TurnModel };
 
 export function checkedRotate(
   current: { fence: string | null; revision: number } | null,
@@ -46,18 +41,7 @@ export function checkedRotate(
   return checked;
 }
 
-export function resolveTurnModel(env: RuntimeEnv, catalog: RuntimeModel | null): TurnModel {
-  if (catalog === null) {
-    const d = defaultTurnModel();
-    return { model: d, provider: d.provider, stub: true, like: {} };
-  }
-  const keyed = keyedProviders(env);
-  if (!keyed.some((provider) => provider.id === catalog.provider)) {
-    return { model: { id: catalog.id }, provider: catalog.provider, stub: true, like: catalog };
-  }
-  const m = resolveKeyedModel(env, catalog.provider, catalog.id);
-  return { model: m, provider: m.provider, stub: false, like: catalog };
-}
+export { resolveTurnModel };
 // Model fallback chain: an unknown-model 404 on the turn's preferred catalog
 // entry cycles the other keyed models in catalog order, then the stub, so the
 // turn still runs. Anything else (unknown provider, bad MODEL_ID, invalid

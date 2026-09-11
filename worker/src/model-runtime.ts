@@ -311,3 +311,27 @@ export function buildRuntime(env: RuntimeEnv, customDoc: unknown = bundledModels
   if (defaultId === undefined) fail(`provider has no models: ${first.id}`, `add models to provider "${first.id}" in worker/models.json or pick another MODEL_ID`);
   return { model: first.catalog.get(defaultId) as RuntimeModel, stub: false };
 }
+
+export interface TurnModel {
+  model: { id: string; name?: string; api?: string; provider?: string; baseUrl?: string };
+  provider: string;
+  stub: boolean;
+  like: RuntimeModel | Record<string, never>;
+}
+
+export function resolveTurnModel(env: RuntimeEnv, catalog: RuntimeModel | null): TurnModel {
+  if (catalog === null) {
+    const rt = buildRuntime(env);
+    if (rt.stub) {
+      const d = defaultTurnModel();
+      return { model: d, provider: d.provider, stub: true, like: {} };
+    }
+    return { model: rt.model, provider: rt.model.provider, stub: false, like: rt.model };
+  }
+  const keyed = keyedProviders(env);
+  if (!keyed.some((provider) => provider.id === catalog.provider)) {
+    return { model: { id: catalog.id }, provider: catalog.provider, stub: true, like: catalog };
+  }
+  const m = resolveKeyedModel(env, catalog.provider, catalog.id);
+  return { model: m, provider: m.provider, stub: false, like: catalog };
+}
