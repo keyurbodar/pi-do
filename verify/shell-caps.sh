@@ -1,7 +1,8 @@
 #!/bin/sh
 # shell-caps.sh — proves exec session caps: 64 live sessions max, the 65th
-# disposes the oldest idle session with a hinted 429; dispose reports
-# per-session byte counts; cwd escapes fail closed (per-call and sticky).
+# evicts the oldest idle session and proceeds (refusal only when all are
+# running); dispose reports per-session byte counts; cwd escapes fail closed
+# (per-call and sticky).
 # Usage: sh verify/shell-caps.sh [BASE]
 # Exit 0 on pass, 1 otherwise. Writes artifacts/RUN_ID/shell-caps/.
 set -u
@@ -48,26 +49,17 @@ for (let i = 2; i <= 64; i++) {
 console.log('64 live ok');
 " "${OUT}" || exit 1
 
-echo "### 4 65th disposes oldest-idle with a hinted 429"
+echo "### 4 65th evicts the oldest idle session and proceeds"
 post "${EXEC}" '{"command":"echo late","sid":"cap-65-'"${RUN_ID}"'"}' evict.json || exit 1
-FIRST="${FIRST}" node -e "
-const o = JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'));
-if (o.status !== 429) throw new Error('expected 429, got ' + o.status + ' ' + o.body);
-const b = JSON.parse(o.body);
-if (!String(b.error).includes(process.env.FIRST)) throw new Error('eviction must name oldest-idle ' + process.env.FIRST + ', got ' + o.body);
-if (typeof b.hint !== 'string') throw new Error('need { error, hint }');
-console.log('evict ok: ' + b.error);
-" "${OUT}/evict.json" || exit 1
-
-echo "### 5 retry succeeds now that room is free"
-post "${EXEC}" '{"command":"echo late","sid":"cap-65-'"${RUN_ID}"'"}' retry.json || exit 1
 node -e "
 const o = JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'));
 if (o.status !== 200) throw new Error('expected 200, got ' + o.status + ' ' + o.body);
-console.log('retry ok');
-" "${OUT}/retry.json" || exit 1
+const b = JSON.parse(o.body);
+if (b.exit !== 0) throw new Error('evict-and-proceed must run the command, got ' + o.body);
+console.log('evict ok: 65th ran without a 429 retry');
+" "${OUT}/evict.json" || exit 1
 
-echo "### 6 evicted session is gone (dispose reports zero bytes)"
+echo "### 5 evicted session is gone (dispose reports zero bytes)"
 post "${EXEC}/dispose" '{"sid":"'"${FIRST}"'"}' evicted-dispose.json || exit 1
 node -e "
 const o = JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'));

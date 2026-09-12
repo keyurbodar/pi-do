@@ -175,11 +175,13 @@ export class ShellWorker<Env = unknown> extends WorkerEntrypoint<Env> {
     let session = this.sessions.get(sid);
     if (session === undefined) {
       if (this.sessions.size >= MAX_LIVE_SESSIONS) {
+        // Evict-and-proceed: the freed slot serves this request instead of a
+        // 429-retry round trip. Refusal is reserved for the case where every
+        // live session is mid-exec and none can be reclaimed.
         const disposed = this.disposeOldestIdleSession();
-        if (disposed !== undefined) {
-          throw new Error(`exec sessions full (${MAX_LIVE_SESSIONS} live): disposed oldest-idle session ${disposed}; kill or dispose one first`);
+        if (disposed === undefined) {
+          throw new Error(`exec sessions full (${MAX_LIVE_SESSIONS} live, all running): kill or dispose one first`);
         }
-        throw new Error(`exec sessions full (${MAX_LIVE_SESSIONS} live, all running): kill or dispose one first`);
       }
       const root = resolveRoot(requestedRoot);
       session = { bash: freshBash(), env: {}, cwd: root, root, current: null, killRequested: false, lastUsed: Date.now(), stdoutBytes: 0, stderrBytes: 0 };
