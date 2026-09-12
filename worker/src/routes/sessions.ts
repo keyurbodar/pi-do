@@ -7,6 +7,7 @@ import { checkedRotate } from "../stream";
 import { MINT_WS_HINT, err, fmtModel, fmtSettings, fmtThinking, fmtUsage, json, saveSettings, type RouteHandler } from "./_shared";
 import { ROUTE, ownedRoutes, registerHandler } from "./table";
 import { readEvents, readSnapshot } from "pi-cf/agent/snapshots";
+import { loadProjectContextMessage } from "pi-cf/agent/project-context";
 
 const sessions: RouteHandler = async (ctx, request, url) => {
   if (request.method !== "POST") return null;
@@ -286,7 +287,12 @@ const meta: RouteHandler = (ctx, request, url) => {
   const fenced = ctx.readFence(sid);
   const archive = archiveMeta(sql, sid);
   const usage = fmtUsage(sumResultUsage(sql, sid), ctx.sessionContextWindow(triple));
-  return json({ sid, ws, created, name, cwd, parentSessionId, head, count, leaf, openRun, model: { provider: triple?.provider ?? null, id: triple?.id ?? null }, thinking: triple?.thinking ?? null, retention: triple?.retention ?? "short", usage, compaction: { pending: compactionPending(sql, sid), archivePages: archive.pages, archiveTotal: archive.total }, fence: fenced?.fence ?? null });
+  // ?context=1 exposes the composed project-context section the agent would
+  // lead with; it is read-time state over the VFS, so it is opt-in.
+  const context = url.searchParams.has("context")
+    ? loadProjectContextMessage({ sql, files: ctx.files, ws, sid })?.text ?? null
+    : undefined;
+  return json({ sid, ws, created, name, cwd, parentSessionId, head, count, leaf, openRun, context, model: { provider: triple?.provider ?? null, id: triple?.id ?? null }, thinking: triple?.thinking ?? null, retention: triple?.retention ?? "short", usage, compaction: { pending: compactionPending(sql, sid), archivePages: archive.pages, archiveTotal: archive.total }, fence: fenced?.fence ?? null });
 };
 const snapshot: RouteHandler = (ctx, request, url) => {
   if (request.method !== "GET") return null;
