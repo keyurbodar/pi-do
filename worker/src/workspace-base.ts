@@ -12,6 +12,7 @@ import { ensureEpisodeSchema } from "pi-cf/store/episode";
 import { ensureWorkspaceSchema } from "pi-cf/store/sql-util";
 import { ensureCheckpointsSchema } from "pi-cf/store/checkpoints";
 import { ensureCompactionSchema, runPendingCompactions } from "./compaction";
+import { sessionSummarizer } from "./summarizer";
 import { COMPACTION_JOB, COMPACTION_REARM_MS, KEEPALIVE_JOB, KEEPALIVE_MS, cancelJob, earliestDeadline, runDueJobs, scheduleJob } from "./alarm-mux";
 import { makeSidLiveCheck, RECOVERY_JOB, scanTurns } from "pi-cf/store/recovery";
 import { nextRunAtMin } from "pi-cf/store/runs";
@@ -217,6 +218,7 @@ export class WorkspaceBase implements DurableObject {
             const turnId = this.live.get(sid)?.chunkTurn?.turnId;
             return turnId === undefined ? [] : [turnId];
           },
+          (sid) => sessionSummarizer(this.env as unknown as RuntimeEnv, sql, sid),
         );
       },
       [KEEPALIVE_JOB]: () => {

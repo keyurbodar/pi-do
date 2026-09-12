@@ -2,6 +2,7 @@ import { closeRun, entryHead, listEntries, openRun, recordTurnWithOpen } from "p
 import { buildRuntime, clampThinkingLevel, resolveCatalogModel, supportedThinkingLevels, THINKING_LEVELS, type RuntimeEnv, type RuntimeModel } from "../model-runtime";
 import { acceptStream, checkedRotate, executeTurn, parseBudgets, type TurnSink } from "../stream";
 import { readArchivePage, runCompaction } from "../compaction";
+import { sessionSummarizer } from "../summarizer";
 import { MINT_WS_HINT, err, json, type RouteHandler } from "./_shared";
 import { ROUTE, ownedRoutes, registerHandler } from "./table";
 
@@ -137,7 +138,7 @@ const compact: RouteHandler = (ctx, request, url) => {
   const bad = ctx.requireSession(ws, sid, "retry as POST /workspaces/:id/sessions/:sid/compact on the Worker instead", MINT_WS_HINT);
   if (bad) return bad;
   return ctx.enqueueSessionTurn(sid, async () => {
-    const out = await runCompaction(ctx.state.storage.sql, sid, true);
+    const out = await runCompaction(ctx.state.storage.sql, sid, true, [], sessionSummarizer(ctx.env as unknown as RuntimeEnv, ctx.state.storage.sql, sid));
     return json({ sid, ...out });
   });
 };

@@ -340,11 +340,12 @@ export async function runCompaction(sql: EntriesSql, sid: string, force = false,
 
 // Alarm body helper: compacts every pending session; a failure is recorded as
 // an error entry and the alarm is always rescheduled so compaction retries
-// instead of stalling the session forever.
-export async function runPendingCompactions(sql: EntriesSql, reschedule: () => void, liveTurnIds: (sid: string) => readonly string[] = () => [], summarizer?: CompactionSummarizer): Promise<void> {
+// instead of stalling the session forever. summarizerFor resolves each
+// session's own model summarizer (no key → undefined → deterministic path).
+export async function runPendingCompactions(sql: EntriesSql, reschedule: () => void, liveTurnIds: (sid: string) => readonly string[] = () => [], summarizerFor?: (sid: string) => CompactionSummarizer | undefined): Promise<void> {
   for (const sid of pendingSessions(sql)) {
     try {
-      await runCompaction(sql, sid, false, liveTurnIds(sid), summarizer);
+      await runCompaction(sql, sid, false, liveTurnIds(sid), summarizerFor?.(sid));
     } catch (e) {
       appendEntry(sql, sid, "error", { error: e instanceof Error ? e.message : String(e ?? "compaction failed") });
     } finally {
