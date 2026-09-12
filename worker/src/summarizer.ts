@@ -6,7 +6,8 @@
 // Prompt shape follows pi's compaction (read-only reference):
 // refs/pi/packages/coding-agent/src/core/compaction/compaction.ts
 import { completeSimple } from "@earendil-works/pi-ai/compat";
-import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
+import { retryAssistantCall, type Api, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
+import { SHARED_RETRY } from "pi-cf/agent/budgets";
 import { readSingleRow } from "pi-cf/store/sql-util";
 import type { EntriesSql } from "pi-cf/store/entries";
 import { COMPACTION_RESERVE_TOKENS, type CompactionSummarizer } from "./compaction";
@@ -119,14 +120,23 @@ export function modelSummarizer(env: RuntimeEnv, provider: string, modelId: stri
     let promptText = `<conversation>\n${prefixText}\n</conversation>\n\n`;
     if (hasPrior) promptText += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
     promptText += hasPrior ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
-    const message = await completeSimple(
-      piModel,
-      { messages: [{ role: "user", content: promptText, timestamp: Date.now() }] },
-      // A stalled summary call must degrade to the deterministic summary
-      // instead of hanging the alarm, so the request carries its own timeout.
-      // Session-scoped providers (opencode-go) reject keyless-session
-      // requests, so the summary rides the same session id.
-      { apiKey, maxTokens, signal: AbortSignal.timeout(SUMMARIZATION_TIMEOUT_MS), sessionId },
+    // The timeout signal rides the request AND the retry loop's backoff
+    // sleeps, so the 120s budget still bounds the whole summarization.
+    const signal = AbortSignal.timeout(SUMMARIZATION_TIMEOUT_MS);
+    const message = await retryAssistantCall(
+      () => completeSimple(
+        piModel,
+        { messages: [{ role: "user", content: promptText, timestamp: Date.now() }] },
+        // A stalled summary call must degrade to the deterministic summary
+        // instead of hanging the alarm, so the request carries its own timeout.
+        // Session-scoped providers (opencode-go) reject keyless-session
+        // requests, so the summary rides the same session id.
+        { apiKey, maxTokens, signal, sessionId },
+      ),
+      // Shared retry policy: transient stream drops retry, deterministic
+      // errors return immediately, aborts never retry.
+      { enabled: true, maxRetries: SHARED_RETRY.maxRetries, baseDelayMs: SHARED_RETRY.baseDelayMs },
+      signal,
     );
     return summaryText(message);
   };

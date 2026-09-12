@@ -8,6 +8,13 @@ export const BUDGET_CAPS = { maxTurns: 200, maxToolCalls: 1000, maxDurationMs: 1
 
 export const DEFAULT_RUN_BUDGETS = { maxTurns: 25, maxToolCalls: 100, maxDurationMs: 600000, maxCost: 5 };
 
+// The one retry policy for every model call this library makes (keyed turn
+// via streamSimple's provider retry, compaction summarizer via pi-ai's
+// retryAssistantCall). Transient provider/transport errors retry with
+// backoff; deterministic errors (quota/billing) return immediately; aborts
+// are never retried — every call site hands the run's own signal through.
+export const SHARED_RETRY = { maxRetries: 2, baseDelayMs: 500, maxRetryDelayMs: 8000 } as const;
+
 export function parseBudgets(raw: unknown): { ok: true; budgets: SessionRunBudgets | undefined } | { ok: false; error: string; hint: string } {
   if (raw === undefined) return { ok: true, budgets: undefined };
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {

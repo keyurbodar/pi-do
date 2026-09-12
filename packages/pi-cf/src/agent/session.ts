@@ -16,7 +16,7 @@ import { planStubTurn, planTools } from "./stub-plan.ts";
 import { registerProjector, type EntryProjection } from "./projectors.ts";
 import { emitRunStart } from "./snapshots.ts";
 import { buildSessionContextFromEntries, capSessionContext, estimateTokens, type ContextMessage } from "./context.ts";
-import { resolveRunLimits } from "./budgets.ts";
+import { resolveRunLimits, SHARED_RETRY } from "./budgets.ts";
 import { composePrompt } from "./prompt.ts";
 export const sessionTools = {
   read: readTool, write: writeTool, edit: editTool, list: listTool, remove: removeTool, bash: bashTool,
@@ -358,7 +358,8 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
         ...options,
         apiKey: options?.apiKey ?? apiKey,
         cacheRetention: retention,
-        ...(limits.maxRetries !== undefined ? { maxRetries: limits.maxRetries } : null),
+        ...(limits.maxRetries !== undefined ? { maxRetries: limits.maxRetries } : { maxRetries: SHARED_RETRY.maxRetries }),
+        ...(limits.maxRetryDelayMs !== undefined ? { maxRetryDelayMs: limits.maxRetryDelayMs } : { maxRetryDelayMs: SHARED_RETRY.maxRetryDelayMs }),
         ...(limits.timeoutMs !== undefined ? { timeoutMs: limits.timeoutMs } : null),
       });
     const agent = new Agent({
