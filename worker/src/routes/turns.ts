@@ -137,7 +137,7 @@ const compact: RouteHandler = (ctx, request, url) => {
   const bad = ctx.requireSession(ws, sid, "retry as POST /workspaces/:id/sessions/:sid/compact on the Worker instead", MINT_WS_HINT);
   if (bad) return bad;
   return ctx.enqueueSessionTurn(sid, async () => {
-    const out = runCompaction(ctx.state.storage.sql, sid, true);
+    const out = await runCompaction(ctx.state.storage.sql, sid, true);
     return json({ sid, ...out });
   });
 };

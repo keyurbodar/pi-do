@@ -17,20 +17,56 @@
 import { estimateTokens } from "pi-cf/agent/context";
 import { advanceSessionLeaf, appendEntry, entryHead, listEntries, runInSyncTx, type EntriesSql, type EntryRow } from "pi-cf/store/entries";
 import { CREATE_TABLES, SUMMARY_FIELDS, drainPages, ensureTables, mapEntryRows, parseJsonObject, readScalar, readSingleRow, strField } from "pi-cf/store/sql-util";
+import { resolveCatalogModel } from "./model-runtime";
 
 // Token window: compaction fires when live entries leave less headroom than
-// the reserve (pi shouldCompact convention); stub-seed totals calibrate it.
+// the reserve (pi shouldCompact convention). The window is the session's
+// resolved model contextWindow; LIVE_TOKEN_BUDGET only stands in when no
+// real window resolves (keyless/stub sessions, whose seeded runs calibrate
+// the mark). Stub turns persist usage.totalTokens = 0, so their estimate
+// stays on the whole-chain chars/4 fallback.
 export const LIVE_TOKEN_BUDGET = 1000;
-export const COMPACTION_RESERVE_TOKENS = 300;
+export const COMPACTION_RESERVE_TOKENS = 16384;
 export const COMPACTION_KEEP_TAIL = 25;
 export const ARCHIVE_PAGE_SIZE = 25;
 export function shouldCompact(liveTokens: number, windowTokens: number = LIVE_TOKEN_BUDGET): boolean {
   return windowTokens - liveTokens < COMPACTION_RESERVE_TOKENS;
 }
+function resultTotalTokens(e: EntryRow): number | null {
+  if (e.type !== "result") return null;
+  const obj = parseJsonObject(e.body);
+  const usage = obj !== null && obj.usage !== null && typeof obj.usage === "object" ? (obj.usage as Record<string, unknown>) : null;
+  const total = usage !== null && typeof usage.totalTokens === "number" && Number.isFinite(usage.totalTokens) ? usage.totalTokens : 0;
+  return total > 0 ? total : null;
+}
 export function liveTokenEstimate(entries: readonly EntryRow[]): number {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const exact = resultTotalTokens(entries[i]);
+    if (exact !== null) {
+      let trailing = 0;
+      for (let j = i + 1; j < entries.length; j++) trailing += estimateTokens(entries[j].body);
+      return exact + trailing;
+    }
+  }
   let total = 0;
   for (const e of entries) total += estimateTokens(e.body);
   return total;
+}
+export function sessionWindowTokens(sql: EntriesSql, sid: string): number {
+  const row = readSingleRow(sql, "SELECT modelProvider, modelId FROM sessions WHERE sid = ? LIMIT 1", sid);
+  if (row !== null && typeof row === "object") {
+    const provider = typeof row.modelProvider === "string" && row.modelProvider.length > 0 ? row.modelProvider : null;
+    const id = typeof row.modelId === "string" && row.modelId.length > 0 ? row.modelId : null;
+    if (provider !== null && id !== null) {
+      try {
+        const window = resolveCatalogModel(provider, id).contextWindow;
+        if (typeof window === "number" && window > 0) return window;
+      } catch {
+        // Unknown provider/model in the catalog: the stub budget stands.
+      }
+    }
+  }
+  return LIVE_TOKEN_BUDGET;
 }
 
 export interface CompactionSummaryBody {
@@ -63,7 +99,7 @@ export function pendingSessions(sql: EntriesSql): string[] {
 }
 
 export function maybeMarkForCompaction(sql: EntriesSql, sid: string): boolean {
-  if (!shouldCompact(liveTokenEstimate(readAllLive(sql, sid)))) return false;
+  if (!shouldCompact(liveTokenEstimate(readAllLive(sql, sid)), sessionWindowTokens(sql, sid))) return false;
   if (isPending(sql, sid)) return false;
   sql.exec("INSERT INTO compaction_marks(sid, pending) VALUES (?, 1) ON CONFLICT(sid) DO UPDATE SET pending = 1", sid);
   return true;
@@ -106,10 +142,10 @@ function readAllLive(sql: EntriesSql, sid: string): EntryRow[] {
   return drainPages((after) => listEntries(sql, sid, { after, limit: 1000 }));
 }
 
-// Deterministic per-turn synthesis: one sentence per prompt→tools→outcome
-// turn, so resume reads narrative instead of type#cursor fragments. Stays
-// synchronous for the alarm path (no inference keyless); prior summaries
-// carry forward so re-compaction never drops older history.
+// Deterministic per-turn synthesis (the keyless path and the degrade target
+// when an injected summarizer fails): one sentence per prompt→tools→outcome
+// turn, so resume reads narrative instead of type#cursor fragments. Prior
+// summaries carry forward so re-compaction never drops older history.
 function firstLine(text: string, max: number): string {
   const line = text.split("\n")[0].trim();
   return line.length > max ? `${line.slice(0, max)}…` : line;
@@ -133,7 +169,7 @@ function describeCall(tool: string, args: unknown): string {
   }
   return tool;
 }
-function summarizePrefix(old: EntryRow[]): CompactionSummaryBody {
+function deterministicSummarizePrefix(old: EntryRow[]): CompactionSummaryBody {
   let chars = 0;
   const sentences: string[] = [];
   let turns = 0;
@@ -181,19 +217,73 @@ function summarizePrefix(old: EntryRow[]): CompactionSummaryBody {
   };
 }
 
+const PREFIX_TEXT_BUDGET_CHARS = 24000;
+
+// Role-tagged serialization of the archived prefix for a model summarizer:
+// bounded by taking the most recent lines up to PREFIX_TEXT_BUDGET_CHARS so
+// the summarizer prompt cannot grow with the archive.
+export function serializePrefix(old: readonly EntryRow[]): string {
+  const lines: string[] = [];
+  let budget = 0;
+  for (let i = old.length - 1; i >= 0; i--) {
+    const e = old[i];
+    const text = firstLine(entryText(e), 240);
+    let line: string;
+    if (e.type === "prompt" || e.type === "steer") line = `user: ${text}`;
+    else if (e.type === "result") line = `assistant: ${text}`;
+    else if (e.type === "toolCall") {
+      const obj = parseJsonObject(e.body);
+      const tool = obj !== null ? strField(obj, "tool") ?? e.type : e.type;
+      line = `tool(${describeCall(tool, obj !== null ? obj.args : null)}): ${text}`;
+    } else if (e.type === "compaction") line = `[earlier summary] ${text}`;
+    else line = `${e.type}: ${text}`;
+    budget += line.length + 1;
+    if (budget > PREFIX_TEXT_BUDGET_CHARS && lines.length > 0) break;
+    lines.push(line);
+  }
+  return lines.reverse().join("\n");
+}
+
+function previousSummaryOf(old: readonly EntryRow[]): string | undefined {
+  for (let i = old.length - 1; i >= 0; i--) {
+    if (old[i].type !== "compaction") continue;
+    const obj = parseJsonObject(old[i].body);
+    return (obj !== null ? strField(obj, "summary") : null) ?? undefined;
+  }
+  return undefined;
+}
+
+// The injected summarizer owns the LLM call; compaction stays
+// inference-free. A throw or an empty result degrades to the deterministic
+// summary instead of failing compaction — never stall the alarm path.
+export type CompactionSummarizer = (prefixText: string, previousSummary: string | undefined) => Promise<string>;
+export type SummarySource = "model" | "deterministic" | "degraded";
+async function summarizeArchived(old: EntryRow[], summarizer: CompactionSummarizer | undefined): Promise<{ body: CompactionSummaryBody; summarySource: SummarySource }> {
+  const body = deterministicSummarizePrefix(old);
+  if (summarizer === undefined) return { body, summarySource: "deterministic" };
+  try {
+    const summary = (await summarizer(serializePrefix(old), previousSummaryOf(old))).trim();
+    if (summary.length > 0) return { body: { ...body, summary }, summarySource: "model" };
+  } catch {
+    // degrade below
+  }
+  return { body, summarySource: "degraded" };
+}
+
 export interface CompactionResult {
   compacted: boolean;
   live: number;
   archived: number;
   summaryCursor: number | null;
   pages: number;
+  summarySource: SummarySource;
 }
 
-export function runCompaction(sql: EntriesSql, sid: string, force = false, liveTurnIds: readonly string[] = []): CompactionResult {
+export async function runCompaction(sql: EntriesSql, sid: string, force = false, liveTurnIds: readonly string[] = [], summarizer?: CompactionSummarizer): Promise<CompactionResult> {
   const live = readAllLive(sql, sid);
-  if (live.length <= COMPACTION_KEEP_TAIL + 1 || (!force && !shouldCompact(liveTokenEstimate(live)))) {
+  if (live.length <= COMPACTION_KEEP_TAIL + 1 || (!force && !shouldCompact(liveTokenEstimate(live), sessionWindowTokens(sql, sid)))) {
     sql.exec("INSERT INTO compaction_marks(sid, pending) VALUES (?, 0) ON CONFLICT(sid) DO UPDATE SET pending = 0", sid);
-    return { compacted: false, live: live.length, archived: 0, summaryCursor: null, pages: archiveMeta(sql, sid).pages };
+    return { compacted: false, live: live.length, archived: 0, summaryCursor: null, pages: archiveMeta(sql, sid).pages, summarySource: "deterministic" };
   }
   let cut = live.length - COMPACTION_KEEP_TAIL;
   // Walk the cut back to a turn start so a toolCall/toolResult pair or a
@@ -203,11 +293,11 @@ export function runCompaction(sql: EntriesSql, sid: string, force = false, liveT
   }
   if (cut <= 0) {
     sql.exec("INSERT INTO compaction_marks(sid, pending) VALUES (?, 0) ON CONFLICT(sid) DO UPDATE SET pending = 0", sid);
-    return { compacted: false, live: live.length, archived: 0, summaryCursor: null, pages: archiveMeta(sql, sid).pages };
+    return { compacted: false, live: live.length, archived: 0, summaryCursor: null, pages: archiveMeta(sql, sid).pages, summarySource: "deterministic" };
   }
   const old = live.slice(0, cut);
   const tail = live.slice(cut);
-  const body = summarizePrefix(old);
+  const { body, summarySource } = await summarizeArchived(old, summarizer);
   let summaryCursor = -1;
   runInSyncTx(sql, () => {
     const top = readScalar<unknown>(sql, "SELECT COALESCE(MAX(page), 0) AS top FROM pi_archive WHERE sid = ?", sid);
@@ -245,16 +335,16 @@ export function runCompaction(sql: EntriesSql, sid: string, force = false, liveT
   });
   if (summaryCursor < 0) throw new Error("runCompaction: summary insert returned no cursor");
   const after = entryHead(sql, sid);
-  return { compacted: true, live: after.count, archived: old.length, summaryCursor, pages: archiveMeta(sql, sid).pages };
+  return { compacted: true, live: after.count, archived: old.length, summaryCursor, pages: archiveMeta(sql, sid).pages, summarySource };
 }
 
 // Alarm body helper: compacts every pending session; a failure is recorded as
 // an error entry and the alarm is always rescheduled so compaction retries
 // instead of stalling the session forever.
-export function runPendingCompactions(sql: EntriesSql, reschedule: () => void, liveTurnIds: (sid: string) => readonly string[] = () => []): void {
+export async function runPendingCompactions(sql: EntriesSql, reschedule: () => void, liveTurnIds: (sid: string) => readonly string[] = () => [], summarizer?: CompactionSummarizer): Promise<void> {
   for (const sid of pendingSessions(sql)) {
     try {
-      runCompaction(sql, sid, false, liveTurnIds(sid));
+      await runCompaction(sql, sid, false, liveTurnIds(sid), summarizer);
     } catch (e) {
       appendEntry(sql, sid, "error", { error: e instanceof Error ? e.message : String(e ?? "compaction failed") });
     } finally {

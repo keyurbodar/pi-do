@@ -204,8 +204,8 @@ export class WorkspaceBase implements DurableObject {
     const sql = this.state.storage.sql;
     const now = Date.now();
     await runDueJobs(sql, now, {
-      [COMPACTION_JOB]: () => {
-        runPendingCompactions(
+      [COMPACTION_JOB]: async () => {
+        await runPendingCompactions(
           sql,
           () => {
             scheduleJob(sql, COMPACTION_JOB, Date.now() + COMPACTION_REARM_MS);
