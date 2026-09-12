@@ -1,5 +1,5 @@
 import { streamSimple } from "@earendil-works/pi-ai/compat";
-import type { Api, Model as PiModel, ThinkingLevel } from "@earendil-works/pi-ai";
+import { isContextOverflow, type Api, type AssistantMessage, type Model as PiModel, type ThinkingLevel } from "@earendil-works/pi-ai";
 import type { EntryRow } from "../store/entries.ts";
 import { Agent, type AgentEvent, type AgentHarnessTool, type AgentMessage, type AgentTool, type AgentToolResult, type StreamFn } from "@earendil-works/pi-agent-core";
 import {
@@ -326,7 +326,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
     let costTotal = 0;
     let halted: HaltReason | undefined;
     const turnTexts: string[] = [];
-    const failures: Array<{ errorMessage?: string }> = [];
+    const failures: AssistantMessage[] = [];
     const finish = (halt: HaltReason | undefined): SessionTurn => {
       const elapsedMs = Date.now() - openedAt;
       const tokensPerSec = elapsedMs < MIN_TURN_MS || outTokens <= 0 ? null : (outTokens * 1000) / elapsedMs;
@@ -474,9 +474,13 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
     if (stalled) throw { error: "model stream stalled", hint: "the provider stopped sending data mid-turn; retry the prompt" };
     if (failures.length > 0) {
       const failure = failures[failures.length - 1];
+      const overflow = isContextOverflow(failure, piModel.contextWindow > 0 ? piModel.contextWindow : undefined);
       throw {
         error: (failure.errorMessage ?? "model turn failed").slice(0, 300),
-        hint: "retry the prompt; repeated auth/billing errors mean the provider key or quota needs attention",
+        hint: overflow
+          ? "the run exceeded the model's context window and was compacted and retried once; start a fresh session or trim the history"
+          : "retry the prompt; repeated auth/billing errors mean the provider key or quota needs attention",
+        ...(overflow ? { overflow: true } : {}),
       };
     }
     return finish(halted);

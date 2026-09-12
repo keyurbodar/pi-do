@@ -11,7 +11,8 @@ import { RECOVERY_JOB, RECOVERY_SCAN_MS, scheduleJob } from "./alarm-mux";
 import { enforceFence } from "pi-cf/store/fence";
 import { createAgentSession, type SessionRunBudgets, type SessionTurn } from "pi-cf/agent/session";
 import { clampThinkingLevel, keyedProviders, resolveCatalogModel, resolveKeyedModel, resolveProviderKey, resolveTurnModel, type RuntimeEnv, type RuntimeModel, type TurnModel } from "./model-runtime";
-import { compactionPending, maybeMarkForCompaction } from "./compaction";
+import { compactionPending, maybeMarkForCompaction, runCompaction } from "./compaction";
+import { sessionSummarizer } from "./summarizer";
 import { broadcast, CLOSE_CONFLICT, CLOSE_FENCED, CLOSE_UNKNOWN, emitEntry, wrapSocket, type StreamAttachment, type StreamHost, type StreamSocket } from "./stream-codec";
 import { isUnknownModel, parseBudgets, shaped } from "./protocol";
 
@@ -449,7 +450,8 @@ function emitLive(host: StreamHost, frame: unknown): void {
   });
 }
 
-async function executeTurnInner(host: StreamHost, input: TurnInput, sink: TurnSink): Promise<void> {
+// Exported for the overflow-recovery module test; the one shared turn body.
+export async function executeTurnInner(host: StreamHost, input: TurnInput, sink: TurnSink, overflowDepth = 0): Promise<void> {
 
   let resolved: TurnModel;
   try {
@@ -525,6 +527,20 @@ async function executeTurnInner(host: StreamHost, input: TurnInput, sink: TurnSi
     if (input.signal?.aborted) {
       sink.aborted(input.runId);
       return;
+    }
+    // Overflow recovery is bounded at one attempt per run: force compaction
+    // (session summarizer, deterministic when keyless) then retry once; a
+    // second overflow surfaces through the normal fail path below. Narrow
+    // on purpose — only session.ts's isContextOverflow shape lands here.
+    const overflowTag = (e as { overflow?: unknown } | null)?.overflow === true;
+    if (overflowDepth === 0 && overflowTag) {
+      try {
+        await runCompaction(host.sql, host.sid, true, [], sessionSummarizer(host.runtimeEnv, host.sql, host.sid));
+      } catch {
+        // A failed emergency compaction still leaves the single retry to run
+        // against the unchanged history; its outcome surfaces as today.
+      }
+      return executeTurnInner(host, input, sink, 1);
     }
     const out = shaped(e, "run failed", "retry the prompt with a simpler request");
     sink.fail(input.runId, out.error, out.hint, 500, true);
