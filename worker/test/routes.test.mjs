@@ -27,7 +27,7 @@ const EXPECTED = [
   { key: "compact", methods: ["POST"], outer: "/workspaces/:id/sessions/:sid/compact", inner: "/compact", sid: true, query: [], passthrough: false, stream: false },
   { key: "archive", methods: ["GET"], outer: "/workspaces/:id/sessions/:sid/archive", inner: "/archive", sid: true, query: ["page"], passthrough: false, stream: false },
   { key: "entries", methods: ["GET"], outer: "/workspaces/:id/sessions/:sid/entries", inner: "/entries", sid: true, query: ["after", "limit"], passthrough: false, stream: false },
-  { key: "meta", methods: ["GET"], outer: "/workspaces/:id/sessions/:sid/meta", inner: "/meta", sid: true, query: [], passthrough: false, stream: false },
+  { key: "meta", methods: ["GET"], outer: "/workspaces/:id/sessions/:sid/meta", inner: "/meta", sid: true, query: ["context"], passthrough: false, stream: false },
   { key: "snapshot", methods: ["GET"], outer: "/workspaces/:id/sessions/:sid/snapshot", inner: "/snapshot", sid: true, query: ["since"], passthrough: false, stream: false },
   { key: "doctor", methods: ["GET"], outer: "/workspaces/:id/doctor", inner: "/doctor", sid: false, query: [], passthrough: false, stream: false },
   { key: "fork", methods: ["POST"], outer: "/workspaces/:id/sessions/:sid/fork", inner: "/fork", sid: true, query: [], passthrough: false, stream: false },
