@@ -90,8 +90,6 @@ each file doing one thing. Current `cli/bin/pi-do.mjs` splits into `lib/` next.
 
 ## PR discipline (every stage)
 
-- `pr.tsv` is the queue. After every PR: set completion % + note in `pr.tsv`
-  AND the §10 table in `plan.html`, same turn the work lands.
 - Work past ~20 min splits first (`21a/21b/21c` style). Never silently shrink
   scope; no setup-only or test-only PRs; verification rides inside each PR.
 - Merge in wave order; within a wave, PR-number order.
@@ -106,7 +104,6 @@ each file doing one thing. Current `cli/bin/pi-do.mjs` splits into `lib/` next.
 
 ## References (read these, not the world)
 
-- `plan.html` (architecture + §5 protocol + §10 PR table), `pr.tsv` (queue).
 - pi contract: `refs/pi/packages/agent/src/harness/{types,agent-harness}.ts`,
   `harness/session/`, `coding-agent/src/core/{extensions/,sdk.ts}`.
 - computer shape: `packages/computer/src/{workspace.ts,tools/ai.ts,tools/exec.ts,backends/worker-shell/}`,
