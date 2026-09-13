@@ -68,8 +68,9 @@ export type ChatItemVM = ThreadItemVM | ThinkingRowVM | SystemEventVM | Delegati
  *   prompt            → user MessageBubbleVM
  *   delegation        → DelegationVM right under the prompt
  *   thinking parts    → ThinkingRowVM (collapsed "Thought for Ns")
- *   text parts        → bot MessageBubbleVM (empty text skipped — the
- *                       activity row covers the nothing-yet-streamed case)
+ *   text parts        → bot MessageBubbleVM, emitted only once the turn
+ *                       settles (streaming turns emit none — the dots
+ *                       activity row covers the nothing-yet case)
  *   tools parts       → consecutive parts of the same run collapse into ONE
  *                       StatusCardVM titled by the first tool (or "Working"),
  *                       rows via viewModel.toolRowOf, card state via
@@ -154,6 +155,9 @@ export function turnToItems(turn: TurnViewState, bots: RosterBot[] = []): ChatIt
       });
     } else if (part.type === "text") {
       flushTools();
+      // While the turn streams only the dots ActivityRow shows; the full
+      // bubble appears whole once the turn settles (ThreadPane pops it in).
+      if (turn.status === "streaming") return;
       if (part.text.trim().length > 0) {
         const sender = turn.senderId !== undefined ? bots.find((b) => b.id === turn.senderId) : undefined;
         const bubble: SenderMessageBubbleVM = {

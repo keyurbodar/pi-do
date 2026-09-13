@@ -1,8 +1,9 @@
 // components/chat/ThreadPane.tsx — tight iMessage-style timeline (grouping
 // patterns from refs/akeru-bot MessagesTimeline.tsx, MIT), stripped of its
 // store/state layer. Same props in/out as thread/Thread.tsx
-// (turns/pending/conn/onRetry) plus an optional avatarSlot the shell fills
-// with BotAvatar and the roster bots list for sender labels / mention chips.
+// (turns/pending/conn/onRetry) plus the roster bots list for sender labels /
+// mention chips. avatarSlot is still accepted but ignored (no in-chat
+// avatars); the shell keeps passing it so App needs no change.
 // Renders the pure mapper.turnToItems view-model list over a
 // StickToBottom-style viewport: pinned follow while new content lands, an
 // isAtBottom-gated jump pill, a thinking-dots activity row while the last
@@ -11,10 +12,10 @@
 //
 // Grouping: consecutive message bubbles from the same side (user/bot) whose
 // timestamps land within GROUP_GAP_MS render as one visual group — 2px gaps
-// inside the group, 10px between groups, a single avatar on the first bot
-// bubble (top aligned), and a single small muted right-aligned timestamp
-// under agent groups (user groups carry none). Bubbles cap at 65% width:
-// user groups right-align, bot groups left-align.
+// inside the group, 10px between groups, and a single small muted
+// right-aligned timestamp under agent groups (user groups carry none).
+// Bubbles cap at 65% width: user groups right-align, bot groups left-align.
+// The column itself is full-bleed (no avatars, edge-aligned text).
 //
 // Working state: while the tail turn streams the timeline shows ONLY the
 // thinking-dots ActivityRow. The streaming caret, ThinkingRow output,
@@ -397,7 +398,7 @@ export function ThreadPane({
   return (
     <div className="relative min-h-0 flex-1">
       <div ref={scrollRef} onScroll={handleScroll} data-testid="thread-viewport" className="h-full overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-[880px] flex-col gap-[10px] px-4 py-4">
+        <div className="flex w-full flex-col gap-[10px] px-1 py-4">
           {empty && (
             <p className="py-12 text-center text-sm text-[var(--muted-foreground)]">
               {conn === "connecting"
@@ -461,10 +462,10 @@ export function ThreadPane({
 
 /**
  * One visual iMessage group: same-side bubbles at 2px gaps capped at 65%
- * width (right for the user, left for agents). Bot groups show the avatar
- * slot once on the first bubble (top aligned) and a single small muted
- * right-aligned timestamp under the group; user groups carry no timestamp.
- * Settled bubbles pop in (.msg-pop, plus .msg-pop-user for the user side).
+ * width (right for the user, left for agents). Bot groups carry a single
+ * small muted right-aligned timestamp under the group; user groups carry
+ * no timestamp. Settled bubbles pop in (.msg-pop, plus .msg-pop-user for
+ * the user side).
  */
 function BubbleGroupView({
   group,

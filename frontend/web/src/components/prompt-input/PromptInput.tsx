@@ -73,8 +73,8 @@ export type PromptInputProps = {
   // Dismissible banner stack above the composer.
   banners?: readonly ComposerBanner[];
   onDismissBanner?: (id: string) => void;
-  // Thin context-meter override (percent 0–100). Defaults to
-  // length-derived fill against SOFT_CAP_CHARS.
+  // Accepted-but-ignored (meter UI removed). Kept optional so old callers
+  // keep compiling.
   contextPercent?: number;
 };
 
@@ -160,17 +160,8 @@ function formatFileSize(bytes: number): string {
 const MAX_DRAFT_CHARS = 20_000;
 const MAX_STASH_ENTRIES = 10;
 const MAX_IMAGE_DIM = 1200;
-const SOFT_CAP_CHARS = 8000;
 
 type ModelId = "default" | "claude-opus" | "gpt-5" | "grok-4";
-
-const MODEL_OPTIONS: ReadonlyArray<{ id: ModelId; label: string }> = [
-  { id: "default", label: "Default" },
-  { id: "claude-opus", label: "claude-opus" },
-  { id: "gpt-5", label: "gpt-5" },
-  { id: "grok-4", label: "grok-4" },
-];
-
 type SlashCommand = {
   id: "search" | "summarize" | "plan" | "mention";
   description: string;
@@ -224,14 +215,6 @@ function readModel(draftKey: string): ModelId {
     return raw === "claude-opus" || raw === "gpt-5" || raw === "grok-4" ? raw : "default";
   } catch {
     return "default";
-  }
-}
-
-function writeModel(draftKey: string, model: ModelId): void {
-  try {
-    globalThis.localStorage.setItem(`pi-do-model-${draftKey}`, model);
-  } catch {
-    // Best-effort like the draft itself.
   }
 }
 
@@ -325,6 +308,8 @@ export function PromptInput({
   onDismissBanner,
   contextPercent,
 }: PromptInputProps = {}) {
+  // contextPercent no longer renders a meter; accepted-but-ignored.
+  void contextPercent;
   // Draft persists per bot: restored on mount (and on draftKey change),
   // saved on every change, cleared on send.
   const [value, setValue] = useState(() => readDraft(draftKey));
@@ -332,9 +317,9 @@ export function PromptInput({
   // Stash persists per bot alongside the draft; newest entry first.
   const [stashEntries, setStashEntries] = useState<StashEntry[]>(() => readStash(draftKey));
   const [isStashMenuOpen, setIsStashMenuOpen] = useState(false);
-  // Per-message model pick, stored per draft key.
+  // Last stored model pick (picker UI removed — nothing changes it here);
+  // still sent so a stored preference keeps applying.
   const [model, setModel] = useState<ModelId>(() => readModel(draftKey));
-  const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   // Caret-tracked trigger menus (slash + @ mention).
   const [caret, setCaret] = useState(0);
   const [menuIndex, setMenuIndex] = useState(0);
@@ -358,7 +343,6 @@ export function PromptInput({
     setStashEntries(readStash(draftKey));
     setModel(readModel(draftKey));
     setIsStashMenuOpen(false);
-    setIsModelMenuOpen(false);
     setDismissedBanners(new Set());
   }, [draftKey]);
 
@@ -503,7 +487,6 @@ export function PromptInput({
 
   const onTextareaKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Escape") {
-      setIsModelMenuOpen(false);
       setIsStashMenuOpen(false);
       // The send button never morphs into Stop; Escape is the only abort path.
       if (running) onAbort?.();
@@ -580,34 +563,12 @@ export function PromptInput({
     setStashEntries(updated);
   };
 
-  const pickModel = (id: ModelId) => {
-    setModel(id);
-    writeModel(draftKey, id);
-    setIsModelMenuOpen(false);
-    requestAnimationFrame(() => textareaRef.current?.focus());
-  };
-
   const dismissBanner = (id: string) => {
     setDismissedBanners((prev) => new Set(prev).add(id));
     onDismissBanner?.(id);
   };
 
   const visibleBanners = banners.filter((b) => !dismissedBanners.has(b.id));
-
-  const charCount = value.length;
-  const overCap = charCount > SOFT_CAP_CHARS;
-  const meterPercent =
-    contextPercent === undefined
-      ? Math.min(100, (charCount / SOFT_CAP_CHARS) * 100)
-      : Math.max(0, Math.min(100, contextPercent));
-  const meterClass =
-    contextPercent !== undefined
-      ? "bg-primary"
-      : overCap
-        ? "bg-destructive"
-        : meterPercent > 80
-          ? "bg-warning"
-          : "bg-primary";
 
   const bannerTone: Record<ComposerBannerKind, string> = {
     info: "border-input bg-secondary text-foreground",
@@ -715,18 +676,6 @@ export function PromptInput({
           data-testid="composer"
           className="relative flex min-h-13 flex-col overflow-hidden rounded-[1.65rem] border border-input bg-foreground/[0.08] shadow-[0_12px_36px_-24px_rgb(0_0_0/80%)] transition-[border-color,background-color,box-shadow] duration-200 ease-out"
         >
-          <div
-            data-testid="composer-context-meter"
-            aria-hidden="true"
-            className="absolute inset-x-6 top-0 h-0.5 overflow-hidden rounded-full bg-transparent"
-          >
-            <div
-              data-testid="composer-context-meter-bar"
-              className={`h-full rounded-full transition-[width] duration-200 ${meterClass}`}
-              style={{ width: `${meterPercent}%` }}
-            />
-          </div>
-
           {attachments.length > 0 ? (
             <div className="flex flex-wrap gap-2 px-3 pt-3">
               {attachments.map((attachment) => {
@@ -807,7 +756,7 @@ export function PromptInput({
             placeholder={`Message ${botName}`}
             rows={1}
             value={value}
-            className="field-sizing-content max-h-56 w-full resize-none bg-transparent py-[0.9rem] pl-[5.5rem] pr-[7.5rem] text-[15px] leading-6 outline-none placeholder:text-muted-foreground/70"
+            className="field-sizing-content max-h-56 w-full resize-none bg-transparent py-2 pl-[5.5rem] pr-[5.5rem] text-[15px] leading-6 outline-none placeholder:text-muted-foreground/70"
             onChange={(event) => {
               const next = event.currentTarget.value;
               setValue(next);
@@ -861,35 +810,7 @@ export function PromptInput({
             </div>
 
             <div className="flex items-center gap-2">
-              <span
-                data-testid="composer-char-count"
-                aria-label={`${charCount} of ${SOFT_CAP_CHARS} characters`}
-                className={[
-                  "pointer-events-auto text-[10px] tabular-nums",
-                  overCap ? "font-semibold text-destructive" : "text-muted-foreground/70",
-                ].join(" ")}
-              >
-                {charCount} / {SOFT_CAP_CHARS}
-              </span>
               <div className="pointer-events-auto flex items-center gap-1">
-                <div className="relative">
-                  <button
-                    type="button"
-                    data-testid="composer-model-button"
-                    aria-label="Pick model"
-                    aria-expanded={isModelMenuOpen}
-                    title={model === "default" ? "Model: Default" : `Model: ${model}`}
-                    onClick={() => {
-                      setIsModelMenuOpen((open) => !open);
-                      setIsStashMenuOpen(false);
-                    }}
-                    className="flex h-9 max-w-24 shrink-0 items-center justify-center truncate rounded-full bg-secondary px-2.5 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground"
-                  >
-                    <span className="truncate">
-                      {model === "default" ? "Default" : model}
-                    </span>
-                  </button>
-                </div>
                 <span className="relative">
                   <button
                     type="button"
@@ -938,33 +859,6 @@ export function PromptInput({
             </div>
           </div>
         </div>
-
-        {isModelMenuOpen ? (
-          <div
-            data-testid="composer-model-menu"
-            role="menu"
-            aria-label="Pick model"
-            className="absolute bottom-[calc(100%+8px)] right-2 z-20 w-48 overflow-hidden rounded-[var(--control-radius)] border border-border bg-card p-1 shadow-[0_16px_40px_-20px_rgb(0_0_0/60%)]"
-          >
-            {MODEL_OPTIONS.map((option) => (
-              <button
-                key={option.id}
-                type="button"
-                role="menuitemradio"
-                aria-checked={model === option.id}
-                data-testid={`composer-model-option-${option.id}`}
-                onClick={() => pickModel(option.id)}
-                className={[
-                  "flex w-full items-center justify-between rounded-[calc(var(--control-radius)-4px)] px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-foreground/[0.06]",
-                  model === option.id ? "text-foreground" : "text-muted-foreground",
-                ].join(" ")}
-              >
-                {option.label}
-                {model === option.id ? <span aria-hidden="true">·</span> : null}
-              </button>
-            ))}
-          </div>
-        ) : null}
 
         {isSlashOpen ? (
           <div

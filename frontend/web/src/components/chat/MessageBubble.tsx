@@ -1,7 +1,7 @@
 // components/chat/MessageBubble.tsx — akeru UserTimelineRow /
 // AssistantTimelineRow markup (refs/akeru-bot, MIT), stripped of their state
 // layer. User bubbles right-align on --message-surface; bot bubbles sit left
-// with an avatar slot the shell fills (BotAvatar) later. Image attachments
+// with no avatar column — avatarSlot is accepted-but-ignored. Image
 // render as a clickable grid that opens the lightbox. Group threads add a
 // muted sender label above the bubble, and text that names a roster bot
 // renders that run as an inline BotMention chip instead of markdown. Every
@@ -80,8 +80,9 @@ export function MessageBubble({
   /** Arms the composer reply strip; default targets this bubble's text. */
   onReply?: () => void;
 }) {
-  // Legacy props stay accepted so frozen shells keep compiling; reference
-  // them so removals stay deliberate rather than silent dead props.
+  // avatarSlot renders nothing (no in-chat avatars); accepted so the shell
+  // keeps compiling without changes. Legacy props likewise stay accepted.
+  void avatarSlot;
   void onRetry;
   void onEdit;
   void retryText;
@@ -220,8 +221,7 @@ export function MessageBubble({
   }
 
   return (
-    <div data-testid={`thread-item-${vm.id}`} className="group relative flex min-w-0 items-start gap-3 px-2 py-1">
-      {avatarSlot !== null && <div className="flex size-8 shrink-0 items-center justify-center">{avatarSlot}</div>}
+    <div data-testid={`thread-item-${vm.id}`} className="group relative flex min-w-0 items-start py-1">
       {toolbar}
       <div className="min-w-0 flex-1">
         {senderLabel !== undefined && (
