@@ -16,6 +16,7 @@ import {
   ok,
 } from "@earendil-works/pi-agent-core";
 import { ComputerExecutionEnv } from "../runtime/env.ts";
+import type { InboxAccess } from "../store/inbox.ts";
 import type { Edit } from "../vendor/edit-diff.ts";
 import {
   CAPS,
@@ -38,6 +39,10 @@ function resolveAgainstCwd(cwd: string, path: unknown): unknown {
 
 export interface ToolContext {
   env: ComputerExecutionEnv;
+  // Host-provided durable messaging (bot-to-bot inbox). Absent = messaging
+  // not wired for this session; the send tool degrades with a hint.
+  inbox?: InboxAccess;
+  selfId?: string;
 }
 
 export function textOf(result: AgentToolResult<unknown>): string {

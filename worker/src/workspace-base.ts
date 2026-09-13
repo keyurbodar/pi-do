@@ -17,7 +17,7 @@ import { COMPACTION_JOB, COMPACTION_REARM_MS, KEEPALIVE_JOB, KEEPALIVE_MS, cance
 import { ROUTINE_JOB, ensureRoutinesSchema, fireDueRoutines, type RoutineRow } from "./routines";
 import { INBOX_JOB, INBOX_REARM_MS, deliverDueInbox, inboxPrompt, rearmInbox } from "./inbox";
 import { readBackstory } from "./backstory";
-import { markDelivered, ensureInboxSchema, type InboxRow } from "pi-cf/store/inbox";
+import { insertInbox, markDelivered, ensureInboxSchema, type InboxAccess, type InboxRow } from "pi-cf/store/inbox";
 import { makeSidLiveCheck, RECOVERY_JOB, scanTurns } from "pi-cf/store/recovery";
 import { nextRunAtMin } from "pi-cf/store/runs";
 import { listChunksForTurn } from "pi-cf/store/chunks";
@@ -369,6 +369,40 @@ export class WorkspaceBase implements DurableObject {
     });
   }
 
+  // The host half of the send tool: resolve the recipient (id, then name,
+  // else materialize with the body as persona), persist deduped, wake the
+  // alarm. Returns tool-shaped results; errors carry hints.
+  inboxAccess(ws: string, fromSid: string): InboxAccess {
+    return {
+      send: async (fromSidArg, to, body, thread, requestId) => {
+        const from = fromSidArg || fromSid;
+        if (to === from) return { ok: false, error: "self-send", hint: "the recipient must be a different session; a session cannot message itself" };
+        const sql = this.state.storage.sql;
+        ensureInboxSchema(sql);
+        let toSid = to;
+        let createdFlag = false;
+        if (!this.sessionExists(ws, toSid)) {
+          for (const row of sql.exec("SELECT sid FROM sessions WHERE ws = ? AND name = ? LIMIT 1", ws, toSid)) {
+            if (row !== null && typeof row === "object" && typeof (row as Record<string, unknown>).sid === "string") {
+              toSid = (row as Record<string, unknown>).sid as string;
+            }
+            break;
+          }
+          if (!this.sessionExists(ws, toSid)) {
+            toSid = this.mintSession(ws, toSid, body.slice(0, 8192));
+            createdFlag = true;
+          }
+        }
+        const result = insertInbox(sql, ws, from, toSid, { body, thread, requestId });
+        if (!result.ok) return result;
+        rearmInbox(sql, Date.now());
+        const next = earliestDeadline(sql);
+        if (next !== null) await this.state.storage.setAlarm(next);
+        return { ok: true, id: result.row.id, toSid, created: createdFlag };
+      },
+    };
+  }
+
   // Session materialization for spawn-by-message: the same INSERT the
   // sessions route performs, callable from the wake path.
   protected mintSession(ws: string, name: string | null, backstory: string | null = null): string {
@@ -410,6 +444,7 @@ export class WorkspaceBase implements DurableObject {
       retention: triple?.retention ?? "short",
       model: triple?.provider != null && triple?.id != null ? { provider: triple.provider, id: triple.id } : null,
       backstory: this.readBackstory(sid),
+      inbox: this.inboxAccess(ws, sid),
       workspaceKnown: ws !== "" && this.workspaceExists(ws),
       sessionKnown: ws !== "" && sid !== "" && this.sessionExists(ws, sid),
       readFence: () => this.readFence(sid),

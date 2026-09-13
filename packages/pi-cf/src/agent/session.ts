@@ -11,6 +11,8 @@ import { bashTool, editTool, listTool, readTool, removeTool, textOf, writeTool, 
 import { pmTool, testTool } from "../tools/dev-tools.ts";
 import { definitionTool, diagnosticsCompilerTool, referencesTool } from "../tools/ts-tools.ts";
 import { bgTool } from "../tools/bg-tools.ts";
+import { sendTool } from "../tools/send-tool.ts";
+import type { InboxAccess } from "../store/inbox.ts";
 import { findTool, grepTool } from "../tools/search-tools.ts";
 import { planStubTurn, planTools } from "./stub-plan.ts";
 import { registerProjector, type EntryProjection } from "./projectors.ts";
@@ -20,7 +22,7 @@ import { composePrompt } from "./prompt.ts";
 export const sessionTools = {
   read: readTool, write: writeTool, edit: editTool, list: listTool, remove: removeTool, bash: bashTool,
   find: findTool, grep: grepTool, diagnostics: diagnosticsCompilerTool,
-  definition: definitionTool, references: referencesTool, test: testTool, pm: pmTool, bg: bgTool,
+  definition: definitionTool, references: referencesTool, test: testTool, pm: pmTool, bg: bgTool, send: sendTool,
 };
 
 export type SessionTools = typeof sessionTools;
@@ -40,6 +42,9 @@ export interface CreateAgentSessionOptions {
   // Per-session persona (bot backstory) appended to the composed system
   // prompt. Null/empty leaves the prompt byte-identical.
   systemPromptExtras?: string | null;
+  // Host-provided durable messaging; the send tool degrades with a hint
+  // when absent (routes + CLI remain the mechanism).
+  inbox?: InboxAccess;
 }
 
 export interface SessionToolCall {
@@ -170,7 +175,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
   const { files, ws, shell, model } = options;
   const env = new ComputerExecutionEnv(files, ws, shell);
   env.cwd = options.cwd ?? "";
-  const context: ToolContext = { env };
+  const context: ToolContext = { env, inbox: options.inbox, selfId: options.sessionId };
   if (options.projectors !== undefined) for (const [type, proj] of Object.entries(options.projectors)) registerProjector(type, proj);
 
   async function run(prompt: string, runOptions?: SessionRunOptions): Promise<SessionTurn> {

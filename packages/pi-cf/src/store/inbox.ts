@@ -52,6 +52,19 @@ function toInboxRow(row: unknown): InboxRow | null {
   };
 }
 
+// Host-provided durable messaging for a session: the send tool's seam.
+// Resolution (id/name/materialize), dedupe, persistence, and the wake belong
+// to the implementation; the tool only carries the request.
+export interface InboxAccess {
+  send(
+    fromSid: string,
+    to: string,
+    body: string,
+    thread?: string,
+    requestId?: string,
+  ): Promise<{ ok: true; id: string; toSid: string; created: boolean } | { ok: false; error: string; hint: string }>;
+}
+
 export type InsertInboxResult = { ok: true; row: InboxRow } | { ok: false; error: string; hint: string };
 
 // Idempotent on (ws, from_sid, request_id): a retried send returns the

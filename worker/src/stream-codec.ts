@@ -4,6 +4,7 @@ import { appendChunk, appendChunkBatch, serializeChunkBody, type BufferedChunk }
 // (stream-engine.ts) so transport framing can evolve without touching turn
 // policy. Import through ./stream, which re-exports both halves.
 import { appendEntry, getEntry, runInSyncTx, type EntriesSql } from "pi-cf/store/entries";
+import type { InboxAccess } from "pi-cf/store/inbox";
 import { touchPiRun } from "pi-cf/store/runs";
 import type { FileStore } from "pi-cf/store/vfs-dofs";
 import type { RuntimeEnv } from "./model-runtime";
@@ -27,6 +28,7 @@ export interface StreamHost {
   retention: "short" | "long";
   model: { provider: string; id: string } | null;
   backstory: string | null;
+  inbox: InboxAccess;
   workspaceKnown: boolean;
   sessionKnown: boolean;
   readFence(): { fence: string | null; revision: number } | null;
