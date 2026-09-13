@@ -4,6 +4,7 @@
 import { useState } from "react";
 import { BOT_SANDBOXES, BOT_TOOLS, type RosterBot } from "../../lib/roster";
 import { SheetShell } from "./SheetShell";
+import { BotRoutinesSection } from "./BotRoutinesSection";
 import { cn } from "./roster.logic";
 
 export function BotDetailsPanel({
@@ -186,6 +187,8 @@ export function BotDetailsPanel({
           />
           <p className="text-xs text-muted-foreground">0 means uncapped.</p>
         </section>
+
+        <BotRoutinesSection bot={bot} />
       </div>
     </SheetShell>
   );
