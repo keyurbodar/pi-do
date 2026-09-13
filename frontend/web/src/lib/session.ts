@@ -57,15 +57,21 @@ export async function fetchKeyedProviders(): Promise<string[]> {
   return body.keyed.filter((provider): provider is string => typeof provider === "string");
 }
 
-export async function bootstrapSession(): Promise<SessionHandle> {
-  const wsRes = await api.workspaces.$post();
-  if (!wsRes.ok) throw failed(wsRes.status, "POST /workspaces");
-  const workspaceId = asString(
-    asRecord(await wsRes.json(), "POST /workspaces"),
-    "workspaceId",
-    "POST /workspaces",
-  );
+let workspacePromise: Promise<string> | null = null;
+const botSessions = new Map<string, Promise<SessionHandle>>();
 
+async function ensureWorkspace(): Promise<string> {
+  if (workspacePromise === null) {
+    workspacePromise = (async () => {
+      const wsRes = await api.workspaces.$post();
+      if (!wsRes.ok) throw failed(wsRes.status, "POST /workspaces");
+      return asString(asRecord(await wsRes.json(), "POST /workspaces"), "workspaceId", "POST /workspaces");
+    })();
+  }
+  return workspacePromise;
+}
+
+async function createSession(workspaceId: string): Promise<SessionHandle> {
   const seRes = await api.workspaces[":id"].sessions.$post({ param: { id: workspaceId } });
   if (!seRes.ok) throw failed(seRes.status, "POST /workspaces/:id/sessions");
   const session = asRecord(await seRes.json(), "POST /workspaces/:id/sessions");
@@ -98,4 +104,15 @@ export async function bootstrapSession(): Promise<SessionHandle> {
       ? (modeled["revision"] as number)
       : revision2,
   };
+}
+
+/** One session per roster owner (bot or group), created lazily on first open
+ * and cached for the page lifetime, so each bot's conversation is its own. */
+export function sessionForOwner(ownerId: string): Promise<SessionHandle> {
+  let pending = botSessions.get(ownerId);
+  if (pending === undefined) {
+    pending = ensureWorkspace().then(createSession);
+    botSessions.set(ownerId, pending);
+  }
+  return pending;
 }

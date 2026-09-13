@@ -6,13 +6,13 @@ import { BotAvatar } from './components/roster';
 import type { RosterBot } from './lib/roster';
 import { Shimmer } from './components/aicss';
 import { BotRosterSidebar, useRosterState } from './components/roster';
-import { bootstrapSession, fetchKeyedProviders, type SessionHandle } from './lib/session';
+import { fetchKeyedProviders, sessionForOwner, type SessionHandle } from './lib/session';
 
 type BootState =
   | { status: 'loading' }
   | { status: 'unkeyed' }
   | { status: 'error'; message: string }
-  | { status: 'ready'; session: SessionHandle };
+  | { status: 'ready' };
 
 const UNKEYED_MESSAGE =
   'No model provider key is set on the backend, so turns cannot run. ' +
@@ -33,8 +33,7 @@ export default function App() {
           return;
         }
         // Fresh session every load: no stored handle, no stale history.
-        const session = await bootstrapSession();
-        setBoot({ status: "ready", session });
+        setBoot({ status: "ready" });
       } catch (e) {
         if (cancelled) return;
         setBoot({ status: "error", message: e instanceof Error ? e.message : String(e) });
@@ -122,10 +121,43 @@ function ChatPane({
     );
   }
 
-  return <ReadyThread key={boot.session.sessionId} session={boot.session} activeBot={activeBot} />;
+  return <ReadyThread key={activeId} ownerId={activeId} activeBot={activeBot} />;
 }
 
-function ReadyThread({ session, activeBot }: { session: SessionRef; activeBot: RosterBot | null }) {
+function ReadyThread({ ownerId, activeBot }: { ownerId: string; activeBot: RosterBot | null }) {
+  const [session, setSession] = useState<SessionHandle | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setSession(null);
+    setError(null);
+    sessionForOwner(ownerId).then(
+      (s) => { if (!cancelled) setSession(s); },
+      (e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); },
+    );
+    return () => { cancelled = true; };
+  }, [ownerId]);
+  if (error !== null) {
+    return (
+      <main className="main">
+        <div className="thread" role="alert">
+          <p style={{ color: 'var(--destructive)' }}>{error}</p>
+        </div>
+      </main>
+    );
+  }
+  if (session === null) {
+    return (
+      <main className="main">
+        <div className="thread">
+          <p style={{ color: 'var(--muted-foreground)' }}><Shimmer>Connecting…</Shimmer></p>
+        </div>
+      </main>
+    );
+  }
+  return <ReadyThreadInner key={session.sessionId} session={session} activeBot={activeBot} />;
+}
+function ReadyThreadInner({ session, activeBot }: { session: SessionRef; activeBot: RosterBot | null }) {
   const thread = useThread(session);
   const playback = useFixturePlayback(activeBot?.id ?? null);
   return (
