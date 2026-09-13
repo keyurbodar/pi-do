@@ -50,7 +50,6 @@ export const ROUTE = {
   archive: def(["GET"], "/workspaces/:id/sessions/:sid/archive", "/archive", { sid: true, query: ["page"] }),
   entries: def(["GET"], "/workspaces/:id/sessions/:sid/entries", "/entries", { sid: true, query: ["after", "limit"] }),
   meta: def(["GET"], "/workspaces/:id/sessions/:sid/meta", "/meta", { sid: true, query: ["context", "systemPrompt"] }),
-  snapshot: def(["GET"], "/workspaces/:id/sessions/:sid/snapshot", "/snapshot", { sid: true, query: ["since"] }),
   doctor: def(["GET"], "/workspaces/:id/doctor", "/doctor"),
   fork: def(["POST"], "/workspaces/:id/sessions/:sid/fork", "/fork", { sid: true }),
   clone: def(["POST"], "/workspaces/:id/sessions/:sid/clone", "/clone", { sid: true }),
@@ -73,7 +72,7 @@ export const ROUTE = {
 
 export const FORWARD_TABLE: ForwardDef[] = [
   ROUTE.sessions, ROUTE.git, ROUTE.claim, ROUTE.model, ROUTE.thinking, ROUTE.settings,
-  ROUTE.run, ROUTE.compact, ROUTE.archive, ROUTE.entries, ROUTE.meta, ROUTE.snapshot,
+  ROUTE.run, ROUTE.compact, ROUTE.archive, ROUTE.entries, ROUTE.meta,
   ROUTE.doctor, ROUTE.fork, ROUTE.clone, ROUTE.checkpoints, ROUTE.rewind, ROUTE.files,
   ROUTE.exec, ROUTE.execKill, ROUTE.execDispose, ROUTE.bgPost, ROUTE.bgGet, ROUTE.bgKill,
   ROUTE.stream, ROUTE.routines, ROUTE.inbox,

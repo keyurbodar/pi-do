@@ -1,5 +1,5 @@
 // routes.test.mjs — proves the edge forwarder and the inner dispatcher share
-// one route table: all 27 forwarded shapes resolve through routes/table.ts
+// one route table: all 26 forwarded shapes resolve through routes/table.ts
 // with byte-identical method plus path plus param mapping, and no route shape
 // is declared anywhere else. Imports table.ts only (it has no runtime deps).
 import test from "node:test";
@@ -13,7 +13,7 @@ const workerDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const srcDir = path.join(workerDir, "src");
 const readSrc = (rel) => fs.readFileSync(path.join(srcDir, rel), "utf8");
 
-// The 27 forwarded shapes, in registration order: key plus method plus outer
+// The 26 forwarded shapes, in registration order: key plus method plus outer
 // path plus inner path plus param mapping, exactly as the legacy double
 // declaration served them.
 const EXPECTED = [
@@ -28,7 +28,6 @@ const EXPECTED = [
   { key: "archive", methods: ["GET"], outer: "/workspaces/:id/sessions/:sid/archive", inner: "/archive", sid: true, query: ["page"], passthrough: false, stream: false },
   { key: "entries", methods: ["GET"], outer: "/workspaces/:id/sessions/:sid/entries", inner: "/entries", sid: true, query: ["after", "limit"], passthrough: false, stream: false },
   { key: "meta", methods: ["GET"], outer: "/workspaces/:id/sessions/:sid/meta", inner: "/meta", sid: true, query: ["context", "systemPrompt"], passthrough: false, stream: false },
-  { key: "snapshot", methods: ["GET"], outer: "/workspaces/:id/sessions/:sid/snapshot", inner: "/snapshot", sid: true, query: ["since"], passthrough: false, stream: false },
   { key: "doctor", methods: ["GET"], outer: "/workspaces/:id/doctor", inner: "/doctor", sid: false, query: [], passthrough: false, stream: false },
   { key: "fork", methods: ["POST"], outer: "/workspaces/:id/sessions/:sid/fork", inner: "/fork", sid: true, query: [], passthrough: false, stream: false },
   { key: "clone", methods: ["POST"], outer: "/workspaces/:id/sessions/:sid/clone", inner: "/clone", sid: true, query: [], passthrough: false, stream: false },
@@ -46,8 +45,8 @@ const EXPECTED = [
   { key: "inbox", methods: ["POST", "GET"], outer: "/workspaces/:id/sessions/:sid/inbox", inner: "/inbox", sid: true, query: ["thread", "all"], passthrough: false, stream: false },
 ];
 
-test("forward table holds all 27 route shapes byte-identical", () => {
-  assert.equal(FORWARD_TABLE.length, 27);
+test("forward table holds all 26 route shapes byte-identical", () => {
+  assert.equal(FORWARD_TABLE.length, 26);
   EXPECTED.forEach((want, i) => {
     const got = FORWARD_TABLE[i];
     assert.deepEqual(
@@ -84,7 +83,6 @@ test("every route resolves through the single table", () => {
     ["GET", "/workspaces/w1/sessions/s1/archive", "/archive"],
     ["GET", "/workspaces/w1/sessions/s1/entries", "/entries"],
     ["GET", "/workspaces/w1/sessions/s1/meta", "/meta"],
-    ["GET", "/workspaces/w1/sessions/s1/snapshot", "/snapshot"],
     ["GET", "/workspaces/w1/doctor", "/doctor"],
     ["POST", "/workspaces/w1/sessions/s1/fork", "/fork"],
     ["POST", "/workspaces/w1/sessions/s1/clone", "/clone"],
@@ -107,7 +105,7 @@ test("every route resolves through the single table", () => {
     ["POST", "/workspaces/w1/sessions/s1/inbox", "/inbox"],
     ["GET", "/workspaces/w1/sessions/s1/inbox", "/inbox"],
   ];
-  assert.equal(cases.length, 34);
+  assert.equal(cases.length, 33);
   for (const [method, concrete, inner] of cases) {
     const def = matchRoute(method, concrete);
     assert.ok(def, `${method} ${concrete} resolves`);
@@ -127,7 +125,6 @@ test("forward query mapping matches the legacy per-route mapping", () => {
   assert.deepEqual(forwardQuery(ROUTE.git, { sid: "s1" }), { sid: "s1" });
   assert.deepEqual(forwardQuery(ROUTE.archive, { sid: "s1", get: get({}) }), { sid: "s1", page: undefined });
   assert.deepEqual(forwardQuery(ROUTE.entries, { sid: "s1", get: get({ after: "0", limit: "100" }) }), { sid: "s1", after: "0", limit: "100" });
-  assert.deepEqual(forwardQuery(ROUTE.snapshot, { sid: "s1", get: get({}) }), { sid: "s1", since: undefined });
   assert.deepEqual(forwardQuery(ROUTE.bgGet, { get: get({ handle: "h" }) }), { handle: "h" });
   assert.deepEqual(forwardQuery(ROUTE.bgGet, { get: get({}) }), { handle: undefined });
   assert.deepEqual(forwardQuery(ROUTE.files, { extra: { path: "a.txt" } }), { path: "a.txt" });
@@ -149,7 +146,7 @@ test("every inner path is declared once, in table.ts", () => {
     .join("\n");
   const countQuoted = (literal) => allSrc.split(`"${literal}"`).length - 1;
   const inners = [...new Set([...FORWARD_TABLE.map((d) => d.inner), "/create", "/exists", "/models"])];
-  assert.deepEqual(inners.length, 29);
+  assert.deepEqual(inners.length, 28);
   for (const inner of inners) {
     // "/bg" serves two forward shapes; "/models" is both the edge-local
     // catalog route and an inner path. Everything else appears exactly once.

@@ -115,11 +115,12 @@ export function modelSummarizer(env: RuntimeEnv, provider: string, modelId: stri
     reasoning: model.reasoning ?? false,
   } as unknown as Model<Api>;
   const maxTokens = Math.min(Math.floor(0.8 * COMPACTION_RESERVE_TOKENS), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
-  return async (prefixText, previousSummary) => {
+  return async (prefixText, previousSummary, instructions) => {
     const hasPrior = previousSummary !== undefined && previousSummary.length > 0;
     let promptText = `<conversation>\n${prefixText}\n</conversation>\n\n`;
     if (hasPrior) promptText += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
     promptText += hasPrior ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
+    if (instructions !== undefined && instructions.length > 0) promptText += `\n\nAdditional focus: ${instructions}`;
     // The timeout signal rides the request AND the retry loop's backoff
     // sleeps, so the 120s budget still bounds the whole summarization.
     const signal = AbortSignal.timeout(SUMMARIZATION_TIMEOUT_MS);

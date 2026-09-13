@@ -20,7 +20,6 @@ import {
   type SessionModel,
   type SessionTools,
 } from "./agent/session.ts";
-import { readEvents, readSnapshot } from "./agent/snapshots.ts";
 import type { ShellLike } from "./runtime/env.ts";
 import { normalizeWorkspacePath } from "./tools/tools.ts";
 
@@ -456,36 +455,6 @@ export function createPiCf(options: CreatePiCfOptions = {}): new (
           openRun,
           usage: withSessionRates(sumResultUsage(sql, sid), null),
         });
-      }
-      if (request.method === "GET" && url.pathname === "/snapshot") {
-        const ws = url.searchParams.get("ws") ?? "";
-        const sid = url.searchParams.get("sid") ?? "";
-        if (!ws) {
-          return json(
-            { error: "missing workspace", hint: "retry as GET /workspaces/:id/sessions/:sid/snapshot on the Worker instead" },
-            400,
-          );
-        }
-        if ([...sql.exec("SELECT 1 FROM workspaces WHERE id = ? LIMIT 1", ws)].length === 0) {
-          return json(
-            { error: "unknown workspace", hint: "create one with POST /workspaces first, then mint a session" },
-            404,
-          );
-        }
-        if (!sid || [...sql.exec("SELECT 1 FROM sessions WHERE sid = ? AND ws = ? LIMIT 1", sid, ws)].length === 0) {
-          return json(
-            { error: "unknown session", hint: "mint one with POST /workspaces/:id/sessions first, then retry with that session id" },
-            404,
-          );
-        }
-        const since = Number(url.searchParams.get("since") ?? "0");
-        if (!Number.isInteger(since) || since < 0) {
-          return json(
-            { error: "bad since", hint: "retry with ?since=N where N is a non-negative event seq, e.g. ?since=0" },
-            400,
-          );
-        }
-        return json({ snapshot: readSnapshot(sid), events: readEvents(sid, since) });
       }
 
       return json(

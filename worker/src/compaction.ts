@@ -75,6 +75,7 @@ export interface CompactionSummaryBody {
   toCursor: number;
   count: number;
   tokensBefore: number;
+  summarySource?: SummarySource;
 }
 
 export function ensureCompactionSchema(sql: EntriesSql): void {
@@ -256,18 +257,18 @@ function previousSummaryOf(old: readonly EntryRow[]): string | undefined {
 // The injected summarizer owns the LLM call; compaction stays
 // inference-free. A throw or an empty result degrades to the deterministic
 // summary instead of failing compaction — never stall the alarm path.
-export type CompactionSummarizer = (prefixText: string, previousSummary: string | undefined) => Promise<string>;
+export type CompactionSummarizer = (prefixText: string, previousSummary: string | undefined, instructions?: string) => Promise<string>;
 export type SummarySource = "model" | "deterministic" | "degraded";
-async function summarizeArchived(old: EntryRow[], summarizer: CompactionSummarizer | undefined): Promise<{ body: CompactionSummaryBody; summarySource: SummarySource }> {
+async function summarizeArchived(old: EntryRow[], summarizer: CompactionSummarizer | undefined, instructions?: string): Promise<{ body: CompactionSummaryBody; summarySource: SummarySource }> {
   const body = deterministicSummarizePrefix(old);
   if (summarizer === undefined) return { body, summarySource: "deterministic" };
   try {
-    const summary = (await summarizer(serializePrefix(old), previousSummaryOf(old))).trim();
-    if (summary.length > 0) return { body: { ...body, summary }, summarySource: "model" };
+    const summary = (await summarizer(serializePrefix(old), previousSummaryOf(old), instructions)).trim();
+    if (summary.length > 0) return { body: { ...body, summary, summarySource: "model" }, summarySource: "model" };
   } catch {
     // degrade below
   }
-  return { body, summarySource: "degraded" };
+  return { body: { ...body, summarySource: "degraded" }, summarySource: "degraded" };
 }
 
 export interface CompactionResult {
@@ -279,7 +280,7 @@ export interface CompactionResult {
   summarySource: SummarySource;
 }
 
-export async function runCompaction(sql: EntriesSql, sid: string, force = false, liveTurnIds: readonly string[] = [], summarizer?: CompactionSummarizer): Promise<CompactionResult> {
+export async function runCompaction(sql: EntriesSql, sid: string, force = false, liveTurnIds: readonly string[] = [], summarizer?: CompactionSummarizer, instructions?: string): Promise<CompactionResult> {
   const live = readAllLive(sql, sid);
   if (live.length <= COMPACTION_KEEP_TAIL + 1 || (!force && !shouldCompact(liveTokenEstimate(live), sessionWindowTokens(sql, sid)))) {
     sql.exec("INSERT INTO compaction_marks(sid, pending) VALUES (?, 0) ON CONFLICT(sid) DO UPDATE SET pending = 0", sid);
@@ -297,7 +298,7 @@ export async function runCompaction(sql: EntriesSql, sid: string, force = false,
   }
   const old = live.slice(0, cut);
   const tail = live.slice(cut);
-  const { body, summarySource } = await summarizeArchived(old, summarizer);
+  const { body, summarySource } = await summarizeArchived(old, summarizer, instructions);
   let summaryCursor = -1;
   runInSyncTx(sql, () => {
     const top = readScalar<unknown>(sql, "SELECT COALESCE(MAX(page), 0) AS top FROM pi_archive WHERE sid = ?", sid);
@@ -352,4 +353,31 @@ export async function runPendingCompactions(sql: EntriesSql, reschedule: () => v
       reschedule();
     }
   }
+}
+
+
+// Meta-surface context state: the usage-anchored estimate (48a), the
+// resolved window, and the persisted summary source of the last compaction.
+export function contextUsage(sql: EntriesSql, sid: string): { usedTokens: number; contextWindow: number; reserveTokens: number; keepTail: number } {
+  return {
+    usedTokens: liveTokenEstimate(readAllLive(sql, sid)),
+    contextWindow: sessionWindowTokens(sql, sid),
+    reserveTokens: COMPACTION_RESERVE_TOKENS,
+    keepTail: COMPACTION_KEEP_TAIL,
+  };
+}
+
+export function lastSummarySource(sql: EntriesSql, sid: string): SummarySource | null {
+  for (const row of sql.exec("SELECT body FROM pi_entries WHERE sid = ? AND type = 'compaction' ORDER BY id DESC LIMIT 1", sid)) {
+    if (row === null || typeof row !== "object") continue;
+    const raw = (row as Record<string, unknown>).body;
+    if (typeof raw !== "string") continue;
+    try {
+      const body = JSON.parse(raw) as { summarySource?: unknown };
+      return body.summarySource === "model" || body.summarySource === "degraded" ? body.summarySource : "deterministic";
+    } catch {
+      return "deterministic";
+    }
+  }
+  return null;
 }

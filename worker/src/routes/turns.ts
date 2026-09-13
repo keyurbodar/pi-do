@@ -131,14 +131,29 @@ const entries: RouteHandler = (ctx, request, url) => {
   return json({ entries: listEntries(sql, sid, { after, limit }), head, count });
 };
 
-const compact: RouteHandler = (ctx, request, url) => {
+const compact: RouteHandler = async (ctx, request, url) => {
   if (request.method !== "POST") return null;
   const ws = url.searchParams.get("ws") ?? "";
   const sid = url.searchParams.get("sid") ?? "";
   const bad = ctx.requireSession(ws, sid, "retry as POST /workspaces/:id/sessions/:sid/compact on the Worker instead", MINT_WS_HINT);
   if (bad) return bad;
+  let instructions: string | undefined;
+  try {
+    const body: unknown = await request.json();
+    if (body !== null && typeof body === "object") {
+      const rec = body as Record<string, unknown>;
+      if (rec["instructions"] !== undefined) {
+        if (typeof rec["instructions"] !== "string" || rec["instructions"].length === 0 || rec["instructions"].length > 2000) {
+          return err("bad instructions", 'retry with {"instructions": "<focus text>"} (at most 2000 chars) or omit it', 400);
+        }
+        instructions = rec["instructions"];
+      }
+    }
+  } catch {
+    // no body: plain forced compaction
+  }
   return ctx.enqueueSessionTurn(sid, async () => {
-    const out = await runCompaction(ctx.state.storage.sql, sid, true, [], sessionSummarizer(ctx.env as unknown as RuntimeEnv, ctx.state.storage.sql, sid));
+    const out = await runCompaction(ctx.state.storage.sql, sid, true, [], sessionSummarizer(ctx.env as unknown as RuntimeEnv, ctx.state.storage.sql, sid), instructions);
     return json({ sid, ...out });
   });
 };

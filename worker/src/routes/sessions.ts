@@ -2,11 +2,10 @@ import { appendEntry, listEntries, runInSyncTx, sessionLeaf, sumResultUsage, ent
 import { createCheckpoint, getCheckpoint, listCheckpoints, rewindSession } from "pi-cf/store/checkpoints";
 import { drainPages, readSingleRow } from "pi-cf/store/sql-util";
 import { buildRuntime, clampThinkingLevel, resolveCatalogModel, supportedThinkingLevels, THINKING_LEVELS, type RuntimeEnv, type RuntimeModel } from "../model-runtime";
-import { archiveMeta, compactionPending } from "../compaction";
+import { archiveMeta, compactionPending, contextUsage as contextUsageState, lastSummarySource } from "../compaction";
 import { checkedRotate } from "../stream";
 import { MINT_WS_HINT, err, fmtModel, fmtSettings, fmtThinking, fmtUsage, json, saveSettings, type RouteHandler } from "./_shared";
 import { ROUTE, ownedRoutes, registerHandler } from "./table";
-import { readEvents, readSnapshot } from "pi-cf/agent/snapshots";
 import { loadProjectContextMessage } from "pi-cf/agent/project-context";
 import { composePrompt, SYSTEM_PROMPT } from "pi-cf/agent/session";
 import { readBackstory } from "../backstory";
@@ -310,19 +309,7 @@ const meta: RouteHandler = (ctx, request, url) => {
   const systemPrompt = url.searchParams.has("systemPrompt")
     ? composePrompt(SYSTEM_PROMPT, backstory ?? undefined)
     : undefined;
-  return json({ sid, ws, created, name, cwd, backstory, parentSessionId, head, count, leaf, openRun, context, systemPrompt, model: { provider: triple?.provider ?? null, id: triple?.id ?? null }, thinking: triple?.thinking ?? null, retention: triple?.retention ?? "short", usage, compaction: { pending: compactionPending(sql, sid), archivePages: archive.pages, archiveTotal: archive.total }, fence: fenced?.fence ?? null });
-};
-const snapshot: RouteHandler = (ctx, request, url) => {
-  if (request.method !== "GET") return null;
-  const ws = url.searchParams.get("ws") ?? "";
-  const sid = url.searchParams.get("sid") ?? "";
-  const bad = ctx.requireSession(ws, sid, "retry as GET /workspaces/:id/sessions/:sid/snapshot on the Worker instead", MINT_WS_HINT);
-  if (bad) return bad;
-  const since = Number(url.searchParams.get("since") ?? "0");
-  if (!Number.isInteger(since) || since < 0) {
-    return err("bad since", "retry with ?since=N where N is a non-negative event seq, e.g. ?since=0", 400);
-  }
-  return json({ snapshot: readSnapshot(sid), events: readEvents(sid, since) });
+  return json({ sid, ws, created, name, cwd, backstory, parentSessionId, head, count, leaf, openRun, context, systemPrompt, model: { provider: triple?.provider ?? null, id: triple?.id ?? null }, thinking: triple?.thinking ?? null, retention: triple?.retention ?? "short", usage, contextUsage: contextUsageState(sql, sid), lastSummarySource: lastSummarySource(sql, sid), compaction: { pending: compactionPending(sql, sid), archivePages: archive.pages, archiveTotal: archive.total }, fence: fenced?.fence ?? null });
 };
 
 const branch = (copyEntries: boolean): RouteHandler => async (ctx, request, url) => {
@@ -458,7 +445,6 @@ registerHandler("sessions", ROUTE.model, modelOrThinking);
 registerHandler("sessions", ROUTE.thinking, modelOrThinking);
 registerHandler("sessions", ROUTE.settings, settings);
 registerHandler("sessions", ROUTE.meta, meta);
-registerHandler("sessions", ROUTE.snapshot, snapshot);
 registerHandler("sessions", ROUTE.fork, fork);
 registerHandler("sessions", ROUTE.clone, clone);
 registerHandler("sessions", ROUTE.checkpoints, checkpoints);
