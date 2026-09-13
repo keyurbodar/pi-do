@@ -2,7 +2,7 @@ import type {
   AgentHarnessTool,
   AgentToolResult,
 } from "@earendil-works/pi-agent-core";
-import { normalizeWorkspacePath, type ToolContext } from "./tools.ts";
+import { normalizeWorkspacePath, spillCapped, type ToolContext } from "./tools.ts";
 import { CAPS, capText, failKey, joinOutput } from "../runtime/validate.ts";
 
 export const TEST_MAX_OUTPUT_CHARS = CAPS.testChars;
@@ -44,11 +44,13 @@ export const testTool: AgentHarnessTool<ToolContext, any, { passed: boolean; exi
       script = params.command as string;
     }
     const out = await context.env.exec(script, undefined, { abortSignal: signal });
-    const capped = capText(joinOutput(out.stdout, out.stderr), TEST_MAX_OUTPUT_CHARS);
+    const full = joinOutput(out.stdout, out.stderr);
+    const capped = capText(full, TEST_MAX_OUTPUT_CHARS);
     const passed = out.exit === 0;
     const head = passed ? `PASS ${label}` : `FAIL ${label} (exit ${out.exit})`;
+    const text = capped.capped ? spillCapped(context, "test", full, capped.text) : capped.text;
     return {
-      content: [{ type: "text", text: capped.text ? `${head}\n${capped.text}` : head }],
+      content: [{ type: "text", text: text ? `${head}\n${text}` : head }],
       details: { passed, exit: out.exit },
     };
   },
@@ -133,10 +135,12 @@ export const pmTool: AgentHarnessTool<
       command = `npm run ${script}`;
     }
     const out = await context.env.exec(command, undefined, { abortSignal: signal });
-    const capped = capText(joinOutput(out.stdout, out.stderr), TEST_MAX_OUTPUT_CHARS);
+    const full = joinOutput(out.stdout, out.stderr);
+    const capped = capText(full, TEST_MAX_OUTPUT_CHARS);
     const head = `${params.action} (exit ${out.exit}, lockfile: ${lockfile ?? "none"})`;
+    const text = capped.capped ? spillCapped(context, "pm", full, capped.text) : capped.text;
     return {
-      content: [{ type: "text", text: capped.text ? `${head}\n${capped.text}` : head }],
+      content: [{ type: "text", text: text ? `${head}\n${text}` : head }],
       details: { action: params.action, exit: out.exit, lockfile },
     };
   },

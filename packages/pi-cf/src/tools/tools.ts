@@ -47,6 +47,19 @@ export function textOf(result: AgentToolResult<unknown>): string {
 }
 
 export const MAX_READ_LINES = CAPS.readLines;
+
+// Spill a capped tool output into the workspace tmp/ so the model can read
+// the full text; returns the note line to append (or the original note when
+// the write fails).
+export function spillCapped(context: ToolContext, tool: string, full: string, note: string): string {
+  const path = `tmp/spill-${tool}-${crypto.randomUUID()}.txt`;
+  try {
+    context.env.writeFile(path, full);
+  } catch {
+    return note;
+  }
+  return `${note}\n[output capped — full text saved to ${path}]`;
+}
 export const MAX_READ_BYTES = CAPS.readBytes;
 export const LIST_DEFAULT_MAX_ENTRIES = CAPS.listDefault;
 export const LIST_HARD_MAX_ENTRIES = CAPS.listHard;

@@ -2,6 +2,7 @@ import type { AgentHarnessTool, AgentToolResult } from "@earendil-works/pi-agent
 import { truncateLine } from "@earendil-works/pi-agent-core";
 import { minimatch } from "minimatch";
 import {
+  spillCapped,
   type ToolContext,
 } from "./tools.ts";
 import { CAPS, cappedLimit, checkedLimit, decodeUtf8, failKey, resolveScope } from "../runtime/validate.ts";
@@ -170,6 +171,7 @@ export const grepTool: AgentHarnessTool<
     const nameFilter = params.glob === undefined || params.glob === "" ? null : (params.glob as string);
     const candidates = [...files].sort();
     const lines: string[] = [];
+    const fullLines: string[] = [];
     const skipped: string[] = [];
     let filesSearched = 0;
     let truncatedLines = false;
@@ -195,10 +197,12 @@ export const grepTool: AgentHarnessTool<
         const start = contextLines > 0 ? Math.max(0, n - contextLines) : n;
         const end = contextLines > 0 ? Math.min(raw.length - 1, n + contextLines) : n;
         for (let i = start; i <= end; i += 1) {
-          const match = truncateLine((raw[i] ?? "").replace(/\r/g, ""), GREP_MAX_LINE_LENGTH);
+          const rawLine = (raw[i] ?? "").replace(/\r/g, "");
+          const match = truncateLine(rawLine, GREP_MAX_LINE_LENGTH);
           if (match.wasTruncated) truncatedLines = true;
           const separator = i === n ? ":" : "-";
           lines.push(`${file}${separator}${i + 1}${separator} ${match.text}`);
+          fullLines.push(`${file}${separator}${i + 1}${separator} ${rawLine}`);
         }
         if (matchCount >= limit) break;
       }
@@ -210,14 +214,15 @@ export const grepTool: AgentHarnessTool<
       };
     }
     let text = lines.join("\n");
+    const fullText = fullLines.join("\n");
     if (skipped.length > 0) {
       text += `\n\n[skipped non-UTF8: ${skipped.join(", ")}]`;
+      fullLines.length = 0;
     }
-    if (truncatedLines) {
-      text += `\n\n[long lines truncated at ${GREP_MAX_LINE_LENGTH} chars]`;
-    }
-    if (matchCount >= limit) {
-      text += `\n\n[${limit} matches shown. Use limit=${Math.min(limit * 2, GREP_HARD_MAX_LIMIT)} for more]`;
+    if (truncatedLines || matchCount >= limit) {
+      const note = truncatedLines ? `[long lines truncated at ${GREP_MAX_LINE_LENGTH} chars]` : `[${limit} matches shown. Use limit=${Math.min(limit * 2, GREP_HARD_MAX_LIMIT)} for more]`;
+      if (fullLines.length > 0) text += `\n\n${spillCapped(context, "grep", fullText, note)}`;
+      else text += `\n\n${note}`;
     }
     return {
       content: [{ type: "text", text }],
