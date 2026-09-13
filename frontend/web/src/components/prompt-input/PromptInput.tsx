@@ -12,7 +12,9 @@ import {
   type ClipboardEvent as ReactClipboardEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import { ArrowUp, Mic, Plus, Square, X } from "lucide-react";
+import { ArrowUp, Bookmark, Mic, Plus, Square, X } from "lucide-react";
+
+import { StashMenu, type StashEntry } from "./StashMenu";
 
 export type PromptInputProps = {
   // v1 wires to the session WS send path; keep send() clearing behavior.
@@ -58,6 +60,7 @@ function releaseAttachments(attachments: readonly Attachment[]): void {
 }
 
 const MAX_DRAFT_CHARS = 20_000;
+const MAX_STASH_ENTRIES = 10;
 
 function readDraft(draftKey: string): string {
   try {
@@ -83,6 +86,38 @@ function clearDraft(draftKey: string): void {
   }
 }
 
+let stashSequence = 0;
+
+function readStash(draftKey: string): StashEntry[] {
+  try {
+    const raw = globalThis.localStorage.getItem(`pi-do-stash-${draftKey}`);
+    if (raw === null) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (entry): entry is StashEntry =>
+        typeof entry === "object" &&
+        entry !== null &&
+        typeof (entry as StashEntry).id === "string" &&
+        typeof (entry as StashEntry).text === "string" &&
+        typeof (entry as StashEntry).createdAt === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
+function writeStash(draftKey: string, entries: readonly StashEntry[]): void {
+  try {
+    globalThis.localStorage.setItem(
+      `pi-do-stash-${draftKey}`,
+      JSON.stringify(entries.slice(0, MAX_STASH_ENTRIES)),
+    );
+  } catch {
+    // Quota or private mode. Stash persistence is best-effort.
+  }
+}
+
 export function PromptInput({
   onSubmit,
   running = false,
@@ -94,6 +129,9 @@ export function PromptInput({
   // saved on every change, cleared on send.
   const [value, setValue] = useState(() => readDraft(draftKey));
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // Stash persists per bot alongside the draft; newest entry first.
+  const [stashEntries, setStashEntries] = useState<StashEntry[]>(() => readStash(draftKey));
+  const [isStashMenuOpen, setIsStashMenuOpen] = useState(false);
 
   const attachmentsRef = useRef<Attachment[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -101,6 +139,8 @@ export function PromptInput({
 
   useEffect(() => {
     setValue(readDraft(draftKey));
+    setStashEntries(readStash(draftKey));
+    setIsStashMenuOpen(false);
   }, [draftKey]);
 
   useEffect(
@@ -162,8 +202,45 @@ export function PromptInput({
     }
   };
 
+  const stashCurrentDraft = () => {
+    const text = value.trim();
+    if (text.length === 0) {
+      // Nothing to stash: the button doubles as the menu toggle.
+      setIsStashMenuOpen((open) => !open);
+      return;
+    }
+    stashSequence += 1;
+    const entry: StashEntry = {
+      id: `stash-${Date.now()}-${stashSequence}`,
+      text,
+      createdAt: new Date().toISOString(),
+    };
+    const updated = [entry, ...stashEntries].slice(0, MAX_STASH_ENTRIES);
+    writeStash(draftKey, updated);
+    setStashEntries(updated);
+    clearDraft(draftKey);
+    setValue("");
+    setIsStashMenuOpen(true);
+  };
+
+  const restoreStashEntry = (entry: StashEntry) => {
+    const updated = stashEntries.filter((candidate) => candidate.id !== entry.id);
+    writeStash(draftKey, updated);
+    setStashEntries(updated);
+    setValue(entry.text);
+    writeDraft(draftKey, entry.text);
+    setIsStashMenuOpen(false);
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  };
+
+  const deleteStashEntry = (entry: StashEntry) => {
+    const updated = stashEntries.filter((candidate) => candidate.id !== entry.id);
+    writeStash(draftKey, updated);
+    setStashEntries(updated);
+  };
+
   return (
-    <div className="w-full">
+    <div className="relative w-full">
       <div
         data-testid="composer"
         className="relative flex min-h-13 flex-col overflow-hidden rounded-[1.65rem] border border-input bg-foreground/[0.08] shadow-[0_12px_36px_-24px_rgb(0_0_0/80%)] transition-[border-color,background-color,box-shadow] duration-200 ease-out"
@@ -209,7 +286,7 @@ export function PromptInput({
           placeholder={`Message ${botName}`}
           rows={1}
           value={value}
-          className="field-sizing-content max-h-56 w-full resize-none bg-transparent px-14 py-[0.9rem] text-[15px] leading-6 outline-none placeholder:text-muted-foreground/70"
+          className="field-sizing-content max-h-56 w-full resize-none bg-transparent px-[5.5rem] py-[0.9rem] text-[15px] leading-6 outline-none placeholder:text-muted-foreground/70"
           onChange={(event) => {
             const next = event.currentTarget.value;
             setValue(next);
@@ -220,16 +297,29 @@ export function PromptInput({
         />
 
         <div className="pointer-events-none absolute inset-x-2 bottom-2 flex items-center justify-between">
-          <button
-            type="button"
-            data-testid="composer-attach"
-            aria-label="Add attachment"
-            title="Attach files"
-            onClick={() => fileInputRef.current?.click()}
-            className="pointer-events-auto flex size-9 shrink-0 items-center justify-center rounded-full bg-secondary text-muted-foreground transition-colors hover:text-foreground"
-          >
-            <Plus className="size-5" />
-          </button>
+          <div className="pointer-events-auto flex items-center gap-1">
+            <button
+              type="button"
+              data-testid="composer-stash"
+              aria-label="Stash prompt"
+              aria-expanded={isStashMenuOpen}
+              title={hasText ? "Stash this draft" : "Stashed prompts"}
+              onClick={stashCurrentDraft}
+              className="flex size-9 shrink-0 items-center justify-center rounded-full bg-secondary text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <Bookmark className="size-5" />
+            </button>
+            <button
+              type="button"
+              data-testid="composer-attach"
+              aria-label="Add attachment"
+              title="Attach files"
+              onClick={() => fileInputRef.current?.click()}
+              className="pointer-events-auto flex size-9 shrink-0 items-center justify-center rounded-full bg-secondary text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <Plus className="size-5" />
+            </button>
+          </div>
 
           <div className="pointer-events-auto flex items-center gap-1">
             <button
@@ -262,6 +352,14 @@ export function PromptInput({
         </div>
       </div>
 
+      {isStashMenuOpen ? (
+        <StashMenu
+          entries={stashEntries}
+          onRestore={restoreStashEntry}
+          onDelete={deleteStashEntry}
+          onClose={() => setIsStashMenuOpen(false)}
+        />
+      ) : null}
       <input
         ref={fileInputRef}
         type="file"

@@ -59,17 +59,30 @@ export default function App() {
       <BotRosterSidebar api={roster} />
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-4">
+          {activeBot !== null ? (
+            <span data-testid="header-avatar" className="flex shrink-0 items-center">
+              <BotAvatar identity={activeBot.bloub} presence={activeBot.presence} size={22} />
+            </span>
+          ) : null}
           <span className="truncate text-sm font-semibold text-foreground">
             {activeName ?? 'pi-do'}
           </span>
         </header>
-        <ChatPane boot={boot} activeBot={activeBot} />
+        <ChatPane boot={boot} activeBot={activeBot} activeId={roster.activeId} />
       </div>
     </div>
   );
 }
 
-function ChatPane({ boot, activeBot }: { boot: BootState; activeBot: RosterBot | null }) {
+function ChatPane({
+  boot,
+  activeBot,
+  activeId,
+}: {
+  boot: BootState;
+  activeBot: RosterBot | null;
+  activeId: string | null;
+}) {
   if (boot.status === 'loading') {
     return (
       <main className="main">
@@ -87,6 +100,23 @@ function ChatPane({ boot, activeBot }: { boot: BootState; activeBot: RosterBot |
           <p style={{ color: 'var(--destructive)' }}>
             {boot.status === 'unkeyed' ? UNKEYED_MESSAGE : boot.message}
           </p>
+        </div>
+      </main>
+    );
+  }
+
+  if (activeId === null) {
+    return (
+      <main className="main">
+        <div
+          data-testid="empty-state-no-bot"
+          className="flex flex-1 flex-col items-center justify-center gap-4"
+        >
+          <BotAvatar
+            identity={{ shape: 'cercle', color: 'encre', expression: 'neutre' }}
+            size={96}
+          />
+          <p className="text-sm text-muted-foreground">Pick a bot to start chatting</p>
         </div>
       </main>
     );
@@ -112,7 +142,7 @@ function ReadyThread({ session, activeBot }: { session: SessionRef; activeBot: R
       </div>
       <footer className="composer-footer">
         <div className="composer">
-          <PromptInput onSubmit={thread.send} running={thread.running} onAbort={thread.abort} botName={activeBot?.name} />
+          <PromptInput onSubmit={thread.send} running={thread.running} onAbort={thread.abort} botName={activeBot?.name ?? 'the group'} />
         </div>
       </footer>
     </main>
