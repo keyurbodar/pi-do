@@ -232,8 +232,8 @@ function ReadyThreadInner({ session, ownerId, activeBot, bots, onActivity }: {
         />
       </div>
       <footer className="composer-footer" style={{ padding: "12px 24px 16px" }}>
-        {/* Full-width bar matching the thread column gutters above. */}
-        <div className="composer" style={{ maxWidth: "none", margin: "0" }}>
+        {/* Full-width bar: the composer spans the thread column. */}
+        <div className="composer" style={{ maxWidth: "none", margin: "0", width: "100%" }}>
           <PromptInput key={composerKey} onSubmit={send} running={thread.running} onAbort={thread.abort} botName={activeBot?.name ?? 'the group'} />
         </div>
       </footer>

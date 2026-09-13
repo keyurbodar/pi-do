@@ -247,8 +247,8 @@ body {
 }
 .composer {
   width: 100%;
-  max-width: 880px;
-  margin: 0 auto;
+  max-width: none;
+  margin: 0;
 }
 .shell {
   display: grid;
