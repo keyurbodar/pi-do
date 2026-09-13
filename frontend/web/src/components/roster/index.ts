@@ -1,3 +1,11 @@
 export { BotRosterSidebar } from "./BotRosterSidebar";
 export { default as BotAvatar } from "./BotAvatar";
 export { useRosterState, type RosterApi } from "./useRosterState";
+export { NewBotDialog, type NewBotInput } from "./NewBotDialog";
+export { BotDetailsPanel } from "./BotDetailsPanel";
+export { BotChannelsSheet } from "./BotChannelsSheet";
+export { BotMemorySheet } from "./BotMemorySheet";
+export { BotToolsSheet } from "./BotToolsSheet";
+export { DeleteConfirmDialog } from "./DeleteConfirmDialog";
+export { SheetShell } from "./SheetShell";
+export { hashName, identiconDataUrl, identiconSvg } from "./identicon";

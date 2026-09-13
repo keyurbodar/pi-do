@@ -69,7 +69,7 @@ export interface RosterApi {
   setActive: (id: string | null) => void;
   toggleRail: () => void;
   toggleSectionCollapsed: (sectionId: string) => void;
-  addBot: (name: string, identity: BloubIdentity) => RosterBot;
+  addBot: (name: string, identity: BloubIdentity, extra?: Partial<RosterBot>) => RosterBot;
   addGroup: (name: string, memberIds: string[]) => RosterGroup;
   addSection: (name: string) => RosterSection;
   deleteBot: (id: string) => void;
@@ -78,6 +78,8 @@ export interface RosterApi {
   setItemPinned: (id: string, pinned: boolean) => void;
   moveItem: (id: string, sectionId: string | null) => void;
   setActivity: (id: string, preview: string, presence: RosterBot["presence"]) => void;
+  updateBot: (id: string, patch: Partial<RosterBot>) => void;
+  reorderItem: (dragId: string, targetId: string | null, sectionId: string | null) => void;
 }
 
 export function useRosterState(): RosterApi {
@@ -116,16 +118,27 @@ export function useRosterState(): RosterApi {
     }));
   }, []);
 
-  const addBot = useCallback((name: string, identity: BloubIdentity) => {
+  const addBot = useCallback((name: string, identity: BloubIdentity, extra?: Partial<RosterBot>) => {
     const bot: RosterBot = {
+      ...extra,
+      // Identity and generated fields always win over the extra bag.
       id: makeId("bot"),
       name,
       bloub: identity,
-      preview: "Say hello to your new bot",
+      preview: extra?.preview ?? "Say hello to your new bot",
       updatedAt: Date.now(),
-      presence: "idle",
+      presence: extra?.presence ?? "idle",
       unread: 0,
-      pinned: false,
+      pinned: extra?.pinned ?? false,
+      modelId: extra?.modelId ?? "default",
+      avatarVariant: extra?.avatarVariant ?? "bloub",
+      identiconStyle: extra?.identiconStyle ?? 0,
+      voiceEnabled: extra?.voiceEnabled ?? false,
+      memory: extra?.memory ?? [],
+      sandbox: extra?.sandbox ?? "none",
+      toolOverrides: extra?.toolOverrides ?? {},
+      usageCap: extra?.usageCap ?? 0,
+      channels: extra?.channels ?? {},
     };
     setState((prev) => ({ ...prev, bots: [...prev.bots, bot], activeId: bot.id }));
     return bot;
@@ -206,6 +219,70 @@ export function useRosterState(): RosterApi {
       }),
     }));
   }, []);
+  const updateBot = useCallback((id: string, patch: Partial<RosterBot>) => {
+    setState((prev) => ({
+      ...prev,
+      bots: prev.bots.map((bot) => (bot.id === id ? { ...bot, ...patch, id: bot.id } : bot)),
+    }));
+  }, []);
+
+  const reorderItem = useCallback((dragId: string, targetId: string | null, sectionId: string | null) => {
+    setState((prev) => {
+      if (targetId !== null && dragId === targetId) return prev;
+      const dragBot = prev.bots.find((bot) => bot.id === dragId);
+      const dragGroup = dragBot === undefined ? prev.groups.find((group) => group.id === dragId) : undefined;
+      if (dragBot === undefined && dragGroup === undefined) return prev;
+      // Flat order: drop the dragged bot before the target bot, or append.
+      let bots = prev.bots;
+      if (dragBot !== undefined) {
+        const without = prev.bots.filter((bot) => bot.id !== dragId);
+        if (targetId === null) {
+          bots = [...without, dragBot];
+        } else {
+          const targetIndex = without.findIndex((bot) => bot.id === targetId);
+          bots =
+            targetIndex < 0
+              ? [...without, dragBot]
+              : [...without.slice(0, targetIndex), dragBot, ...without.slice(targetIndex)];
+        }
+      }
+      // Groups keep their own array order for row stability.
+      let groups = prev.groups;
+      if (dragGroup !== undefined) {
+        const without = prev.groups.filter((group) => group.id !== dragId);
+        if (targetId === null) {
+          groups = [...without, dragGroup];
+        } else {
+          const targetIndex = without.findIndex((group) => group.id === targetId);
+          groups =
+            targetIndex < 0
+              ? [...without, dragGroup]
+              : [...without.slice(0, targetIndex), dragGroup, ...without.slice(targetIndex)];
+        }
+      }
+      // Section membership: remove everywhere, then insert before the target
+      // inside the destination section (or append when dropping on a section).
+      const stripped = prev.sections.map((section) => ({
+        ...section,
+        childIds: section.childIds.filter((childId) => childId !== dragId),
+      }));
+      const sections =
+        sectionId === null
+          ? stripped
+          : stripped.map((section) => {
+              if (section.id !== sectionId) return section;
+              if (targetId === null || !section.childIds.includes(targetId)) {
+                return { ...section, childIds: [...section.childIds, dragId] };
+              }
+              const at = section.childIds.indexOf(targetId);
+              return {
+                ...section,
+                childIds: [...section.childIds.slice(0, at), dragId, ...section.childIds.slice(at)],
+              };
+            });
+      return { ...prev, bots, groups, sections };
+    });
+  }, []);
 
   const isSectionCollapsed = useCallback(
     (sectionId: string) => state.collapsedSections.includes(sectionId),
@@ -232,6 +309,8 @@ export function useRosterState(): RosterApi {
       setItemPinned,
       setActivity,
       moveItem,
+      updateBot,
+      reorderItem,
     }),
     [
       state.bots,
@@ -252,6 +331,8 @@ export function useRosterState(): RosterApi {
       setItemPinned,
       setActivity,
       moveItem,
+      updateBot,
+      reorderItem,
     ],
   );
 }
