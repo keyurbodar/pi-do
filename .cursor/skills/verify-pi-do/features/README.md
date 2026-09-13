@@ -57,4 +57,5 @@ behavior, then exactly four H2 sections in this order.
 - [Compaction](./compaction.md) — auto mark-then-archive, manual compact route, archive re-read. Activates PR48a-c.
 - [Routines](./routines.md) — scheduled durable turns: once/interval/weekly, expiry, caps, exactly-once claim, restart resilience. Activates PR54.
 - [Web thread](./web-thread.md) — chat thread in the browser: bootstrap, send, stream, settle. Live with the web frontend (shared dev server).
+- [Web roster](./web-roster.md) — bot roster sidebar: view/search/pin/delete, create bot/group/section, icon rail, select bot. Live with the web frontend (shared dev server).
 - [Web composer](./web-composer.md) — prompt composer: type, send/stop states, abort while running. Live with the web frontend (shared dev server).
