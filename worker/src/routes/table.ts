@@ -65,6 +65,7 @@ export const ROUTE = {
   bgKill: def(["POST"], "/workspaces/:id/bg/kill", "/bg/kill"),
   stream: def(["GET"], "/workspaces/:id/sessions/:sid/stream", "/stream", { sid: true, stream: true }),
   routines: def(["POST", "GET", "DELETE"], "/workspaces/:id/sessions/:sid/routines", "/routines", { sid: true, query: ["id"] }),
+  inbox: def(["POST", "GET"], "/workspaces/:id/sessions/:sid/inbox", "/inbox", { sid: true, query: ["thread", "all"] }),
   create: def(["POST"], null, "/create"),
   exists: def(["GET"], null, "/exists"),
   modelsInner: def(["GET"], null, "/models"),
@@ -75,7 +76,7 @@ export const FORWARD_TABLE: ForwardDef[] = [
   ROUTE.run, ROUTE.compact, ROUTE.archive, ROUTE.entries, ROUTE.meta, ROUTE.snapshot,
   ROUTE.doctor, ROUTE.fork, ROUTE.clone, ROUTE.checkpoints, ROUTE.rewind, ROUTE.files,
   ROUTE.exec, ROUTE.execKill, ROUTE.execDispose, ROUTE.bgPost, ROUTE.bgGet, ROUTE.bgKill,
-  ROUTE.stream, ROUTE.routines,
+  ROUTE.stream, ROUTE.routines, ROUTE.inbox,
 ];
 
 const handlers = new Map<string, RouteHandler>();

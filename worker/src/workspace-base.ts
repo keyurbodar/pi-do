@@ -15,6 +15,8 @@ import { ensureCompactionSchema, runPendingCompactions } from "./compaction";
 import { sessionSummarizer } from "./summarizer";
 import { COMPACTION_JOB, COMPACTION_REARM_MS, KEEPALIVE_JOB, KEEPALIVE_MS, cancelJob, earliestDeadline, runDueJobs, scheduleJob } from "./alarm-mux";
 import { ROUTINE_JOB, ensureRoutinesSchema, fireDueRoutines, type RoutineRow } from "./routines";
+import { INBOX_JOB, INBOX_REARM_MS, deliverDueInbox, inboxPrompt, rearmInbox } from "./inbox";
+import { markDelivered, ensureInboxSchema, type InboxRow } from "pi-cf/store/inbox";
 import { makeSidLiveCheck, RECOVERY_JOB, scanTurns } from "pi-cf/store/recovery";
 import { nextRunAtMin } from "pi-cf/store/runs";
 import { listChunksForTurn } from "pi-cf/store/chunks";
@@ -29,6 +31,7 @@ import { turnRoutes } from "./routes/turns";
 import { opRoutes } from "./routes/ops";
 import { doctorRoutes } from "./routes/doctor";
 import { routineRoutes } from "./routes/routines";
+import { inboxRoutes } from "./routes/inbox";
 
 const ROUTES: Record<string, RouteHandler> = {
   ...fileRoutes,
@@ -37,6 +40,7 @@ const ROUTES: Record<string, RouteHandler> = {
   ...opRoutes,
   ...doctorRoutes,
   ...routineRoutes,
+  ...inboxRoutes,
 };
 
 export class WorkspaceBase implements DurableObject {
@@ -77,6 +81,7 @@ export class WorkspaceBase implements DurableObject {
     ensureCheckpointsSchema(sql);
     ensureCompactionSchema(sql);
     ensureRoutinesSchema(sql);
+    ensureInboxSchema(sql);
     sql.exec("DROP TABLE IF EXISTS pi_owners");
   }
 
@@ -191,6 +196,7 @@ export class WorkspaceBase implements DurableObject {
       sessionContextWindow: (triple) => this.sessionContextWindow(triple),
       streamHost: (ws, sid) => this.streamHost(ws, sid),
       enqueueSessionTurn: (sid, fn) => this.enqueueSessionTurn(sid, fn),
+      mintSession: (ws, name) => this.mintSession(ws, name),
     };
   }
 
@@ -234,6 +240,12 @@ export class WorkspaceBase implements DurableObject {
       // claim already moved next_run_at, so a re-entrant tick cannot re-fire.
       [ROUTINE_JOB]: async () => {
         await fireDueRoutines(sql, Date.now(), (routine) => this.fireRoutineTurn(routine));
+      },
+      // Inbox wake: one queued turn per recipient session carrying its
+      // undelivered messages. The queue serializes behind a busy turn, and a
+      // wake turn whose rows were consumed exits without running the model.
+      [INBOX_JOB]: async () => {
+        await deliverDueInbox(sql, Date.now(), (ws, sid, rows) => this.fireInboxTurn(ws, sid, rows));
       },
       // Orphan-turn recovery: scan due ledger rows and re-drive them through
       // redriveTurn (same turnId, prompt replayed, committed prefix skipped).
@@ -320,6 +332,63 @@ export class WorkspaceBase implements DurableObject {
       const effThinking = host.thinking === null ? null : clampThinkingLevel(catalog ?? {}, host.thinking);
       await executeTurn(host, { prompt: routine.prompt, catalog, thinking: effThinking, runId, turnId }, sink);
     });
+  }
+
+  // The wake-turn path mirrors fireRoutineTurn with one ordering guarantee:
+  // the carried rows stay undelivered until the same sync transaction that
+  // persists the prompt entry marks them delivered with the result cursor,
+  // so a crash mid-turn re-delivers (at-least-once) instead of losing.
+  protected fireInboxTurn(ws: string, sid: string, rows: InboxRow[]): Promise<void> {
+    const ids = rows.map((r) => r.id);
+    const prompt = inboxPrompt(rows);
+    return this.enqueueSessionTurn(sid, () => {
+      const sql = this.state.storage.sql;
+      const runId = crypto.randomUUID();
+      const turnId = crypto.randomUUID();
+      const sink: TurnSink = {
+        push() {},
+        done: (doneId, turn) => {
+          recordTurnWithOpen(sql, sid, doneId, prompt, turn.toolCalls, turn.result, turn.usage, turn.halt ?? null, { inboxIds: ids });
+          markDelivered(sql, ws, ids, entryHead(sql, sid).head);
+        },
+        fail: (failId, error) => {
+          try {
+            openRun(sql, sid, failId);
+            closeRun(sql, sid, failId);
+            appendEntry(sql, sid, "error", { runId: failId, error, inboxIds: ids });
+          } catch {
+          }
+        },
+        aborted() {},
+      };
+      const host = this.streamHost(ws, sid);
+      const catalog = host.model === null ? null : resolveCatalogModel(host.model.provider, host.model.id);
+      const effThinking = host.thinking === null ? null : clampThinkingLevel(catalog ?? {}, host.thinking);
+      return executeTurn(host, { prompt, catalog, thinking: effThinking, runId, turnId }, sink);
+    });
+  }
+
+  // Session materialization for spawn-by-message: the same INSERT the
+  // sessions route performs, callable from the wake path.
+  protected mintSession(ws: string, name: string | null): string {
+    const sql = this.state.storage.sql;
+    const defaults = this.readSettings(ws);
+    const sessionId = crypto.randomUUID();
+    const fence = crypto.randomUUID();
+    sql.exec(
+      "INSERT INTO sessions(sid, ws, created_at, ownerFence, revision, modelProvider, modelId, thinkingLevel, cacheRetention, name, cwd) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
+      sessionId,
+      ws,
+      new Date().toISOString(),
+      fence,
+      defaults.provider,
+      defaults.id,
+      defaults.thinking,
+      "short",
+      name,
+      null,
+    );
+    return sessionId;
   }
 
   protected streamHost(ws: string, sid: string): StreamHost {

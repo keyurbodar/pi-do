@@ -27,7 +27,7 @@ usage:
 commands:
   doctor | workspace create | session create | files put|get|ls|rm | exec | git
   run | claim | model | thinking | models | settings | entries | meta
-  routines list|create|delete | compact | archive | stream
+  routines list|create|delete | inbox list|send | compact | archive | stream
 flags: --base URL (default ${DEFAULT_BASE})  --json  --help, -h
 examples:
   pi-do doctor
@@ -57,10 +57,14 @@ examples:
   meta: T("pi-do meta — resume cursor for a session", "pi-do meta --ws WS --sid SID [--base URL] [--json]"),
   compact: T("pi-do compact — summarize old entries and archive the originals", "pi-do compact --ws WS --sid SID [--base URL] [--json]"),
   archive: T("pi-do archive — re-read one paginated cold-storage page", "pi-do archive --ws WS --sid SID [--page N] [--base URL] [--json]"),
+  inbox: T("pi-do inbox — durable peer messaging between sessions", "pi-do inbox list|send --ws WS --sid SID [options] [--base URL] [--json]"),
   routines: T("pi-do routines — scheduled durable turns on a session", "pi-do routines list|create|delete --ws WS --sid SID [options] [--base URL] [--json]"),
   "routines:list": T("pi-do routines list — every routine in the session, active first", "pi-do routines list --ws WS --sid SID [--base URL] [--json]"),
   "routines:create": T("pi-do routines create — schedule a prompt as a durable turn", "pi-do routines create --ws WS --sid SID --kind once|interval|weekly --spec S --prompt T [--expire-at ISO] [--max-runs N] [--request-id R] [--base URL] [--json]", `Spec: ISO timestamp (once), seconds >= 60 (interval), weekday:HH:MM like mon:09:30 (weekly). Stdout is "routine <id>".`),
   "routines:delete": T("pi-do routines delete — remove one routine", "pi-do routines delete --ws WS --sid SID --id ROUTINE [--base URL] [--json]"),
+  inbox: T("pi-do inbox — durable peer messaging between sessions", "pi-do inbox list|send --ws WS --sid SID [options] [--base URL] [--json]"),
+  "inbox:list": T("pi-do inbox list — messages to or from the session", "pi-do inbox list --ws WS --sid SID [--thread T] [--all] [--base URL] [--json]"),
+  "inbox:send": T("pi-do inbox send — deliver a durable message to another session", "pi-do inbox send --ws WS --sid SID --to SESSION --body T [--thread T] [--request-id R] [--wait] [--timeout S] [--base URL] [--json]", `An unknown --to materializes a new named session on first message. --wait long-polls until the recipient's consuming turn completes (capped at 120s). Stdout is "inbox <id>".`),
   stream: T("pi-do stream — live turns over a WebSocket", "pi-do stream --ws WS --sid SID [--fence F --expected N] [--base URL] [--json]", `Stdin lines are prompts ("/abort", "/steer TEXT", or {raw JSON}); frames print on stdout.`, "Needs node >= 22 for the global WebSocket."),
 };
 
@@ -117,7 +121,7 @@ function parseArgs(argv) {
     "--base": "base", "--ws": "ws", "--workspace": "ws", "--sid": "sid", "--session": "sid",
     "--path": "path", "--body": "body", "--body-file": "bodyFile", "--out": "out", "-o": "out",
     "--command": "command", "--cwd": "cwd", "--fence": "fence", "--expected": "expected", "--prompt": "prompt",
-    "--after": "after", "--limit": "limit", "--page": "page", "--model": "model", "--level": "level", "--kind": "kind", "--spec": "spec", "--expire-at": "expireAt", "--max-runs": "maxRuns", "--request-id": "requestId", "--id": "id",
+    "--after": "after", "--limit": "limit", "--page": "page", "--model": "model", "--level": "level", "--kind": "kind", "--spec": "spec", "--expire-at": "expireAt", "--max-runs": "maxRuns", "--request-id": "requestId", "--id": "id", "--to": "to", "--thread": "thread", "--wait": "wait", "--timeout": "timeout",
     "--thinking": "level", "--provider": "provider", "--retention": "retention",
   };
   const flags = { "--json": "json", "--help": "help", "-h": "help", "--all": "all", "--recursive": "recursive", "--plan": "plan" };
@@ -599,6 +603,32 @@ async function doRoutines(base, json, opts, sub) {
   }
   failUsage(`routines needs a subcommand (list|create|delete).`, HELP.routines);
 }
+async function doInbox(base, json, opts, sub) {
+  const help = (k) => HELP[k] ?? HELP.inbox;
+  if (sub === "list") {
+    needWsSid(opts, "inbox list", help("inbox:list"));
+    const qs = new URLSearchParams();
+    if (opts.thread !== undefined) qs.set("thread", opts.thread);
+    if (opts.all) qs.set("all", "1");
+    const data = await getJson(base, json, sessUrl(base, opts.ws, opts.sid, `/inbox${qs.size > 0 ? `?${qs}` : ""}`));
+    const list = Array.isArray(data.messages) ? data.messages : [];
+    R.done(json, data, R.list(list, (m) => `${m.id} from=${m.from} to=${m.to}${m.thread ? ` thread=${m.thread}` : ""} delivered=${m.deliveredAt ?? "no"} ${m.body}`, `(empty)`), `${list.length} message(s)`);
+    return;
+  }
+  if (sub === "send") {
+    needWsSid(opts, "inbox send", help("inbox:send"));
+    need(opts.to, `inbox send needs --to SESSION (a session id or name).`, help("inbox:send"));
+    need(opts.body, `inbox send needs --body T.`, help("inbox:send"));
+    const payload = { to: opts.to, body: opts.body };
+    if (opts.thread !== undefined) payload.thread = opts.thread;
+    if (opts.requestId !== undefined) payload.requestId = opts.requestId;
+    if (opts.wait) { payload.wait = true; payload.timeout = opts.timeout === undefined ? undefined : checkedUint(opts.timeout, `inbox send needs --timeout S (seconds).`, help("inbox:send"), 1); }
+    const data = await postJson(base, json, sessUrl(base, opts.ws, opts.sid, "/inbox"), payload);
+    R.done(json, data, `inbox ${data.message.id} to=${data.message.to} delivered=${data.message.deliveredAt ?? "no"}`, `inbox ${data.message.id} to=${data.message.to} delivered=${data.message.deliveredAt ?? "no"}`);
+    return;
+  }
+  failUsage(`inbox needs a subcommand (list|send).`, HELP.inbox);
+}
 async function doExec(base, json, opts) {
   need(opts.ws, `exec needs --ws WS.`, HELP.exec);
   if (opts.command === undefined) failUsage(`exec needs --command CMD.`, HELP.exec);
@@ -649,6 +679,8 @@ async function main() {
     await doSessionCreate(opts.base, opts.json, opts);
   } else if (cmd === "routines") {
     await doRoutines(opts.base, opts.json, opts, sub);
+  } else if (cmd === "inbox") {
+    await doInbox(opts.base, opts.json, opts, sub);
   } else if (cmd === "settings") {
     await doSettings(opts.base, opts.json, opts);
   } else {

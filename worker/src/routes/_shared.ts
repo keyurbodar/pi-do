@@ -149,6 +149,7 @@ export interface RouteCtx {
   sessionContextWindow(triple: { provider: string | null; id: string | null } | null): number | null;
   streamHost(ws: string, sid: string): StreamHost;
   enqueueSessionTurn<T>(sid: string, fn: () => Promise<T>): Promise<T>;
+  mintSession(ws: string, name: string | null): string;
 }
 
 export type RouteHandler = (ctx: RouteCtx, request: Request, url: URL) => Promise<Response | null> | Response | null;
