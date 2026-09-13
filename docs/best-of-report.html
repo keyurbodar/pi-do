@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>pi-cf: best-of report (akeru · grok bot · openmaus · noodle)</title>
+<style>
+  body{font:15px/1.6 -apple-system,Helvetica,sans-serif;max-width:860px;margin:2rem auto;padding:0 1rem;color:#1a1a1a}
+  h1{font-size:1.5rem} h2{font-size:1.15rem;margin-top:2.2rem;border-bottom:1px solid #ddd;padding-bottom:.3rem}
+  table{border-collapse:collapse;width:100%;margin:.8rem 0;font-size:.9rem}
+  th,td{border:1px solid #ddd;padding:.45rem .6rem;text-align:left;vertical-align:top}
+  th{background:#f5f5f5}
+  code{background:#f2f2f2;padding:.1rem .3rem;border-radius:3px;font-size:.85em}
+  .tag{display:inline-block;font-size:.72rem;padding:.05rem .45rem;border-radius:8px;vertical-align:middle}
+  .take{background:#e6f4e6}.keep{background:#e6eef8}.drop{background:#f8e6e6}.later{background:#f4eee6}
+  .meta{color:#666;font-size:.85rem}
+  li{margin:.25rem 0}
+</style>
+</head>
+<body>
+
+<h1>pi-cf: best-of report</h1>
+<p class="meta">Backend only — no frontend/UI. Sources: <strong>akeru-bot</strong> (T3 fork, Effect-TS + Mastra + provider CLIs, event-sourced SQLite),
+<strong>OpenMausBot</strong> (framework-free CLI-driver harness, node:sqlite + FTS5),
+<strong>Noodle</strong> (Swift, disk-as-message-bus, persistent bots + shared VMs),
+<strong>herdr</strong> (Rust terminal multiplexer for agent CLIs, keystroke-injection A2A),
+<strong>Grok Bot</strong> (public product facts: one shared cloud computer per account, inbox wake-ups, routines, per-bot memory).
+Research artifacts cloned at <code>/tmp/grok-research/</code>.</p>
+
+<h2>1 · Verdict up front</h2>
+<p>pi-cf's durability core (DO SQLite entry tree, runs ledger, chunk log, alarm recovery, transactional compaction) is <strong>stronger than all four</strong> — none of them owns its own loop, storage, and recovery the way pi-cf does. The gap is the opposite direction: pi-cf is an on-demand harness; the others are <em>always-on teammates</em>. The build plan below closes exactly that gap, borrowing only patterns proven in at least one shipped codebase.</p>
+
+<h2>2 · Replace or change in pi-cf</h2>
+<table>
+<tr><th>Existing</th><th>Change to</th><th>Why</th></tr>
+<tr><td>Tool caps hard-truncate output (<code>CAPS</code> in <code>validate.ts</code>)</td>
+<td><span class="tag take">take</span> Spill-to-file: full output written to a workspace file, tool returns head + path, wording discourages re-reading</td>
+<td>OpenMaus <code>mcp-trim.ts</code> (215 LOC) proves the pattern. Preserves information, reduces compaction pressure. ~20 LOC in the tool layer</td></tr>
+<tr><td>In-memory snapshots bus (<code>agent/snapshots.ts</code>, lost on isolate restart)</td>
+<td><span class="tag take">take</span> Back it with storage or fold its data into <code>meta</code> (it reports run status that <code>pi_runs</code> already holds durably)</td>
+<td>State that vanishes on restart contradicts the persist-before-emit principle; the data already exists in the runs ledger</td></tr>
+<tr><td><code>composePrompt</code> module-global registry (system prompt has no per-session seam)</td>
+<td><span class="tag take">take</span> Thread per-session system prompt content (resolved at session create) as an argument</td>
+<td>Prerequisite for persistent-bot backstory/persona (§5.3). Also resolves the recorded SYSTEM.md divergence for free</td></tr>
+</table>
+
+<h2>3 · pi-cf already has it — keep, don't touch</h2>
+<table>
+<tr><th>System</th><th>pi-cf state</th><th>Theirs</th></tr>
+<tr><td>Agent loop ownership</td><td><span class="tag keep">strong</span> Embeds pi's own Agent; no subprocess driving</td><td>akeru: Mastra + CLI subprocesses; OpenMaus: 24k LOC of CLI drivers; Noodle: harness CLIs. All normalize other people's streams</td></tr>
+<tr><td>Persistence</td><td><span class="tag keep">strong</span> Append-only validated entry tree in DO SQLite; fence/revision CAS</td><td>akeru: event sourcing + receipts (best of breed locally, but desktop-bound); OpenMaus: node:sqlite + FTS5; Noodle: atomic JSON files</td></tr>
+<tr><td>Crash recovery</td><td><span class="tag keep">strong</span> pi_runs ledger, pi_chunks, wake-scan, exactly-once tools, kill -9 proven</td><td>akeru: provider session cursors + git checkpoints; OpenMaus: resume-recovery classification; Noodle: 37 LOC recovery marker. None prove it</td></tr>
+<tr><td>Compaction</td><td><span class="tag keep">strong</span> Usage-exact trigger, LLM summaries, transactional archive, overflow recovery</td><td>akeru/OpenMaus: <em>none of their own</em> — delegated to provider CLIs or a hard 40-turn sliding window. Grok Build: own system, algorithm undisclosed</td></tr>
+<tr><td>Shared-desk safety</td><td><span class="tag keep">strong</span> Per-path mutation queues + per-workspace bash queue</td><td>Grok Bot: shared computer, bots explicitly not isolated; Noodle: shared <code>/workspace</code>. Confirms the model; their isolation is weaker or optional</td></tr>
+<tr><td>Budgets/caps</td><td><span class="tag keep">strong</span> Turns/tools/cost/time caps + shell caps (now evict-and-proceed)</td><td>akeru: depth/concurrency caps on delegation only; others: little</td></tr>
+<tr><td>Steering</td><td><span class="tag keep">strong</span> Durable steer queue, injected at pi's seam</td><td>OpenMaus: durable steer queue too (validates design); akeru: queue modes for TUI</td></tr>
+<tr><td>Plan mode</td><td><span class="tag keep">strong</span> <code>stub-plan.ts</code> read-only tools</td><td>Grok Build plan mode, read-only except plan.md. Equivalent</td></tr>
+</table>
+
+<h2>4 · They do it — pi-cf doesn't need it</h2>
+<table>
+<tr><th>Pattern</th><th>Who does it</th><th>Why skip</th></tr>
+<tr><td>CLI-subprocess driver layer</td><td>OpenMaus (~24k LOC), akeru adapters, Noodle process adapters</td><td>Exists to normalize other vendors' agent CLIs. pi-cf embeds its own loop — the entire layer is irrelevant</td></tr>
+<tr><td>VM/computer layer (Firecracker, Virtualization.framework, Docker pods)</td><td>Grok Bot, Noodle Computer</td><td>They need a computer because the agent runs on someone's laptop. The DO <em>is</em> the computer: VFS + shell + storage in one place. Different constraint, cheaper answer</td></tr>
+<tr><td>Effect-TS / framework adoption</td><td>akeru</td><td>Same guarantees pi-cf gets from seam discipline + batteries, at higher machinery cost</td></tr>
+<tr><td>Formal A2A protocol</td><td>Nobody — not even Grok</td><td>All four converge on inbox messaging + wake-ups instead. Validated: don't build a protocol</td></tr>
+<tr><td>Worktree isolation as default</td><td>Grok Build (optional), akeru (per-bot worktree)</td><td>Grok Bot itself shares one computer per account. Isolation is a contention failure-handler, not architecture</td></tr>
+<tr><td>Memory systems <span class="tag later">parked</span></td><td>All of them (SQL facts, FTS5 journal, MEMORY.md, dream pass)</td><td>Excluded by decision. Noted: Grok Build ships cross-session memory disabled by default — even they aren't sure it's load-bearing</td></tr>
+<tr><td>Embeddings/vector retrieval</td><td>Grok Build memory</td><td>Every shipped local implementation that works uses structured files/tables. No vector store earns its place at single-user scale</td></tr>
+<tr><td>Keystroke-injection A2A transport</td><td>herdr — prompts are bytes written into a foreign agent's PTY stdin; bounded in-memory queue, in-flight messages lost on crash, no idempotency keys</td><td>Exists because the agents are TUIs herdr doesn't own. Its complexity (5s reaction gates, terminal-tail state heuristics, OSC freshness tokens) exists to compensate for not owning storage. pi-cf's durable inbox (row + wake + pull) is strictly stronger — only herdr's <em>ack layer</em> is worth taking (§5.2)</td></tr>
+<tr><td>Skill/MCP/tool-marketplace layers</td><td>All (excluded by scope)</td><td>Out of scope for this report</td></tr>
+</table>
+
+<h2>5 · Add to pi-cf — best-of picks</h2>
+
+<h3>5.1 Routines — scheduled durable turns <span class="tag take">from Grok Bot + akeru</span></h3>
+<ul>
+<li><code>pi_routines</code> table: schedule (once / interval / weekdays / monthly), prompt, target session, expiry, max-active, min-interval floor (Grok Build's limits are good hygiene even in Bot terms).</li>
+<li>One new alarm-mux job type enqueues a prompt into the existing turn pipeline — fence, runs ledger, recovery, budgets all come free.</li>
+<li>Claim-based single-owner runs (akeru's <code>RoutineClaim</code> pattern) so a restarted isolate never double-fires.</li>
+<li>Heartbeat scheduling per Noodle: persisted last-activity wins, consume exactly one overdue beat, no catch-up storms after downtime.</li>
+</ul>
+
+<h3>5.2 Bot inbox — async peer messaging <span class="tag take">from Noodle + Grok Bot</span></h3>
+<ul>
+<li>Durable <code>pi_inbox</code> table per session; <strong>pull, not push</strong>: deliver = persist row + inject a one-line wake sentinel into the bot's prompt (Noodle's <code>&lt;noodle-event/&gt;</code> pattern); the bot reads its inbox during the turn.</li>
+<li>Idempotent delivery via client-supplied request UUID (Noodle) — dedupe across retries.</li>
+<li>Wake-on-alarm: a message wakes a bot that's offline (this is Grok Bot's "a Bot wakes, processes, and can reply later"). Reuses the routines alarm plumbing.</li>
+<li>Handoffs are visible: delivery, reads, and replies are entries — no hidden coordination (matches Grok Bot's "handoffs are visible" and Noodle's disk-as-bus auditability).</li>
+<li><strong>Ack gate</strong> (from herdr's two-phase prompt wait): optional reply-or-deadline acknowledgment on <code>send</code> — the sender's call can block until the recipient's outcome entry lands (wait by monotonic cursor, herdr's <code>state_change_seq</code> pattern) or a timeout fires. "Delivered" is not "acted on"; the ack layer is the pi-cf-native version of <code>--wait --until blocked</code>.</li>
+<li>No orchestrator: coordination is emergent (Noodle's group model); a "chief of staff" is just a bot whose prompt says so.</li>
+<li><strong>Spawn-by-message</strong> (Grok Bot's "I'd spin up a dedicated agent"): a bot never gets raw session-create power. Addressing a not-yet-existing session name materializes it on first message — body = role description filled into a per-workspace backstory template. Creation is an inbox side effect: durable, visible as an entry (who spawned whom and why), rate-limited by the existing budgets machinery. No new execution concept, no spawn storms.</li>
+<li>Channels are threads: a "channel" is inbox rows sharing a <code>thread</code> key; a bot "in" a channel means its context builder includes that thread's recent rows. No channel or membership tables.</li>
+</ul>
+
+<h3>5.3 Persistent-bot identity <span class="tag take">from Noodle + Grok Bot</span></h3>
+<ul>
+<li>A bot = session with a backstory: per-session system prompt content (name, role, standing instructions) resolved at session create — rides the §2 prompt-seam change.</li>
+<li>Backstory stored as data, user-editable, merged with managed instructions so updates don't clobber user edits (Noodle's managed-AGENTS.md pattern).</li>
+<li>Per-bot identity is the unit that owns routines and inbox — not the workspace (Grok Bot: memory/routines per Bot, workspace shared).</li>
+</ul>
+
+<h3>5.4 Context &amp; compaction polish <span class="tag take">from akeru + pi</span></h3>
+<ul>
+<li>Surface context-window state as structured <code>meta</code> fields: <code>usedTokens / contextWindow / compactionPending / summarySource</code> (akeru ingests exactly this shape from its CLIs; we already store it).</li>
+<li>Compaction custom instructions on the compact route (~5 LOC, pi supports it, pi-cf doesn't yet).</li>
+<li>Nothing else — compaction stays as is; it leads every implementation studied.</li>
+</ul>
+
+<h3>5.5 Deliberately deferred</h3>
+<ul>
+<li><span class="tag later">defer</span> Worktree/workspace isolation — build only if soak shows real contention; then it's git-merge through existing routes, not new storage.</li>
+<li><span class="tag later">defer</span> Memory (§4) — revisit after routines + inbox ship, since Grok's own pre-compaction flush and routine continuity both become natural once those exist.</li>
+<li><span class="tag later">defer</span> Turn-context replay classification (OpenMaus's four preambles) — pi-cf's entry tree already resolves discontinuities structurally.</li>
+</ul>
+
+<h2>6 · End-to-end plan (backend complete; frontend pending)</h2>
+<p>Everything a Grok-Bot-style teammate layer needs at the core, in dependency order. When this table is done, the backend is feature-complete against the researched products; a client (chat surface, bot roster, context meters) is pure rendering over entries, inbox rows, and <code>meta</code> fields that already exist — no further backend work required for it.</p>
+<table>
+<tr><th>#</th><th>Deliverable</th><th>Size</th><th>Rides on</th><th>Unlocks</th></tr>
+<tr><td>1</td><td>Routines (§5.1): schedules, expiry, max-active, min-interval, claim-based runs, heartbeat</td><td>one PR</td><td>alarm-mux, turn pipeline</td><td>always-on behavior; alarm plumbing for everything below</td></tr>
+<tr><td>2</td><td>Bot inbox (§5.2): durable rows, pull-not-push, wake sentinel, idempotent request UUIDs, threads-as-channels, ack gate, spawn-by-message</td><td>one PR</td><td>routines' alarm plumbing, steer queue</td><td>peer messaging, group threads, the "Offsite crew" scenario</td></tr>
+<tr><td>3</td><td>Prompt seam + bot backstory (§2 row 3 + §5.3): per-session system prompt as argument, backstory-as-data, backstory template for spawned bots</td><td>one PR</td><td>session create path</td><td>persistent identity; resolves the recorded SYSTEM.md divergence</td></tr>
+<tr><td>4</td><td>Polish (§2 row 1 + §5.4): tool spill-to-file, meta context fields (<code>usedTokens/contextWindow/compactionPending/summarySource</code>), compact custom instructions, durable snapshots bus</td><td>one small PR</td><td>validate.ts, compaction.ts</td><td>better tool contract; client-visible context state</td></tr>
+</table>
+
+<h3>What the world looks like after #4</h3>
+<ul>
+<li>A workspace is a team desk: named bots (sessions with backstories) share one VFS; safety = existing mutation queues.</li>
+<li>Routines fire turns while the user is away; budgets and recovery hold under kill -9 as proven.</li>
+<li>Bots message each other and users through durable inboxes; group threads are visible, auditable entry trees; chiefs assign work with deadlines and get acks.</li>
+<li>Chiefs can spin up new teammates by message, with creation visible and rate-limited.</li>
+<li>Compaction, overflow recovery, and steer semantics are unchanged — already ahead of every implementation studied.</li>
+</ul>
+
+<h3>Open door after #4 (in priority order, none started)</h3>
+<ul>
+<li>Frontend/UI — explicitly pending by decision. Renders entries, inbox rows, meta fields; requires no backend changes.</li>
+<li>Memory — Grok's pre-compaction flush and routine continuity become natural once routines + inbox exist.</li>
+<li>Isolation — only if soak shows real contention on the shared desk.</li>
+</ul>
+
+</body>
+</html>

@@ -28,7 +28,7 @@ cd "${ROOT}"
 
 start_dev() {
   tag="$1"
-  (cd "${ROOT}/worker" && exec >>"${OUT}/${tag}.log" 2>&1 </dev/null && exec npx wrangler dev --port "${PORT}" --persist-to "${TMPBASE}/persist" & echo "$!" >"${PIDFILE}")
+  (cd "${ROOT}/worker" && exec >>"${OUT}/${tag}.log" 2>&1 </dev/null && exec npx wrangler dev --port "${PORT}" --persist-to "${TMPBASE}/persist" --var OPENCODE_API_KEY: & echo "$!" >"${PIDFILE}")
   i=0
   while ! curl -sf --max-time 2 "${BASE}/" >/dev/null 2>&1; do
     i=$((i + 1))
