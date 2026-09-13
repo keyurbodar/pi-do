@@ -60,7 +60,7 @@ function BotRow({
   const typing = bot.presence === "typing";
   return (
     <div
-      className="mx-2"
+      className="mx-2 mb-1"
       onContextMenu={(event) => {
         event.preventDefault();
         onMenu({ x: event.clientX, y: event.clientY });
@@ -73,7 +73,7 @@ function BotRow({
         aria-current={isActive || undefined}
         onClick={onSelect}
         className={cn(
-          "flex h-[60px] w-full min-w-0 cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          "flex h-[64px] w-full min-w-0 cursor-pointer items-center gap-3 rounded-lg px-3 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring",
           isActive
             ? "bg-white/[0.08] text-sidebar-foreground"
             : "text-sidebar-muted-foreground hover:bg-accent",
@@ -83,7 +83,7 @@ function BotRow({
         <span className="relative flex size-10 shrink-0 items-center justify-center">
           {/* Sleeping blobs collapse to a dot in the bloub engine; render the
               idle body dimmed so the roster never reads as broken. */}
-          <BotAvatar identity={bot.bloub} presence={sleeping ? "idle" : bot.presence} size={40} />
+          <BotAvatar identity={bot.bloub} presence={sleeping ? "idle" : bot.presence} size={48} className="shrink-0" />
           {bot.presence === "working" ? (
             <span className="absolute -bottom-px -right-px size-2 rounded-full bg-success ring-1 ring-sidebar" />
           ) : null}
@@ -98,7 +98,7 @@ function BotRow({
         </span>
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="flex items-baseline gap-2">
-            <span className="min-w-0 flex-1 truncate text-sm font-medium text-sidebar-foreground">
+            <span className="min-w-0 flex-1 truncate text-[15px] font-medium text-sidebar-foreground">
               {bot.name}
             </span>
             {bot.pinned ? <PinIcon className="size-3 shrink-0 text-sidebar-muted-foreground" /> : null}
@@ -136,7 +136,7 @@ function GroupRow({
   const members = groupMembers(group, bots);
   return (
     <div
-      className="mx-2"
+      className="mx-2 mb-1"
       onContextMenu={(event) => {
         event.preventDefault();
         onMenu({ x: event.clientX, y: event.clientY });
@@ -149,7 +149,7 @@ function GroupRow({
         aria-current={isActive || undefined}
         onClick={onSelect}
         className={cn(
-          "flex h-[60px] w-full min-w-0 cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          "flex h-[64px] w-full min-w-0 cursor-pointer items-center gap-3 rounded-lg px-3 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring",
           isActive
             ? "bg-white/[0.08] text-sidebar-foreground"
             : "text-sidebar-muted-foreground hover:bg-accent",
@@ -159,8 +159,13 @@ function GroupRow({
           <GroupMemberStack group={group} bots={bots} sizeClassName="size-9" />
         </span>
         <span className="flex min-w-0 flex-1 flex-col">
-          <span className="min-w-0 flex-1 truncate text-sm font-medium text-sidebar-foreground">
-            {group.name}
+          <span className="flex min-w-0 flex-1 items-baseline gap-2">
+            <span className="min-w-0 flex-1 truncate text-[15px] font-medium text-sidebar-foreground">
+              {group.name}
+            </span>
+            <span className="shrink-0 text-xs tabular-nums text-sidebar-muted-foreground">
+              {formatRosterTimestamp(group.updatedAt)}
+            </span>
           </span>
           <span className="min-w-0 truncate text-sm text-sidebar-muted-foreground">
             {members.map((member) => member.name).join(", ")}

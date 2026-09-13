@@ -10,7 +10,7 @@ import {
   type RosterSection,
 } from "../../lib/roster";
 
-const STORAGE_KEY = "pi-do.roster.v1";
+const STORAGE_KEY = "pi-do.roster.v2";
 
 interface PersistedRoster {
   bots: RosterBot[];
@@ -131,7 +131,7 @@ export function useRosterState(): RosterApi {
   }, []);
 
   const addGroup = useCallback((name: string, memberIds: string[]) => {
-    const group: RosterGroup = { id: makeId("group"), name, memberIds };
+    const group: RosterGroup = { id: makeId("group"), name, memberIds, updatedAt: Date.now() };
     setState((prev) => ({ ...prev, groups: [...prev.groups, group], activeId: group.id }));
     return group;
   }, []);

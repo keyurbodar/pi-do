@@ -70,6 +70,8 @@ export interface RosterGroup {
   id: string;
   name: string;
   memberIds: string[];
+  /** Epoch ms of the last activity; keeps group rows aligned with bot rows. */
+  updatedAt: number;
 }
 
 export interface RosterSection {
@@ -159,6 +161,7 @@ const SEED_ROSTER: Roster = {
       id: "offsite-crew",
       name: "Offsite crew",
       memberIds: ["chief", "account-manager", "talent-scout"],
+      updatedAt: minutesAgo(355),
     },
   ],
   sections: [],
