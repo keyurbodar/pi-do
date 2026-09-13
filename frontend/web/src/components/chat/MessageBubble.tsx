@@ -5,10 +5,13 @@
 // render as a clickable grid that opens the lightbox. Group threads add a
 // muted sender label above the bubble, and text that names a roster bot
 // renders that run as an inline BotMention chip instead of markdown. Every
-// bubble carries a hover toolbar: copy-to-clipboard with Copied feedback,
-// retry (re-sends via onRetry), and — on user bubbles — edit, which loads
-// the text back into the composer via onEdit (default no-op).
-import { Check, Copy, FileText, Pencil, RotateCcw } from "lucide-react";
+// bubble carries a hover toolbar (react / reply / more with copy +
+// download-transcript-bit), an optional quoted reply block above its text,
+// and grouped reaction counts below it. Reaction state is local per message
+// id; callers may observe picks via onReact. Legacy onRetry/onEdit/retryText
+// props are accepted but no longer rendered — retry/revert/edit affordances
+// were removed in favor of reply-everywhere.
+import { FileText } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 
@@ -16,6 +19,21 @@ import type { RosterBot } from "../../lib/roster";
 import type { AttachmentVM, MessageBubbleVM } from "../thread/viewModel";
 import { BotMention } from "./BotMention";
 import { ChatMarkdown } from "./ChatMarkdown";
+import { MessageControls } from "./MessageControls";
+import { groupReactions, MessageReactions, type ReactionCount } from "./MessageReactions";
+import { setReplyTarget } from "./replyStore";
+
+/** Quoted reply block rendered above the bubble text. */
+export interface ReplyQuote {
+  label: string;
+  text: string;
+}
+
+/** Mapper-local bubble extras passed straight from turn metadata. */
+interface BubbleExtras {
+  replyTo?: ReplyQuote;
+  reactions?: { emoji: string; by: string }[];
+}
 
 export function MessageBubble({
   vm,
@@ -27,6 +45,12 @@ export function MessageBubble({
   onRetry,
   onEdit,
   retryText,
+  onAnswer,
+  onDecision,
+  replyQuote,
+  reactions,
+  onReact,
+  onReply,
 }: {
   vm: MessageBubbleVM;
   avatarSlot?: ReactNode;
@@ -37,13 +61,81 @@ export function MessageBubble({
   /** Roster bots resolvable as inline mentions; empty disables chip rendering. */
   bots?: RosterBot[];
   onOpenImage: (attachment: AttachmentVM) => void;
-  /** Re-sends text (the shell passes the turn prompt as retryText). */
+  /** Legacy: accepted for frozen callers, no longer rendered. */
   onRetry?: (prompt: string) => void;
-  /** Loads a user bubble's text back into the composer; default no-op. */
+  /** Legacy: accepted for frozen callers, no longer rendered. */
   onEdit?: (text: string) => void;
-  /** Prompt re-sent by the retry action; defaults to the bubble text. */
+  /** Legacy: accepted for frozen callers, no longer rendered. */
   retryText?: string;
+  /** Legacy: accepted for frozen callers, no longer rendered. */
+  onAnswer?: (id: string, answer: string) => void;
+  /** Legacy: accepted for frozen callers, no longer rendered. */
+  onDecision?: (id: string, decision: "approved" | "rejected") => void;
+  /** Nested quoted block above the text; defaults to the VM replyTo extra. */
+  replyQuote?: ReplyQuote | null;
+  /** Grouped reaction counts; defaults to the grouped VM reactions extra. */
+  reactions?: ReactionCount[];
+  /** Called with the picked emoji; default updates local-only state. */
+  onReact?: (emoji: string) => void;
+  /** Arms the composer reply strip; default targets this bubble's text. */
+  onReply?: () => void;
 }) {
+  // Legacy props stay accepted so frozen shells keep compiling; reference
+  // them so removals stay deliberate rather than silent dead props.
+  void onRetry;
+  void onEdit;
+  void retryText;
+  void onAnswer;
+  void onDecision;
+
+  const extras = vm as MessageBubbleVM & BubbleExtras;
+  const quote: ReplyQuote | null =
+    replyQuote !== undefined ? replyQuote : (extras.replyTo ?? null);
+
+  const baseReactions: ReactionCount[] =
+    reactions ?? groupReactions(extras.reactions ?? []);
+
+  // Local reaction state, keyed by message id so id reuse never leaks picks.
+  const [reactionState, setReactionState] = useState<{
+    forId: string;
+    counts: ReactionCount[];
+  }>(() => ({ forId: vm.id, counts: baseReactions }));
+  if (reactionState.forId !== vm.id) {
+    setReactionState({ forId: vm.id, counts: baseReactions });
+  }
+  const visibleReactions =
+    reactionState.forId === vm.id ? reactionState.counts : baseReactions;
+
+  const react = (emoji: string) => {
+    setReactionState((prev) => {
+      const counts = prev.forId === vm.id ? prev.counts : baseReactions;
+      const existing = counts.find((entry) => entry.emoji === emoji);
+      const next: ReactionCount[] =
+        existing !== undefined
+          ? counts.map((entry) =>
+              entry.emoji === emoji
+                ? {
+                    emoji: entry.emoji,
+                    count: entry.mine ? Math.max(0, entry.count - 1) : entry.count + 1,
+                    mine: !entry.mine,
+                  }
+                : entry,
+            ).filter((entry) => entry.count > 0)
+          : [...counts, { emoji, count: 1, mine: true }];
+      return { forId: vm.id, counts: next };
+    });
+    onReact?.(emoji);
+  };
+
+  const replyLabel = senderLabel ?? (vm.role === "user" ? "You" : "Bot");
+  const reply = () => {
+    if (onReply !== undefined) {
+      onReply();
+      return;
+    }
+    setReplyTarget({ label: replyLabel, text: vm.text.slice(0, 120) });
+  };
+
   const [copied, setCopied] = useState(false);
   const copyTimer = useRef<number | null>(null);
   useEffect(() => {
@@ -74,54 +166,50 @@ export function MessageBubble({
     copyTimer.current = window.setTimeout(() => setCopied(false), 1500);
   };
 
+  const downloadTranscript = () => {
+    const blob = new Blob([`${replyLabel}: ${vm.text}\n`], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `message-${vm.id}.txt`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+  };
+
   const toolbar = (
-    <div
-      data-testid={`message-actions-${vm.id}`}
-      className="absolute -top-3 right-1 z-10 flex items-center gap-0.5 rounded-full border border-[var(--border)] bg-[var(--card)] p-0.5 opacity-0 shadow-[var(--shadow-float)] transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100"
-    >
-      <button
-        type="button"
-        data-testid={`message-copy-${vm.id}`}
-        aria-label="Copy message"
-        title="Copy message"
-        onClick={copy}
-        className="flex size-6 cursor-pointer items-center justify-center rounded-full text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]/70"
-      >
-        {copied ? <Check aria-hidden className="size-3.5" /> : <Copy aria-hidden className="size-3.5" />}
-      </button>
-      <button
-        type="button"
-        data-testid={`message-retry-${vm.id}`}
-        aria-label="Retry prompt"
-        title="Retry prompt"
-        onClick={() => onRetry?.(retryText ?? vm.text)}
-        className="flex size-6 cursor-pointer items-center justify-center rounded-full text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]/70"
-      >
-        <RotateCcw aria-hidden className="size-3.5" />
-      </button>
-      {vm.role === "user" && (
-        <button
-          type="button"
-          data-testid={`message-edit-${vm.id}`}
-          aria-label="Edit in composer"
-          title="Edit in composer"
-          onClick={() => onEdit?.(vm.text)}
-          className="flex size-6 cursor-pointer items-center justify-center rounded-full text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]/70"
-        >
-          <Pencil aria-hidden className="size-3.5" />
-        </button>
-      )}
-    </div>
+    <MessageControls
+      messageId={vm.id}
+      onReact={react}
+      onReply={reply}
+      onCopy={() => void copy()}
+      copied={copied}
+      onDownloadTranscript={downloadTranscript}
+    />
   );
+
+  const quoteBlock =
+    quote !== null ? (
+      <div
+        data-testid={`message-reply-quote-${vm.id}`}
+        className="mb-1.5 rounded-md border-l-2 border-[var(--primary)] bg-black/5 px-2 py-1 text-xs dark:bg-white/10"
+      >
+        <p className="font-medium">{quote.label}</p>
+        <p className="truncate opacity-70">{quote.text}</p>
+      </div>
+    ) : null;
 
   if (vm.role === "user") {
     return (
       <div data-testid={`thread-item-${vm.id}`} className="group relative flex flex-col items-end">
         {toolbar}
         <div className="max-w-[80%] rounded-2xl bg-[var(--message-surface)] px-3.5 py-2.5 text-[var(--message-foreground)]">
+          {quoteBlock}
           {renderText(vm.text, bots)}
           <AttachmentGrid attachments={vm.attachments} onOpen={onOpenImage} />
         </div>
+        <MessageReactions messageId={vm.id} reactions={visibleReactions} onReact={react} />
         {copied && (
           <span data-testid={`message-copied-${vm.id}`} className="px-1 text-xs text-[var(--muted-foreground)]">
             Copied
@@ -142,6 +230,7 @@ export function MessageBubble({
         {vm.text.length > 0 && (
           <div className="flex items-start gap-0.5">
             <div className="min-w-0 flex-1">
+              {quoteBlock}
               {renderText(vm.text, bots)}
             </div>
             {streaming && (
@@ -153,6 +242,7 @@ export function MessageBubble({
           </div>
         )}
         <AttachmentGrid attachments={vm.attachments} onOpen={onOpenImage} />
+        <MessageReactions messageId={vm.id} reactions={visibleReactions} onReact={react} />
         {copied && (
           <span data-testid={`message-copied-${vm.id}`} className="text-xs text-[var(--muted-foreground)]">
             Copied
