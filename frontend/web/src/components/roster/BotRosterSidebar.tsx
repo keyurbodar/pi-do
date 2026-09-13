@@ -92,7 +92,7 @@ function BotRow({
           selected && !isActive && "ring-1 ring-ring",
         )}
       >
-        <span className="relative flex size-10 shrink-0 items-center justify-center">
+        <span className="relative flex size-10 shrink-0 items-center justify-center rounded-full bg-white/[0.06]">
           {/* Sleeping blobs collapse to a dot in the bloub engine; render the
               idle body dimmed so the roster never reads as broken. */}
           {bot.avatarVariant === "upload" && bot.avatarImage ? (

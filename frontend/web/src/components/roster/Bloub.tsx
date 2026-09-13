@@ -53,7 +53,9 @@ export default function Bloub({
   className = undefined,
 }: BloubProps) {
   const shapeRadii = SHAPE_BY_ID.get(shape)?.radii ?? null;
-  const ink = COLOR_BY_ID.get(color)?.hex ?? '#0a0a0c';
+  // Unknown ids (stale restores) fall back to visible gray, never page-black:
+  // #0a0a0c on #0a0a0a renders a black hole with eye holes.
+  const ink = COLOR_BY_ID.get(color)?.hex ?? '#a3a3a3';
   const expressionDef = EXPRESSION_BY_ID.get(expression) ?? null;
 
   // One engine per mounted component; prop changes go through its dated
