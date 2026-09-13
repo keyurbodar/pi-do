@@ -130,6 +130,7 @@ export const CREATE_TABLES = {
   sessionTotals: "CREATE TABLE IF NOT EXISTS session_totals(sid TEXT PRIMARY KEY, inTokens INTEGER NOT NULL DEFAULT 0, outTokens INTEGER NOT NULL DEFAULT 0, cacheRead INTEGER NOT NULL DEFAULT 0, costTotal REAL NOT NULL DEFAULT 0, elapsedMs INTEGER NOT NULL DEFAULT 0, turns INTEGER NOT NULL DEFAULT 0)",
   files: "CREATE TABLE IF NOT EXISTS files(ws TEXT, path TEXT, body BLOB, updated_at TEXT, PRIMARY KEY(ws, path))",
   piArchive: "CREATE TABLE IF NOT EXISTS pi_archive(sid TEXT, page INTEGER, entries TEXT, PRIMARY KEY(sid, page))",
+  piRoutines: "CREATE TABLE IF NOT EXISTS pi_routines(ws TEXT, id TEXT PRIMARY KEY, sid TEXT, schedule_kind TEXT, schedule_spec TEXT, prompt TEXT, next_run_at INTEGER, expire_at INTEGER, max_runs INTEGER, run_count INTEGER NOT NULL DEFAULT 0, min_interval_s INTEGER, created_by TEXT, last_request_id TEXT, claim_epoch INTEGER NOT NULL DEFAULT 0)",
 } as const;
 
 export function ensureTables(sql: Sql, tables: readonly string[] = Object.values(CREATE_TABLES)): void {

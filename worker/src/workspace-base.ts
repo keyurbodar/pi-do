@@ -14,12 +14,14 @@ import { ensureCheckpointsSchema } from "pi-cf/store/checkpoints";
 import { ensureCompactionSchema, runPendingCompactions } from "./compaction";
 import { sessionSummarizer } from "./summarizer";
 import { COMPACTION_JOB, COMPACTION_REARM_MS, KEEPALIVE_JOB, KEEPALIVE_MS, cancelJob, earliestDeadline, runDueJobs, scheduleJob } from "./alarm-mux";
+import { ROUTINE_JOB, ensureRoutinesSchema, fireDueRoutines, type RoutineRow } from "./routines";
 import { makeSidLiveCheck, RECOVERY_JOB, scanTurns } from "pi-cf/store/recovery";
 import { nextRunAtMin } from "pi-cf/store/runs";
 import { listChunksForTurn } from "pi-cf/store/chunks";
-import { readAttachment, redriveTurn, socketMessage, wrapSocket, type LiveTurn, type StreamHost } from "./stream";
+import { appendEntry, closeRun, openRun, recordTurnWithOpen } from "pi-cf/store/entries";
+import { readAttachment, redriveTurn, socketMessage, wrapSocket, executeTurn, type LiveTurn, type StreamHost, type TurnSink } from "./stream";
 import type { Agent } from "@earendil-works/pi-agent-core";
-import { resolveCatalogModel, type RuntimeEnv } from "./model-runtime";
+import { clampThinkingLevel, resolveCatalogModel, type RuntimeEnv } from "./model-runtime";
 import { err, UNKNOWN_SESSION_HINT, type Env, type FenceNext, type FenceRead, type ModelTriple, type RouteCtx, type RouteHandler, type WorkspaceSettings } from "./routes/_shared";
 import { fileRoutes } from "./routes/files";
 import { sessionRoutes } from "./routes/sessions";
@@ -72,6 +74,7 @@ export class WorkspaceBase implements DurableObject {
     ensureEpisodeSchema(sql);
     ensureCheckpointsSchema(sql);
     ensureCompactionSchema(sql);
+    ensureRoutinesSchema(sql);
     sql.exec("DROP TABLE IF EXISTS pi_owners");
   }
 
@@ -224,6 +227,12 @@ export class WorkspaceBase implements DurableObject {
       [KEEPALIVE_JOB]: () => {
         if (this.live.size > 0) scheduleJob(sql, KEEPALIVE_JOB, Date.now() + KEEPALIVE_MS);
       },
+      // Routine fire: claimed rows enqueue their prompt through the session's
+      // normal turn pipeline (fence-free, like the headless run route); the
+      // claim already moved next_run_at, so a re-entrant tick cannot re-fire.
+      [ROUTINE_JOB]: async () => {
+        await fireDueRoutines(sql, Date.now(), (routine) => this.fireRoutineTurn(routine));
+      },
       // Orphan-turn recovery: scan due ledger rows and re-drive them through
       // redriveTurn (same turnId, prompt replayed, committed prefix skipped).
       // Re-arm only while rows remain: earliest future backoff, or the scan's
@@ -279,6 +288,36 @@ export class WorkspaceBase implements DurableObject {
     const next = earliestDeadline(sql);
     if (next === null) await this.state.storage.deleteAlarm();
     else await this.state.storage.setAlarm(next);
+  }
+
+  // The fire path mirrors the headless run route: same sink shape, no fence
+  // rotation (no client holds one), prompt entry carries routineId so its
+  // entries stay attributable, and a failure lands an error entry.
+  protected fireRoutineTurn(routine: RoutineRow): Promise<void> {
+    return this.enqueueSessionTurn(routine.sid, async () => {
+      const sql = this.state.storage.sql;
+      const runId = crypto.randomUUID();
+      const turnId = crypto.randomUUID();
+      const sink: TurnSink = {
+        push() {},
+        done: (doneId, turn) => {
+          recordTurnWithOpen(sql, routine.sid, doneId, routine.prompt, turn.toolCalls, turn.result, turn.usage, turn.halt ?? null, { routineId: routine.id });
+        },
+        fail: (failId, error) => {
+          try {
+            openRun(sql, routine.sid, failId);
+            closeRun(sql, routine.sid, failId);
+            appendEntry(sql, routine.sid, "error", { runId: failId, error, routineId: routine.id });
+          } catch {
+          }
+        },
+        aborted() {},
+      };
+      const host = this.streamHost(routine.ws, routine.sid);
+      const catalog = host.model === null ? null : resolveCatalogModel(host.model.provider, host.model.id);
+      const effThinking = host.thinking === null ? null : clampThinkingLevel(catalog ?? {}, host.thinking);
+      await executeTurn(host, { prompt: routine.prompt, catalog, thinking: effThinking, runId, turnId }, sink);
+    });
   }
 
   protected streamHost(ws: string, sid: string): StreamHost {

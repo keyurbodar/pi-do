@@ -177,9 +177,10 @@ function recordTurnInner(
   result: string,
   usage?: SessionUsage,
   halt?: SessionHalt | null,
+  source?: Record<string, unknown>,
 ): void {
   runInSyncTx(sql, () => {
-    appendEntry(sql, sid, "prompt", { runId, prompt });
+    appendEntry(sql, sid, "prompt", source === undefined ? { runId, prompt } : { runId, prompt, ...source });
     for (const call of toolCalls) {
       appendEntry(sql, sid, "toolCall", { runId, id: call.id, tool: call.tool, args: call.args });
       appendEntry(sql, sid, "toolResult", { runId, id: call.id, tool: call.tool, output: call.output });
@@ -218,6 +219,8 @@ function finiteOr0(value: number): number {
   return value;
 }
 
+// source merges extra attribution fields into the prompt entry body (a
+// routine fire carries its routineId so its entries stay attributable).
 export function recordTurnWithOpen(
   sql: EntriesSql,
   sid: string,
@@ -227,10 +230,11 @@ export function recordTurnWithOpen(
   result: string,
   usage?: SessionUsage,
   halt?: SessionHalt | null,
+  source?: Record<string, unknown>,
 ): void {
   runInSyncTx(sql, () => {
     openRunInner(sql, sid, runId);
-    recordTurnInner(sql, sid, runId, prompt, toolCalls, result, usage, halt);
+    recordTurnInner(sql, sid, runId, prompt, toolCalls, result, usage, halt, source);
   });
 }
 
