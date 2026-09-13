@@ -222,14 +222,20 @@ export function ThreadPane({
 
   const lastTurn = turns.length > 0 ? turns[turns.length - 1] : null;
   const empty = turns.length === 0 && pending.length === 0 && !playing;
-  /** Working avatar for the tail turn: senderId resolved via the roster
-  (fixture multi-sender turns included); the shell active-bot slot is the
-  1:1 fallback. Null (no active bot) renders the dots-only row as before. */
+  // Working avatar for the tail turn: senderId resolved via the roster
+  // (fixture multi-sender turns included); the shell active-bot slot is the
+  // 1:1 fallback. Mirrors the sidebar row: uploaded avatars render the image,
+  // every other variant renders the bloub (BotAvatar alone would show a
+  // placeholder bloub, often near-black, for upload-variant bots like lahn).
   const workingBot =
     lastTurn?.senderId !== undefined ? bots.find((bot) => bot.id === lastTurn.senderId) : undefined;
   const workingAvatar =
     workingBot !== undefined ? (
-      <BotAvatar identity={workingBot.bloub} presence={workingBot.presence} size={36} />
+      workingBot.avatarVariant === "upload" && workingBot.avatarImage ? (
+        <img src={workingBot.avatarImage} alt="" className="size-9 shrink-0 rounded-full object-cover" />
+      ) : (
+        <BotAvatar identity={workingBot.bloub} presence={workingBot.presence} size={36} />
+      )
     ) : (
       avatarSlot
     );

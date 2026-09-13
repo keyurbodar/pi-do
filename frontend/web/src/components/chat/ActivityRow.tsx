@@ -21,7 +21,7 @@ export function ActivityRow({ avatarSlot = null }: { avatarSlot?: ReactNode }) {
         {avatarSlot !== null && (
           <span data-testid="activity-avatar" aria-hidden className="relative inline-flex shrink-0">
             {avatarSlot}
-            <span className="pointer-events-none absolute inset-0 animate-shimmer rounded-full bg-[linear-gradient(100deg,transparent_30%,color-mix(in_srgb,var(--foreground)_28%,transparent)_50%,transparent_70%)] bg-[length:200%_100%]" />
+            <span className="pointer-events-none absolute inset-0 animate-shimmer rounded-full bg-[linear-gradient(100deg,transparent_40%,color-mix(in_srgb,var(--foreground)_14%,transparent)_50%,transparent_60%)] bg-[length:200%_100%]" />
           </span>
         )}
         <span className="flex min-h-8 items-center gap-1.5" aria-hidden>
