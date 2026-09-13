@@ -4,13 +4,16 @@
 // the bot's fixture script plays with timers: the prompt lands as a done
 // user turn, then the bot turn opens streaming and grows thinking → tool
 // rows flipping running→done → text word-by-word, then settles to done.
-// Turn shapes match thread/reducer's TurnViewState exactly, so ThreadPane
-// renders fixture turns identically to live ones. Every timer is cleared on
-// botId change or unmount.
+// Multi-sender (group) exchanges carry segments instead of a single
+// response: each segment streams as its own turn in order, so the group send
+// plays as an interleaved per-sender round-robin, not all at once. Turn
+// shapes match thread/reducer's TurnViewState exactly, so ThreadPane renders
+// fixture turns identically to live ones. Every timer is cleared on botId
+// change or unmount.
 import { useEffect, useState } from "react";
 
-import type { ToolCallView, TurnViewState } from "../thread/types";
-import { FIXTURE_SCRIPTS, type FixtureScript } from "./fixtureScripts";
+import type { TurnViewState } from "../thread/types";
+import { FIXTURE_SCRIPTS, type FixtureResponse, type FixtureScript } from "./fixtureScripts";
 
 /** Prompt lands this long after the bot is selected. */
 export const USER_DELAY_MS = 350;
@@ -39,6 +42,9 @@ function baseTurn(
     senderId?: string;
     systemEvent?: string;
     interBotFrom?: string[];
+    delegation?: TurnViewState["delegation"];
+    userInput?: TurnViewState["userInput"];
+    approval?: TurnViewState["approval"];
   },
 ): TurnViewState {
   const ts = at ?? Date.now();
@@ -59,6 +65,9 @@ function baseTurn(
     senderId: meta?.senderId,
     systemEvent: meta?.systemEvent,
     interBotFrom: meta?.interBotFrom,
+    delegation: meta?.delegation,
+    userInput: meta?.userInput,
+    approval: meta?.approval,
   };
 }
 
@@ -99,47 +108,34 @@ export function useFixturePlayback(botId: string | null): FixturePlayback {
       );
     };
 
-    setPlaying(true);
-    let t = USER_DELAY_MS;
-    let lastDone = 0;
-
-    script.forEach((exchange, i) => {
-      const userRunId = `fixture:${botId}:${i}:prompt`;
-      const botRunId = `fixture:${botId}:${i}:run`;
-      const prompt = exchange.prompt;
-      const resp = exchange.response;
-
-      at(t, () => {
-        // First fired timer: playback truly started (StrictMode remounts
-        // clear the pending timers before this, so they can replay).
-        played.add(botId);
-        setTurns((prev) => [...prev, baseTurn(userRunId, prompt, "done", exchange.at)]);
-      });
-
-      const botStart = t + BOT_DELAY_MS;
-      at(botStart, () =>
-        setTurns((prev) => [
-          ...prev,
-          baseTurn(botRunId, "", "streaming", exchange.at, {
-            senderId: exchange.senderId,
-            systemEvent: exchange.systemEvent,
-            interBotFrom: exchange.interBotFrom,
-          }),
-        ]),
-      );
-
-      let cursor = botStart;
+    // Schedules one streaming bot turn opening at `from`; returns the cursor
+    // where the next turn may start.
+    const playBotTurn = (
+      runId: string,
+      meta: {
+        senderId?: string;
+        systemEvent?: string;
+        interBotFrom?: string[];
+        delegation?: TurnViewState["delegation"];
+        userInput?: TurnViewState["userInput"];
+        approval?: TurnViewState["approval"];
+      },
+      resp: FixtureResponse,
+      from: number,
+    ): number => {
+      at(from, () => setTurns((prev) => [...prev, baseTurn(runId, "", "streaming", undefined, meta)]));
+      let cursor = from;
 
       if (resp.thinking !== undefined) {
         const think = resp.thinking;
         at(cursor, () =>
-          patch(botRunId, (turn) => {
+          patch(runId, (turn) => {
             turn.parts.push({ type: "thinking", text: think.text, ms: null });
           }),
         );
         cursor += THINK_DWELL_MS;
         at(cursor, () =>
-          patch(botRunId, (turn) => {
+          patch(runId, (turn) => {
             const part = turn.parts.find((p) => p.type === "thinking" && p.ms === null);
             if (part && part.type === "thinking") part.ms = think.ms;
           }),
@@ -148,10 +144,10 @@ export function useFixturePlayback(botId: string | null): FixturePlayback {
 
       if (resp.tools !== undefined && resp.tools.length > 0) {
         resp.tools.forEach((spec, j) => {
-          const callId = `${botRunId}:tool:${j}`;
+          const callId = `${runId}:tool:${j}`;
           at(cursor, () =>
-            patch(botRunId, (turn) => {
-              const call: ToolCallView = { id: callId, tool: spec.tool, args: spec.args, output: null, done: false };
+            patch(runId, (turn) => {
+              const call = { id: callId, tool: spec.tool, args: spec.args, output: null, done: false };
               turn.calls.push(call);
               const tail = turn.parts[turn.parts.length - 1];
               if (tail && tail.type === "tools") tail.ids.push(callId);
@@ -159,7 +155,7 @@ export function useFixturePlayback(botId: string | null): FixturePlayback {
             }),
           );
           at(cursor + TOOL_TICK_MS, () =>
-            patch(botRunId, (turn) => {
+            patch(runId, (turn) => {
               const call = turn.calls.find((c) => c.id === callId);
               if (call) {
                 call.done = true;
@@ -172,29 +168,79 @@ export function useFixturePlayback(botId: string | null): FixturePlayback {
         cursor += TOOL_TICK_MS; // last row's flip lands before text starts
       }
 
-      const words = resp.text.split(" ");
+      const words = resp.text.length > 0 ? resp.text.split(" ") : [];
       at(cursor, () =>
-        patch(botRunId, (turn) => {
+        patch(runId, (turn) => {
           turn.parts.push({ type: "text", text: "" });
         }),
       );
       words.forEach((_, w) => {
         at(cursor + (w + 1) * WORD_TICK_MS, () =>
-          patch(botRunId, (turn) => {
+          patch(runId, (turn) => {
             const tail = turn.parts[turn.parts.length - 1];
             if (tail && tail.type === "text") tail.text = words.slice(0, w + 1).join(" ");
           }),
         );
       });
       cursor += words.length * WORD_TICK_MS + DONE_PAD_MS;
-      lastDone = cursor;
       at(cursor, () =>
-        patch(botRunId, (turn) => {
+        patch(runId, (turn) => {
           turn.status = "done";
           turn.endedAt = turn.startedAt;
         }),
       );
+      return cursor;
+    };
 
+    setPlaying(true);
+    let t = USER_DELAY_MS;
+    let lastDone = 0;
+
+    script.forEach((exchange, i) => {
+      const userRunId = `fixture:${botId}:${i}:prompt`;
+      const botRunId = `fixture:${botId}:${i}:run`;
+      const prompt = exchange.prompt;
+
+      at(t, () => {
+        // First fired timer: playback truly started (StrictMode remounts
+        // clear the pending timers before this, so they can replay).
+        played.add(botId);
+        setTurns((prev) => [...prev, baseTurn(userRunId, prompt, "done", exchange.at)]);
+      });
+
+      const botStart = t + BOT_DELAY_MS;
+      let cursor = botStart;
+
+      const segments = exchange.segments ?? [];
+      if (segments.length > 0) {
+        // Multi-sender exchange: each sender's text streams in turn, with
+        // the exchange timestamp shared across the round.
+        segments.forEach((segment, s) => {
+          cursor = playBotTurn(
+            `${botRunId}:seg:${s}`,
+            { senderId: segment.senderId, systemEvent: s === 0 ? exchange.systemEvent : undefined },
+            { thinking: segment.thinking, tools: segment.tools, text: segment.text },
+            cursor,
+          );
+          cursor += EXCHANGE_GAP_MS;
+        });
+      } else if (exchange.response !== undefined) {
+      cursor = playBotTurn(
+        botRunId,
+        {
+          senderId: exchange.senderId,
+          systemEvent: exchange.systemEvent,
+          interBotFrom: exchange.interBotFrom,
+          delegation: exchange.delegation,
+          userInput: exchange.userInput,
+          approval: exchange.approval,
+        },
+        exchange.response,
+        cursor,
+      );
+      }
+
+      lastDone = cursor;
       t = cursor + EXCHANGE_GAP_MS;
     });
 

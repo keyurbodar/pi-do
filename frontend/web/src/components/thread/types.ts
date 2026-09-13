@@ -127,6 +127,33 @@ export interface TurnViewState {
   systemEvent?: string;
   /** Roster bot ids whose messages were folded into this turn (inter-bot). */
   interBotFrom?: string[];
+  /** Delegated sub-task card (mapper emits DelegationVM). */
+  delegation?: TurnDelegation;
+  /** Inline question with quick-reply options (mapper emits UserInputVM). */
+  userInput?: TurnUserInput;
+  /** Human approval gate (mapper emits a pending ApprovalVM). */
+  approval?: TurnApproval;
+}
+
+/** Delegated sub-task carried on a turn; rendered as DelegationCard. */
+export interface TurnDelegation {
+  /** Roster bot id doing the sub-task. */
+  childBot: string;
+  /** What the child bot was asked to do. */
+  task: string;
+  state: "working" | "done" | "failed";
+}
+
+/** Inline question carried on a turn; rendered as UserInputCard. */
+export interface TurnUserInput {
+  question: string;
+  options: string[];
+}
+
+/** Human approval gate carried on a turn; rendered as ApprovalCard. */
+export interface TurnApproval {
+  title: string;
+  description: string;
 }
 
 export interface PendingPrompt {

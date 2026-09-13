@@ -4,30 +4,47 @@
 // avatarSlot the shell fills with BotAvatar and the roster bots list for
 // sender labels / mention chips. Renders the pure mapper.turnToItems
 // view-model list over a StickToBottom-style viewport: pinned follow while
-// new content lands, an isAtBottom-gated jump pill, a shimmer activity row
-// while the last turn streams, a retry row on failed turns, day-aware time
-// dividers between turns that gap by more than 20 minutes, and centered
-// system rows.
+// new content lands, an isAtBottom-gated jump pill, a step meter + shimmer
+// activity row while the last turn streams, a retry row on failed turns,
+// day-aware time dividers between turns that gap by more than 20 minutes,
+// and centered system rows.
+//
+// Windowing: past VIRTUALIZE_AFTER turns the timeline renders only the
+// visible slice plus 400px overscan (measured turn heights, estimated until
+// measured, spacers above/below). Short threads render whole, so existing
+// pin behavior is untouched.
 import { ArrowDown, RotateCcw } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import type { RosterBot } from "../../lib/roster";
 import type { ConnState, PendingPrompt, TurnViewState } from "../thread/types";
 import type { AttachmentVM } from "../thread/viewModel";
-import { ActivityRow } from "./ActivityRow";
+import {
+  turnToItems,
+  type ChatItemVM,
+  type SystemEventVM,
+} from "./mapper";
 import { ApprovalCard } from "./ApprovalCard";
+import { DelegationCard } from "./DelegationCard";
 import { InterBotDivider } from "./InterBotDivider";
 import { Lightbox } from "./Lightbox";
-import { turnToItems, type ChatItemVM, type SenderMessageBubbleVM, type SystemEventVM } from "./mapper";
 import { MessageBubble } from "./MessageBubble";
 import { StatusCard } from "./StatusCard";
+import { StepMeter } from "./StepMeter";
 import { ThinkingRow } from "./ThinkingRow";
+import { UserInputCard } from "./UserInputCard";
 
 /** Distance in px from the bottom that still counts as pinned. */
 const PIN_THRESHOLD = 64;
 /** Consecutive turns gap by more than this before a time divider renders. */
 const DIVIDER_GAP_MS = 20 * 60_000;
+/** Turn count past which the timeline windows to the visible slice. */
+const VIRTUALIZE_AFTER = 20;
+/** Rendered margin above/below the viewport while windowed. */
+const OVERSCAN_PX = 400;
+/** Height guess per turn until measured (layout effect corrects it). */
+const EST_TURN_PX = 280;
 
 /**
  * Day-aware divider label (akeru formatDayAwareTimestamp pattern, local
@@ -48,6 +65,10 @@ function formatDividerTime(ts: number, nowMs: number): string {
   return `${weekday} ${time}`;
 }
 
+const noopEdit = (_text: string): void => {};
+const noopAnswer = (_id: string, _answer: string): void => {};
+const noopDecision = (_id: string, _decision: "approved" | "rejected"): void => {};
+
 export function ThreadPane({
   turns,
   pending,
@@ -56,6 +77,9 @@ export function ThreadPane({
   avatarSlot = null,
   bots = [],
   playing = false,
+  onEdit = noopEdit,
+  onAnswer = noopAnswer,
+  onDecision = noopDecision,
 }: {
   turns: TurnViewState[];
   pending: PendingPrompt[];
@@ -66,10 +90,20 @@ export function ThreadPane({
   /** Roster bots for sender labels, mention chips, and inter-bot dividers. */
   bots?: RosterBot[];
   playing?: boolean;
+  /** Loads a user bubble's text back into the composer; default no-op. */
+  onEdit?: (text: string) => void;
+  /** Called with a user-input card's answer; default no-op (card marks answered locally). */
+  onAnswer?: (id: string, answer: string) => void;
+  /** Called with an approval card's decision; default no-op (card flips locally). */
+  onDecision?: (id: string, decision: "approved" | "rejected") => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
   const [lightbox, setLightbox] = useState<AttachmentVM | null>(null);
+  const [viewport, setViewport] = useState({ top: 0, height: 800 });
+  const [, setMeasTick] = useState(0);
+  const heightsRef = useRef(new Map<string, number>());
+  const nodeRefs = useRef(new Map<string, HTMLDivElement>());
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior) => {
     const el = scrollRef.current;
@@ -80,6 +114,29 @@ export function ThreadPane({
     const el = scrollRef.current;
     if (el === null) return;
     setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < PIN_THRESHOLD);
+    setViewport({ top: el.scrollTop, height: el.clientHeight });
+  }, []);
+
+  // Shell bridge: the App header's scroll action dispatches this event.
+  useEffect(() => {
+    const onExternalScroll = () => {
+      setAtBottom(true);
+      scrollToBottom("smooth");
+    };
+    window.addEventListener("pi-do:scroll-bottom", onExternalScroll);
+    return () => window.removeEventListener("pi-do:scroll-bottom", onExternalScroll);
+  }, [scrollToBottom]);
+
+  // Track viewport height (mount + resize) so the windowed slice is right
+  // before the first scroll event fires.
+  useEffect(() => {
+    const sync = () => {
+      const el = scrollRef.current;
+      if (el !== null) setViewport({ top: el.scrollTop, height: el.clientHeight });
+    };
+    sync();
+    window.addEventListener("resize", sync);
+    return () => window.removeEventListener("resize", sync);
   }, []);
 
   // Pinned follow: any re-render carrying fresh content (new turns, pending
@@ -92,9 +149,122 @@ export function ThreadPane({
   const lastTurn = turns.length > 0 ? turns[turns.length - 1] : null;
   const empty = turns.length === 0 && pending.length === 0 && !playing;
 
+  // Windowing math (turn-level): offsets from measured heights (estimate
+  // until measured), visible slice = viewport ± overscan.
+  const windowing = turns.length > VIRTUALIZE_AFTER;
+  const heights = heightsRef.current;
+  const offsets: number[] = new Array(turns.length);
+  let cursor = 0;
+  for (let i = 0; i < turns.length; i += 1) {
+    offsets[i] = cursor;
+    cursor += heights.get(turns[i].runId) ?? EST_TURN_PX;
+  }
+  let start = 0;
+  let end = turns.length;
+  let topPad = 0;
+  let bottomPad = 0;
+  if (windowing) {
+    const viewTop = viewport.top - OVERSCAN_PX;
+    const viewBottom = viewport.top + viewport.height + OVERSCAN_PX;
+    start = turns.length;
+    end = 0;
+    for (let i = 0; i < turns.length; i += 1) {
+      const h = heights.get(turns[i].runId) ?? EST_TURN_PX;
+      if (offsets[i] + h >= viewTop && offsets[i] <= viewBottom) {
+        if (i < start) start = i;
+        if (i + 1 > end) end = i + 1;
+      }
+    }
+    if (start > turns.length - 1) {
+      start = turns.length - 1;
+      end = turns.length;
+    }
+    topPad = start > 0 ? offsets[start] : 0;
+    const endOffset = end < turns.length ? offsets[end] : cursor;
+    bottomPad = cursor - endOffset;
+  }
+
+  // Measure rendered turn nodes; estimates converge to real heights so the
+  // spacers (and scroll position) stay stable.
+  useLayoutEffect(() => {
+    let changed = false;
+    for (const [runId, el] of nodeRefs.current) {
+      if (!el.isConnected) continue;
+      const h = el.offsetHeight;
+      const prev = heights.get(runId);
+      if (prev === undefined || Math.abs(prev - h) > 2) {
+        heights.set(runId, h);
+        changed = true;
+      }
+    }
+    if (changed) setMeasTick((tick) => tick + 1);
+  });
+
+  const renderTurn = (turn: TurnViewState, turnIndex: number) => {
+    const items = turnToItems(turn, bots);
+    const ts = turn.startedAt ?? turn.endedAt;
+    const prevTurn = turnIndex > 0 ? turns[turnIndex - 1] : null;
+    const prevTs = prevTurn !== null ? (prevTurn.startedAt ?? prevTurn.endedAt) : null;
+    const showDivider = ts !== null && prevTs !== null && ts - prevTs > DIVIDER_GAP_MS;
+    return (
+      <div
+        key={turn.runId}
+        ref={(el) => {
+          if (el !== null) nodeRefs.current.set(turn.runId, el);
+          else nodeRefs.current.delete(turn.runId);
+        }}
+        className="flex flex-col gap-2"
+      >
+        {showDivider && (
+          <div
+            data-testid="time-divider"
+            className="flex items-center gap-3 py-1 text-xs text-[var(--muted-foreground)]"
+            role="separator"
+          >
+            <span aria-hidden className="h-px min-w-4 flex-1 bg-[var(--border)]" />
+            <span>{formatDividerTime(ts, Date.now())}</span>
+            <span aria-hidden className="h-px min-w-4 flex-1 bg-[var(--border)]" />
+          </div>
+        )}
+        {items.map((item, index) => (
+          <ChatItem
+            key={item.id}
+            item={item}
+            streaming={turn.status === "streaming" && index === items.length - 1}
+            avatarSlot={avatarSlot}
+            bots={bots}
+            onOpenImage={setLightbox}
+            onRetry={onRetry}
+            retryText={turn.prompt}
+            onEdit={onEdit}
+            onAnswer={onAnswer}
+            onDecision={onDecision}
+          />
+        ))}
+        {turn.status === "error" && (
+          <div
+            role="alert"
+            className="flex items-center gap-2 px-1 text-sm text-[var(--muted-foreground)]"
+          >
+            <RotateCcw aria-hidden className="size-3.5 shrink-0" />
+            <span>Turn failed.</span>
+            <button
+              type="button"
+              data-testid={`retry-${turn.runId}`}
+              onClick={() => onRetry(turn.prompt)}
+              className="cursor-pointer rounded px-1.5 py-0.5 text-[var(--foreground)] transition-colors hover:bg-[var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]/70"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="relative min-h-0 flex-1">
-      <div ref={scrollRef} onScroll={handleScroll} className="h-full overflow-y-auto">
+      <div ref={scrollRef} onScroll={handleScroll} data-testid="thread-viewport" className="h-full overflow-y-auto">
         <div className="mx-auto flex w-full max-w-[880px] flex-col gap-3 px-4 py-4">
           {empty && (
             <p className="py-12 text-center text-sm text-[var(--muted-foreground)]">
@@ -103,71 +273,22 @@ export function ThreadPane({
                 : "New session ready — send a prompt to start."}
             </p>
           )}
-          {turns.map((turn, turnIndex) => {
-            const items = turnToItems(turn, bots);
-            const ts = turn.startedAt ?? turn.endedAt;
-            const prevTurn = turnIndex > 0 ? turns[turnIndex - 1] : null;
-            const prevTs = prevTurn !== null ? (prevTurn.startedAt ?? prevTurn.endedAt) : null;
-            const showDivider = ts !== null && prevTs !== null && ts - prevTs > DIVIDER_GAP_MS;
-            return (
-              <div key={turn.runId} className="flex flex-col gap-2">
-                {showDivider && (
-                  <div
-                    data-testid="time-divider"
-                    className="flex items-center gap-3 py-1 text-xs text-[var(--muted-foreground)]"
-                    role="separator"
-                  >
-                    <span aria-hidden className="h-px min-w-4 flex-1 bg-[var(--border)]" />
-                    <span>{formatDividerTime(ts, Date.now())}</span>
-                    <span aria-hidden className="h-px min-w-4 flex-1 bg-[var(--border)]" />
-                  </div>
-                )}
-                {items.map((item, index) => (
-                  <ChatItem
-                    key={item.id}
-                    item={item}
-                    streaming={turn.status === "streaming" && index === items.length - 1}
-                    avatarSlot={avatarSlot}
-                    bots={bots}
-                    onOpenImage={setLightbox}
-                  />
-                ))}
-                {turn.status === "error" && (
-                  <div
-                    role="alert"
-                    className="flex items-center gap-2 px-1 text-sm text-[var(--muted-foreground)]"
-                  >
-                    <RotateCcw aria-hidden className="size-3.5 shrink-0" />
-                    <span>Turn failed.</span>
-                    <button
-                      type="button"
-                      data-testid={`retry-${turn.runId}`}
-                      onClick={() => onRetry(turn.prompt)}
-                      className="cursor-pointer rounded px-1.5 py-0.5 text-[var(--foreground)] transition-colors hover:bg-[var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]/70"
-                    >
-                      Retry
-                    </button>
-                  </div>
-                )}
-              </div>
-            );
-          })}
+          {windowing && topPad > 0 && <div aria-hidden style={{ height: topPad }} />}
+          {windowing
+            ? turns.slice(start, end).map((turn, i) => renderTurn(turn, start + i))
+            : turns.map((turn, turnIndex) => renderTurn(turn, turnIndex))}
+          {windowing && bottomPad > 0 && <div aria-hidden style={{ height: bottomPad }} />}
           {pending.map((p) => (
             <MessageBubble
               key={p.id}
               vm={{ id: `pending:${p.id}`, role: "user", text: p.text, attachments: [], ts: null }}
               bots={bots}
               onOpenImage={setLightbox}
+              onRetry={onRetry}
+              retryText={p.text}
+              onEdit={onEdit}
             />
           ))}
-          {(conn === "open" || lastTurn?.live === false) && lastTurn?.status === "streaming" && (
-            <ActivityRow avatarSlot={avatarSlot} />
-          )}
-          {conn === "closed" && !empty && (
-            <p className="px-1 text-sm text-[var(--muted-foreground)]">
-              Live stream closed — Retry re-queues the prompt over a fresh socket.
-            </p>
-          )}
         </div>
       </div>
       {!atBottom && (
@@ -196,16 +317,28 @@ function ChatItem({
   avatarSlot,
   bots,
   onOpenImage,
+  onRetry,
+  retryText,
+  onEdit,
+  onAnswer,
+  onDecision,
 }: {
   item: ChatItemVM;
   streaming: boolean;
   avatarSlot: ReactNode;
   bots: RosterBot[];
   onOpenImage: (attachment: AttachmentVM) => void;
+  onRetry: (prompt: string) => void;
+  retryText: string;
+  onEdit: (text: string) => void;
+  onAnswer: (id: string, answer: string) => void;
+  onDecision: (id: string, decision: "approved" | "rejected") => void;
 }) {
   if ("kind" in item) {
     if (item.kind === "system") return <SystemRow vm={item} />;
-    return <ThinkingRow vm={item} />;
+    if (item.kind === "thinking") return <ThinkingRow vm={item} />;
+    if (item.kind === "delegation") return <DelegationCard vm={item} bots={bots} />;
+    return <UserInputCard vm={item} onAnswer={onAnswer} />;
   }
   if ("role" in item)
     return (
@@ -213,14 +346,17 @@ function ChatItem({
         vm={item}
         avatarSlot={avatarSlot}
         streaming={streaming}
-        senderLabel={"senderLabel" in item ? (item as SenderMessageBubbleVM).senderLabel : undefined}
+        senderLabel={"senderLabel" in item ? item.senderLabel : undefined}
         bots={bots}
         onOpenImage={onOpenImage}
+        onRetry={onRetry}
+        retryText={retryText.length > 0 ? retryText : undefined}
+        onEdit={onEdit}
       />
     );
   if ("rows" in item) return <StatusCard vm={item} />;
   if ("fromBotIds" in item) return <InterBotDivider vm={item} bots={bots} />;
-  return <ApprovalCard vm={item} />;
+  return <ApprovalCard vm={item} onDecide={onDecision} />;
 }
 
 /** Centered muted system row ("Created routine · Month-end close"). */

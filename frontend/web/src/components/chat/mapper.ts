@@ -32,18 +32,36 @@ export interface ThinkingRowVM {
   ms: number | null;
 }
 
-/** Bot bubble carrying an optional group-thread sender label. */
-export interface SenderMessageBubbleVM extends MessageBubbleVM {
-  /** Resolved sender name (from turn.senderId via the bots param); unset for 1:1 turns. */
-  senderLabel?: string;
+/** Delegated sub-task card: child bot avatar+name, task text, status pill. */
+export interface DelegationVM {
+  kind: "delegation";
+  id: string;
+  childBot: string;
+  task: string;
+  state: "working" | "done" | "failed";
 }
 
+/** Inline question with quick-reply options plus a free-text field. */
+export interface UserInputVM {
+  kind: "userinput";
+  id: string;
+  question: string;
+  options: string[];
+}
+
+ /** Bot bubble carrying an optional group-thread sender label. */
+ export interface SenderMessageBubbleVM extends MessageBubbleVM {
+   /** Resolved sender name (from turn.senderId via the bots param); unset for 1:1 turns. */
+   senderLabel?: string;
+ }
+ 
 /** Everything the timeline renders, including the mapper-local rows. */
-export type ChatItemVM = ThreadItemVM | ThinkingRowVM | SystemEventVM;
+export type ChatItemVM = ThreadItemVM | ThinkingRowVM | SystemEventVM | DelegationVM | UserInputVM | SenderMessageBubbleVM;
 
 /**
  * One turn → ordered timeline items:
  *   prompt            → user MessageBubbleVM
+ *   delegation        → DelegationVM right under the prompt
  *   thinking parts    → ThinkingRowVM (collapsed "Thought for Ns")
  *   text parts        → bot MessageBubbleVM (empty text skipped — the
  *                       activity row covers the nothing-yet-streamed case)
@@ -52,14 +70,13 @@ export type ChatItemVM = ThreadItemVM | ThinkingRowVM | SystemEventVM;
  *                       rows via viewModel.toolRowOf, card state via
  *                       viewModel.stateOfTurn
  *   error / halt      → trailing failed StatusCardVM carrying turn.error
+ *   approval          → pending ApprovalVM trailing the content
+ *   userInput         → UserInputVM trailing the approval
  *   systemEvent       → SystemEventVM prepended above the turn's content
  *   interBotFrom      → InterBotMessageVM inserted before the first bot text
  *                       bubble ("Messages from Account Manager and Chief")
  *   senderId          → bot bubbles carry senderLabel, resolved via the
  *                       optional bots param (default [])
- *
- * InterBotMessageVM / ApprovalVM are renderable (see InterBotDivider /
- * ApprovalCard); only interBotFrom drives emission today.
  */
 export function turnToItems(turn: TurnViewState, bots: RosterBot[] = []): ChatItemVM[] {
   const items: ChatItemVM[] = [];
@@ -79,6 +96,19 @@ export function turnToItems(turn: TurnViewState, bots: RosterBot[] = []): ChatIt
     });
   }
 
+  // Delegated sub-task card sits right under the prompt: the spawn precedes
+  // any thinking/tools/text the parent (or child) streams afterwards.
+  if (turn.delegation !== undefined) {
+    const delegation: DelegationVM = {
+      kind: "delegation",
+      id: `${turn.runId}:delegation`,
+      childBot: turn.delegation.childBot,
+      task: turn.delegation.task,
+      state: turn.delegation.state,
+    };
+    items.push(delegation);
+  }
+ 
   const state = stateOfTurn(turn.status, turn);
 
   let pendingCalls: ToolCallView[] = [];
@@ -154,6 +184,26 @@ export function turnToItems(turn: TurnViewState, bots: RosterBot[] = []): ChatIt
       rows: [{ label: "Budget", detail: `Run halted: ${turn.halt}`, state: "failed" }],
       state: "failed",
     });
+  }
+
+  // Approval gate and inline question trail the turn's content: the human
+  // answers, then the run (or fixture script) continues.
+  if (turn.approval !== undefined) {
+    items.push({
+      id: `${turn.runId}:approval`,
+      title: turn.approval.title,
+      description: turn.approval.description,
+      state: "pending",
+    });
+  }
+  if (turn.userInput !== undefined) {
+    const input: UserInputVM = {
+      kind: "userinput",
+      id: `${turn.runId}:userinput`,
+      question: turn.userInput.question,
+      options: turn.userInput.options,
+    };
+    items.push(input);
   }
 
   return items;
