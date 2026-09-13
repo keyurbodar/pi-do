@@ -77,6 +77,7 @@ export interface RosterApi {
   deleteSection: (id: string) => void;
   setItemPinned: (id: string, pinned: boolean) => void;
   moveItem: (id: string, sectionId: string | null) => void;
+  setActivity: (id: string, preview: string, presence: RosterBot["presence"]) => void;
 }
 
 export function useRosterState(): RosterApi {
@@ -178,6 +179,17 @@ export function useRosterState(): RosterApi {
     }));
   }, []);
 
+  const setActivity = useCallback((id: string, preview: string, presence: RosterBot["presence"]) => {
+    setState((prev) => ({
+      ...prev,
+      bots: prev.bots.map((bot) =>
+        bot.id === id && (bot.preview !== preview || bot.presence !== presence)
+          ? { ...bot, preview, presence, updatedAt: Date.now() }
+          : bot,
+      ),
+    }));
+  }, []);
+
   const setItemPinned = useCallback((id: string, pinned: boolean) => {
     setState((prev) => ({
       ...prev,
@@ -218,6 +230,7 @@ export function useRosterState(): RosterApi {
       deleteGroup,
       deleteSection,
       setItemPinned,
+      setActivity,
       moveItem,
     }),
     [
@@ -237,6 +250,7 @@ export function useRosterState(): RosterApi {
       deleteGroup,
       deleteSection,
       setItemPinned,
+      setActivity,
       moveItem,
     ],
   );
