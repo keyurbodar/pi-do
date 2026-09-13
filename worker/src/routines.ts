@@ -19,6 +19,7 @@ import { cancelJob, ensureAlarmMuxSchema, scheduleJob } from "./alarm-mux";
 
 export const ROUTINE_JOB = "routines";
 export const MIN_INTERVAL_S = 60;
+export const MAX_ACTIVE_ROUTINES = 50;
 
 export function ensureRoutinesSchema(sql: EntriesSql): void {
   ensureTables(sql, [CREATE_TABLES.piRoutines]);
@@ -35,15 +36,43 @@ export function parseOnceSpec(spec: string, fromMs: number): ParsedSchedule {
   return { ok: true, atMs: t };
 }
 
-export function firstRunAt(kind: string, spec: string, nowMs: number): ParsedSchedule {
-  if (kind === "once") return parseOnceSpec(spec, nowMs);
-  return { ok: false, error: `unsupported schedule kind: ${kind}`, hint: 'schedule_kind is "once" in this lane; interval and weekly land in the hardening phase' };
+export function parseIntervalSpec(spec: string, fromMs: number): ParsedSchedule {
+  const s = Number(spec);
+  if (!Number.isInteger(s) || s < MIN_INTERVAL_S) {
+    return { ok: false, error: "bad interval schedule", hint: `schedule_spec must be a whole number of seconds >= ${MIN_INTERVAL_S}, e.g. "300"` };
+  }
+  return { ok: true, atMs: fromMs + s * 1000 };
 }
 
-// Next fire after nowMs, or null when the schedule consumes itself (once).
-// Missed beats are never caught up: the caller recomputes from now.
+const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+const WEEKLY_RE = /^([a-z]{3}):([01]\d|2[0-3]):([0-5]\d)$/;
+
+export function parseWeeklySpec(spec: string, fromMs: number): ParsedSchedule {
+  const m = WEEKLY_RE.exec(spec);
+  if (m === null || WEEKDAYS.indexOf(m[1]) < 0) {
+    return { ok: false, error: "bad weekly schedule", hint: 'schedule_spec must be weekday:HH:MM, e.g. "mon:09:30"' };
+  }
+  const d = new Date(fromMs);
+  d.setHours(Number(m[2]), Number(m[3]), 0, 0);
+  const daysAhead = (WEEKDAYS.indexOf(m[1]) - d.getDay() + 7) % 7;
+  const candidate = d.getTime() + daysAhead * 86_400_000;
+  return { ok: true, atMs: candidate <= fromMs ? candidate + 7 * 86_400_000 : candidate };
+}
+
+export function firstRunAt(kind: string, spec: string, nowMs: number): ParsedSchedule {
+  if (kind === "once") return parseOnceSpec(spec, nowMs);
+  if (kind === "interval") return parseIntervalSpec(spec, nowMs);
+  if (kind === "weekly") return parseWeeklySpec(spec, nowMs);
+  return { ok: false, error: `unsupported schedule kind: ${kind}`, hint: 'schedule_kind is "once", "interval", or "weekly"' };
+}
+
+// Next fire after nowMs, or null when the schedule consumes itself (once) or
+// its spec no longer parses (deactivate rather than fire on garbage). Missed
+// beats are never caught up: the caller recomputes from now.
 export function nextRunAfter(kind: string, spec: string, nowMs: number): number | null {
-  return null;
+  if (kind === "once") return null;
+  const parsed = firstRunAt(kind, spec, nowMs);
+  return parsed.ok ? parsed.atMs : null;
 }
 
 export interface RoutineRow {
@@ -113,6 +142,8 @@ export interface CreateRoutineInput {
   kind: unknown;
   spec: unknown;
   prompt: unknown;
+  expireAt?: unknown;
+  maxRuns?: unknown;
   createdBy?: string;
   requestId?: string | null;
 }
@@ -131,11 +162,31 @@ export function createRoutine(sql: EntriesSql, ws: string, sid: string, input: C
   if (typeof input.kind !== "string" || typeof input.spec !== "string" || input.spec.length === 0) {
     return { ok: false, error: "bad schedule", hint: 'retry with {"kind": "once", "spec": "<ISO timestamp>"}' };
   }
-  const first = firstRunAt(input.kind, input.spec, Date.now());
+  const now = Date.now();
+  const first = firstRunAt(input.kind, input.spec, now);
   if (!first.ok) return first;
+  let expireAtMs: number | null = null;
+  if (input.expireAt !== undefined) {
+    if (typeof input.expireAt !== "string" || !Number.isFinite(Date.parse(input.expireAt))) {
+      return { ok: false, error: "bad expireAt", hint: "expireAt must be an ISO timestamp, e.g. 2026-12-31T23:59:59Z" };
+    }
+    expireAtMs = Date.parse(input.expireAt);
+  }
+  let maxRuns: number | null = null;
+  if (input.maxRuns !== undefined) {
+    if (typeof input.maxRuns !== "number" || !Number.isInteger(input.maxRuns) || input.maxRuns < 1) {
+      return { ok: false, error: "bad maxRuns", hint: "maxRuns must be an integer >= 1" };
+    }
+    maxRuns = input.maxRuns;
+  }
+  const active = readScalar<number>(sql, "SELECT COUNT(*) AS n FROM pi_routines WHERE ws = ? AND next_run_at IS NOT NULL", ws) ?? 0;
+  if (active >= MAX_ACTIVE_ROUTINES) {
+    return { ok: false, error: "too many active routines", hint: `at most ${MAX_ACTIVE_ROUTINES} active routines per workspace; delete one or let one expire` };
+  }
   const id = crypto.randomUUID();
+  const minIntervalS = input.kind === "interval" ? Number(input.spec) : null;
   sql.exec(
-    "INSERT INTO pi_routines(ws, id, sid, schedule_kind, schedule_spec, prompt, next_run_at, expire_at, max_runs, run_count, min_interval_s, created_by, last_request_id, claim_epoch) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, NULL, ?, ?, 0)",
+    "INSERT INTO pi_routines(ws, id, sid, schedule_kind, schedule_spec, prompt, next_run_at, expire_at, max_runs, run_count, min_interval_s, created_by, last_request_id, claim_epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0)",
     ws,
     id,
     sid,
@@ -143,6 +194,9 @@ export function createRoutine(sql: EntriesSql, ws: string, sid: string, input: C
     input.spec,
     input.prompt,
     first.atMs,
+    expireAtMs,
+    maxRuns,
+    minIntervalS,
     input.createdBy ?? "api",
     input.requestId ?? null,
   );
@@ -202,8 +256,12 @@ function dueRoutines(sql: EntriesSql, nowMs: number): RoutineRow[] {
 // Alarm body: claim every due row, then enqueue each winner through the
 // session's own turn pipeline. Always rearms so the next fire is armed even
 // when nothing was due (a create may have landed while the alarm ran).
+// Expired routines stop firing but keep their row for audit: the sweep just
+// nulls next_run_at. Runs before the due scan so a due-and-expired row never
+// fires its last beat.
 export async function fireDueRoutines(sql: EntriesSql, nowMs: number, fire: (routine: RoutineRow) => Promise<void>): Promise<string[]> {
   ensureRoutinesSchema(sql);
+  sql.exec("UPDATE pi_routines SET next_run_at = NULL WHERE expire_at IS NOT NULL AND expire_at <= ? AND next_run_at IS NOT NULL", nowMs);
   const fired: string[] = [];
   for (const row of dueRoutines(sql, nowMs)) {
     const claim = claimRoutine(sql, row.id, row.claimEpoch, nowMs);
