@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { PromptInput } from './components/prompt-input';
-import { ChatHeader, ThreadPane, buildTranscript, useFixturePlayback } from './components/chat';
+import { ChatHeader, ThreadPane, useFixturePlayback } from './components/chat';
 import { useThread, type SessionRef, type TurnViewState } from './components/thread';
 import { BotAvatar } from './components/roster';
 import type { RosterBot } from './lib/roster';
@@ -62,16 +62,6 @@ export default function App() {
     if (activeGroup !== null) return `Group · ${activeGroup.memberIds.length} members`;
     return 'pi-do';
   }, [activeBot, activeGroup]);
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    const onDone = () => {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    };
-    window.addEventListener('pi-do:copy-transcript-done', onDone);
-    return () => window.removeEventListener('pi-do:copy-transcript-done', onDone);
-  }, []);
-
   return (
     <div className="flex h-dvh overflow-hidden bg-background">
       <BotRosterSidebar api={roster} />
@@ -83,10 +73,6 @@ export default function App() {
             avatar={activeBot !== null
               ? <BotAvatar identity={activeBot.bloub} presence={activeBot.presence} size={22} />
               : null}
-            copied={copied}
-            onScrollBottom={() => window.dispatchEvent(new CustomEvent('pi-do:scroll-bottom'))}
-            onCopyTranscript={() => window.dispatchEvent(new CustomEvent('pi-do:copy-transcript'))}
-            onNewTurn={() => window.dispatchEvent(new CustomEvent('pi-do:new-turn'))}
           />
         </header>
         <ChatPane boot={boot} activeBot={activeBot} activeId={roster.activeId} bots={roster.bots} onActivity={roster.setActivity} />
@@ -210,38 +196,10 @@ function ReadyThreadInner({ session, ownerId, activeBot, bots, onActivity }: {
     if (activeBot === null || preview === null) return;
     onActivity(activeBot.id, preview, thread.running ? "typing" : "idle");
   }, [activeBot, preview, thread.running, onActivity]);
-  // Header "new turn" clears the live turns view locally (fixtures stay);
-  // the next send brings the live view back.
-  const [hideLive, setHideLive] = useState(false);
   // Composer remount key: edit actions write the draft then bump this so
   // PromptInput re-reads it (its draft store lives in localStorage).
   const [composerKey, setComposerKey] = useState(0);
-  const liveTurns = hideLive ? [] : thread.turns;
-  useEffect(() => {
-    const onNewTurn = () => setHideLive(true);
-    const onCopy = () => {
-      const text = buildTranscript([...playback.turns, ...thread.turns]);
-      const done = () => window.dispatchEvent(new CustomEvent('pi-do:copy-transcript-done'));
-      if (text.length === 0) {
-        done();
-        return;
-      }
-      const clipboard = navigator.clipboard;
-      if (clipboard !== undefined) {
-        clipboard.writeText(text).then(done, done);
-      } else {
-        done();
-      }
-    };
-    window.addEventListener('pi-do:new-turn', onNewTurn);
-    window.addEventListener('pi-do:copy-transcript', onCopy);
-    return () => {
-      window.removeEventListener('pi-do:new-turn', onNewTurn);
-      window.removeEventListener('pi-do:copy-transcript', onCopy);
-    };
-  }, [playback.turns, thread.turns]);
   const send = (prompt: string) => {
-    setHideLive(false);
     thread.send(prompt);
   };
   const editInComposer = (text: string) => {
@@ -259,7 +217,7 @@ function ReadyThreadInner({ session, ownerId, activeBot, bots, onActivity }: {
     <main className="main">
       <div className="thread">
         <ThreadPane
-          turns={[...playback.turns, ...liveTurns]}
+          turns={[...playback.turns, ...thread.turns]}
           pending={thread.pending}
           conn={thread.conn}
           playing={playback.playing}

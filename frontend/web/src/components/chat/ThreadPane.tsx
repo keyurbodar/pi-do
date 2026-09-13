@@ -14,8 +14,10 @@
 // timestamps land within GROUP_GAP_MS render as one visual group — 2px gaps
 // inside the group, 10px between groups, and a single small muted
 // right-aligned timestamp under agent groups (user groups carry none).
-// Bubbles cap at 65% width: user groups right-align, bot groups left-align.
-// The column itself is full-bleed (no avatars, edge-aligned text).
+// User bubbles are right-aligned shrink-wrap boxes capped at 80%; assistant
+// messages are full-width bare rows with no bubble background. Every row in
+// the viewport column carries min-w-0 + overflow-x-clip so wide children
+// (code, tables, long tokens) clip instead of pushing the list wide.
 //
 // Working state: while the tail turn streams the timeline shows ONLY the
 // thinking-dots ActivityRow. The streaming caret, ThinkingRow output,
@@ -168,6 +170,7 @@ export function ThreadPane({
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
+  const atBottomRef = useRef(true);
   const [lightbox, setLightbox] = useState<AttachmentVM | null>(null);
   const [viewport, setViewport] = useState({ top: 0, height: 800 });
   const heightsRef = useRef(new Map<string, number>());
@@ -182,19 +185,11 @@ export function ThreadPane({
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;
     if (el === null) return;
-    setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < PIN_THRESHOLD);
+    const pinned = el.scrollHeight - el.scrollTop - el.clientHeight < PIN_THRESHOLD;
+    atBottomRef.current = pinned;
+    setAtBottom(pinned);
     setViewport({ top: el.scrollTop, height: el.clientHeight });
   }, []);
-
-  // Shell bridge: the App header's scroll action dispatches this event.
-  useEffect(() => {
-    const onExternalScroll = () => {
-      setAtBottom(true);
-      scrollToBottom("smooth");
-    };
-    window.addEventListener("pi-do:scroll-bottom", onExternalScroll);
-    return () => window.removeEventListener("pi-do:scroll-bottom", onExternalScroll);
-  }, [scrollToBottom]);
 
   // Track viewport height (mount + resize) so the windowed slice is right
   // before the first scroll event fires.
@@ -208,12 +203,15 @@ export function ThreadPane({
     return () => window.removeEventListener("resize", sync);
   }, []);
 
-  // Pinned follow: any re-render carrying fresh content (new turns, pending
-  // rows, streaming deltas) pulls the viewport down while stuck. Runs on
-  // mount too, so late-joining content starts at the bottom.
+  // Pinned follow: only fresh timeline content (new turns, pending rows,
+  // streaming deltas, playback state) pulls the viewport down, and only
+  // while pinned. Unrelated re-renders never scroll, so a scrolled-up user
+  // stays put. Runs on mount too, so late-joining content starts at the
+  // bottom. Reads the atBottom ref (mirrored in handleScroll) so the gate
+  // never goes stale.
   useEffect(() => {
-    if (atBottom) scrollToBottom("auto");
-  });
+    if (atBottomRef.current) scrollToBottom("auto");
+  }, [turns, pending, playing, scrollToBottom]);
 
   const lastTurn = turns.length > 0 ? turns[turns.length - 1] : null;
   const empty = turns.length === 0 && pending.length === 0 && !playing;
@@ -396,9 +394,9 @@ export function ThreadPane({
   };
 
   return (
-    <div className="relative min-h-0 flex-1">
-      <div ref={scrollRef} onScroll={handleScroll} data-testid="thread-viewport" className="h-full overflow-y-auto">
-        <div className="flex w-full flex-col gap-[10px] px-6 py-4">
+    <div className="relative min-h-0 min-w-0 flex-1 overflow-x-clip">
+      <div ref={scrollRef} onScroll={handleScroll} data-testid="thread-viewport" className="h-full min-w-0 overflow-y-auto overflow-x-clip">
+        <div className="flex w-full min-w-0 flex-col gap-[10px] overflow-x-clip px-6 py-4">
           {empty && (
             <p className="py-12 text-center text-sm text-[var(--muted-foreground)]">
               {conn === "connecting"
@@ -426,8 +424,8 @@ export function ThreadPane({
           {windowing && bottomPad > 0 && <div aria-hidden style={{ height: bottomPad }} />}
           {lastTurn?.status === "streaming" && <ActivityRow avatarSlot={avatarSlot} />}
           {pending.map((p) => (
-            <div key={p.id} className="flex w-full justify-end">
-              <div className="msg-pop msg-pop-user w-fit min-w-0 max-w-[65%]">
+            <div key={p.id} className="flex w-full min-w-0 justify-end overflow-x-clip">
+              <div className="msg-pop msg-pop-user min-w-0 w-full">
                 <MessageBubble
                   vm={{ id: `pending:${p.id}`, role: "user", text: p.text, attachments: [], ts: null }}
                   bots={bots}
@@ -447,6 +445,7 @@ export function ThreadPane({
           data-testid="scroll-to-bottom"
           aria-label="Scroll to bottom"
           onClick={() => {
+            atBottomRef.current = true;
             setAtBottom(true);
             scrollToBottom("smooth");
           }}
@@ -461,11 +460,13 @@ export function ThreadPane({
 }
 
 /**
- * One visual iMessage group: same-side bubbles at 2px gaps capped at 65%
- * width (right for the user, left for agents). Bot groups carry a single
- * small muted right-aligned timestamp under the group; user groups carry
- * no timestamp. Settled bubbles pop in (.msg-pop, plus .msg-pop-user for
- * the user side).
+ * One visual message group: same-side messages at 2px gaps (right-aligned
+ * user bubbles capped at 80%, full-width bare assistant rows). The group
+ * and each row carry min-w-0 + overflow-x-clip so wide content clips
+ * instead of pushing the viewport wide. Bot groups carry a single small
+ * muted right-aligned timestamp under the group; user groups carry no
+ * timestamp. Settled messages pop in (.msg-pop, plus .msg-pop-user for the
+ * user side).
  */
 function BubbleGroupView({
   group,
@@ -488,13 +489,13 @@ function BubbleGroupView({
 }) {
   const isUser = group.role === "user";
   return (
-    <div className={`flex flex-col ${isUser ? "items-end" : "items-start"} gap-[2px]`}>
+    <div className={`flex min-w-0 flex-col overflow-x-clip ${isUser ? "items-end" : "items-stretch"} gap-[2px]`}>
       {group.bubbles.map(({ turn, item }, index) => {
         const settled = turn.status !== "streaming";
         const pop = settled ? (isUser ? "msg-pop msg-pop-user" : "msg-pop") : "";
         return (
-          <div key={item.id} className={`flex w-full ${isUser ? "justify-end" : "justify-start"}`}>
-            <div className={`w-fit min-w-0 max-w-[65%] ${pop}`}>
+          <div key={item.id} className={`flex w-full min-w-0 overflow-x-clip ${isUser ? "justify-end" : "justify-start"}`}>
+            <div className={`min-w-0 w-full ${pop}`}>
               <ChatItem
                 item={item}
                 avatarSlot={!isUser && index === 0 ? avatarSlot : null}

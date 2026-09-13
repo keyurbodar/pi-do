@@ -1,16 +1,17 @@
-// components/chat/MessageBubble.tsx — akeru UserTimelineRow /
-// AssistantTimelineRow markup (refs/akeru-bot, MIT), stripped of their state
-// layer. User bubbles right-align on --message-surface; bot bubbles sit left
-// with no avatar column — avatarSlot is accepted-but-ignored. Image
-// render as a clickable grid that opens the lightbox. Group threads add a
-// muted sender label above the bubble, and text that names a roster bot
-// renders that run as an inline BotMention chip instead of markdown. Every
-// bubble carries a hover toolbar (react / reply / more with copy +
-// download-transcript-bit), an optional quoted reply block above its text,
-// and grouped reaction counts below it. Reaction state is local per message
-// id; callers may observe picks via onReact. Legacy onRetry/onEdit/retryText
-// props are accepted but no longer rendered — retry/revert/edit affordances
-// were removed in favor of reply-everywhere.
+// components/chat/MessageBubble.tsx — t3-web UserTimelineRow /
+// AssistantTimelineRow structure (refs/t3-web, MIT), stripped of its state
+// layer. User bubbles are right-aligned shrink-wrap boxes capped at 80% on
+// --message-surface; assistant messages are full-width bare markdown rows
+// with no bubble background and no avatar column — avatarSlot is
+// accepted-but-ignored. Images render as a clickable grid that opens the
+// lightbox. Group threads add a muted sender label above the message, and
+// text that names a roster bot renders that run as an inline BotMention chip
+// instead of markdown. Every message carries a hover toolbar (react / reply /
+// more with copy + download-transcript-bit), an optional quoted reply block
+// above its text, and grouped reaction counts below it. Reaction state is
+// local per message id; callers may observe picks via onReact. Legacy
+// onRetry/onEdit/retryText props are accepted but no longer rendered —
+// retry/revert/edit affordances were removed in favor of reply-everywhere.
 import { FileText } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
@@ -203,11 +204,11 @@ export function MessageBubble({
 
   if (vm.role === "user") {
     return (
-      <div data-testid={`thread-item-${vm.id}`} className="group relative flex flex-col items-end">
+      <div data-testid={`thread-item-${vm.id}`} className="group relative flex min-w-0 flex-col items-end">
         {toolbar}
-        <div className="w-fit max-w-[65%] rounded-[20px] bg-[var(--message-surface)] px-4 py-2 text-[15px] leading-6 text-[var(--message-foreground)]">
+        <div className="relative min-w-0 max-w-[65%] overflow-x-clip rounded-2xl bg-[var(--message-surface)] px-4 py-2 text-[15px] leading-6 text-[var(--message-foreground)]">
           {quoteBlock}
-          <div className="[&>div]:text-[15px] [&>div]:leading-6 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_ul:first-child]:mt-0 [&_ul:last-child]:mb-0 [&_ol:first-child]:mt-0 [&_ol:last-child]:mb-0 [&_pre:first-child]:mt-0 [&_pre:last-child]:mb-0 [&_h1:first-child]:mt-0 [&_h2:first-child]:mt-0 [&_h3:first-child]:mt-0">
+          <div className="min-w-0 [&>div]:text-[15px] [&>div]:leading-6 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_ul:first-child]:mt-0 [&_ul:last-child]:mb-0 [&_ol:first-child]:mt-0 [&_ol:last-child]:mb-0 [&_pre:first-child]:mt-0 [&_pre:last-child]:mb-0 [&_h1:first-child]:mt-0 [&_h2:first-child]:mt-0 [&_h3:first-child]:mt-0">
             {renderText(vm.text, bots)}
           </div>
           <AttachmentGrid attachments={vm.attachments} onOpen={onOpenImage} />
@@ -223,19 +224,17 @@ export function MessageBubble({
   }
 
   return (
-    <div data-testid={`thread-item-${vm.id}`} className="group relative flex min-w-0 items-start py-1">
+    <div data-testid={`thread-item-${vm.id}`} className="group relative min-w-0 overflow-x-clip px-1 py-0.5">
       {toolbar}
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0">
         {senderLabel !== undefined && (
           <div className="px-0.5 pb-0.5 text-xs text-[var(--muted-foreground)]">{senderLabel}</div>
         )}
         {vm.text.length > 0 && (
-          <div className="flex items-start gap-0.5">
-            <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-start gap-0.5">
+            <div className="w-fit min-w-0 max-w-[65%] overflow-x-clip rounded-2xl bg-white/[0.06] px-4 py-2.5">
               {quoteBlock}
-              <div className="w-fit max-w-full rounded-[20px] bg-white/[0.06] px-4 py-2.5 text-[15px] leading-relaxed [&>div]:text-[15px] [&>div]:leading-relaxed [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_ul:first-child]:mt-0 [&_ul:last-child]:mb-0 [&_ol:first-child]:mt-0 [&_ol:last-child]:mb-0 [&_pre:first-child]:mt-0 [&_pre:last-child]:mb-0 [&_h1:first-child]:mt-0 [&_h2:first-child]:mt-0 [&_h3:first-child]:mt-0">
-                {renderText(vm.text, bots)}
-              </div>
+              {renderText(vm.text, bots)}
             </div>
             {streaming && (
               <span
@@ -292,13 +291,13 @@ function renderText(text: string, bots: RosterBot[]): ReactNode {
   const segments = splitMentions(text, bots);
   if (segments === null) return <ChatMarkdown text={text} />;
   return (
-    <div className="text-sm leading-relaxed">
+    <div className="min-w-0 whitespace-pre-wrap text-sm leading-relaxed [overflow-wrap:anywhere] [word-break:break-word]">
       {segments.map((segment, i) =>
         segment.kind === "mention" ? (
           <BotMention key={i} bot={segment.bot} />
         ) : (
           <span key={i}>{segment.text}</span>
-        ),
+        )
       )}
     </div>
   );
