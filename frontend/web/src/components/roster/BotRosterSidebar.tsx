@@ -826,10 +826,7 @@ export function BotRosterSidebar({ api }: { api: RosterApi }) {
         open={newGroupOpen}
         bots={bots}
         onOpenChange={setNewGroupOpen}
-        onCreate={({ name, memberIds }) => {
-          api.addGroup(name, memberIds);
-          setNewGroupOpen(false);
-        }}
+        onCreate={({ name, memberIds }) => api.addGroup(name, memberIds).then(() => undefined)}
       />
       <DeleteConfirmDialog
         open={pendingDelete !== null}

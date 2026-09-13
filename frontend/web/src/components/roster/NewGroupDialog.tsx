@@ -19,10 +19,12 @@ export function NewGroupDialog({
   open: boolean;
   bots: readonly RosterBot[];
   onOpenChange: (open: boolean) => void;
-  onCreate: (input: { name: string; memberIds: string[] }) => void;
+  onCreate: (input: { name: string; memberIds: string[] }) => Promise<void>;
 }) {
   const [name, setName] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>(() => bots.slice(0, 2).map((bot) => bot.id));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const trimmedName = name.trim();
 
   const toggleMember = (botId: string) => {
@@ -31,13 +33,28 @@ export function NewGroupDialog({
     );
   };
 
+  const submit = () => {
+    if (busy || !canCreateGroup(trimmedName, selectedIds)) return;
+    setBusy(true);
+    setError(null);
+    onCreate({ name: trimmedName, memberIds: [...selectedIds] }).then(
+      () => {
+        setBusy(false);
+        onOpenChange(false);
+      },
+      (e: unknown) => {
+        setBusy(false);
+        setError(e instanceof Error ? e.message : String(e));
+      },
+    );
+  };
+
   return (
     <DialogShell open={open} onOpenChange={onOpenChange} testId="new-group-dialog" labelledBy="new-group-title">
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          if (!canCreateGroup(trimmedName, selectedIds)) return;
-          onCreate({ name: trimmedName, memberIds: [...selectedIds] });
+          submit();
         }}
       >
         <header className="border-b px-6 py-5">
@@ -84,6 +101,11 @@ export function NewGroupDialog({
               })}
             </div>
           </fieldset>
+          {error !== null ? (
+            <p role="alert" data-testid="new-group-error" className="text-sm text-destructive">
+              {error}
+            </p>
+          ) : null}
         </div>
 
         <footer className="flex justify-end gap-2 border-t bg-muted px-6 py-4">
@@ -97,7 +119,7 @@ export function NewGroupDialog({
           <button
             type="submit"
             data-testid="new-group-create"
-            disabled={!canCreateGroup(trimmedName, selectedIds)}
+            disabled={busy || !canCreateGroup(trimmedName, selectedIds)}
             className="h-9 cursor-pointer rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground outline-none hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
           >
             Create group

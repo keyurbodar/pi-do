@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { PromptInput } from './components/prompt-input';
-import { ChatHeader, ThreadPane, useFixturePlayback } from './components/chat';
+import { ChatHeader, GroupPane, ThreadPane, useFixturePlayback } from './components/chat';
 import { useThread, type SessionRef, type TurnViewState } from './components/thread';
-import { BotAvatar } from './components/roster';
-import type { RosterBot } from './lib/roster';
+import { BotAvatar, GroupMemberStack } from './components/roster';
+import type { RosterBot, RosterGroup } from './lib/roster';
 import { Shimmer } from './components/aicss';
 import { BotRosterSidebar, useRosterState } from './components/roster';
 import { fetchKeyedProviders, sessionForOwner, type SessionHandle } from './lib/session';
@@ -72,10 +72,12 @@ export default function App() {
             presenceText={presenceText}
             avatar={activeBot !== null
               ? <BotAvatar identity={activeBot.bloub} presence={activeBot.presence} size={22} />
-              : null}
+              : activeGroup !== null
+                ? <GroupMemberStack group={activeGroup} bots={roster.bots} sizeClassName="size-6" />
+                : null}
           />
         </header>
-        <ChatPane boot={boot} activeBot={activeBot} activeId={roster.activeId} bots={roster.bots} onActivity={roster.setActivity} />
+        <ChatPane boot={boot} activeBot={activeBot} activeGroup={activeGroup} activeId={roster.activeId} bots={roster.bots} onActivity={roster.setActivity} />
       </div>
     </div>
   );
@@ -91,12 +93,14 @@ const PRESENCE_TEXT: Record<RosterBot['presence'], string> = {
 function ChatPane({
   boot,
   activeBot,
+  activeGroup,
   activeId,
   bots,
   onActivity,
 }: {
   boot: BootState;
   activeBot: RosterBot | null;
+  activeGroup: RosterGroup | null;
   activeId: string | null;
   bots: RosterBot[];
   onActivity: (id: string, preview: string, presence: RosterBot["presence"]) => void;
@@ -121,6 +125,9 @@ function ChatPane({
         </div>
       </main>
     );
+  }
+  if (activeGroup !== null) {
+    return <GroupPane key={activeGroup.id} group={activeGroup} bots={bots} />;
   }
 
   if (activeId === null) {
@@ -171,10 +178,12 @@ function ReadyThread({ ownerId, activeBot, bots, onActivity }: {
     );
   }
   if (session === false) {
+    // Group owners route to GroupPane upstream; a null here means the owner
+    // has no session to claim.
     return (
       <main className="main">
         <div className="flex flex-1 flex-col items-center justify-center gap-4">
-          <p className="text-sm text-muted-foreground">Group threads are coming soon</p>
+          <p className="text-sm text-muted-foreground">This conversation has no session.</p>
         </div>
       </main>
     );

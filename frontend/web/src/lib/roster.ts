@@ -111,6 +111,8 @@ export interface RosterGroup {
   id: string;
   name: string;
   memberIds: string[];
+  /** Server-side thread key the group's inbox rows share (GET groups/messages). */
+  thread?: string;
   /** Epoch ms of the last activity; keeps group rows aligned with bot rows. */
   updatedAt: number;
 }
