@@ -49,7 +49,7 @@ export const ROUTE = {
   compact: def(["POST"], "/workspaces/:id/sessions/:sid/compact", "/compact", { sid: true }),
   archive: def(["GET"], "/workspaces/:id/sessions/:sid/archive", "/archive", { sid: true, query: ["page"] }),
   entries: def(["GET"], "/workspaces/:id/sessions/:sid/entries", "/entries", { sid: true, query: ["after", "limit"] }),
-  meta: def(["GET"], "/workspaces/:id/sessions/:sid/meta", "/meta", { sid: true, query: ["context"] }),
+  meta: def(["GET"], "/workspaces/:id/sessions/:sid/meta", "/meta", { sid: true, query: ["context", "systemPrompt"] }),
   snapshot: def(["GET"], "/workspaces/:id/sessions/:sid/snapshot", "/snapshot", { sid: true, query: ["since"] }),
   doctor: def(["GET"], "/workspaces/:id/doctor", "/doctor"),
   fork: def(["POST"], "/workspaces/:id/sessions/:sid/fork", "/fork", { sid: true }),
