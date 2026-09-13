@@ -398,7 +398,7 @@ export function ThreadPane({
   return (
     <div className="relative min-h-0 flex-1">
       <div ref={scrollRef} onScroll={handleScroll} data-testid="thread-viewport" className="h-full overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-[820px] flex-col gap-[10px] px-6 py-4">
+        <div className="flex w-full flex-col gap-[10px] px-6 py-4">
           {empty && (
             <p className="py-12 text-center text-sm text-[var(--muted-foreground)]">
               {conn === "connecting"
