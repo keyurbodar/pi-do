@@ -121,10 +121,10 @@ function parseArgs(argv) {
     "--base": "base", "--ws": "ws", "--workspace": "ws", "--sid": "sid", "--session": "sid",
     "--path": "path", "--body": "body", "--body-file": "bodyFile", "--out": "out", "-o": "out",
     "--command": "command", "--cwd": "cwd", "--fence": "fence", "--expected": "expected", "--prompt": "prompt",
-    "--after": "after", "--limit": "limit", "--page": "page", "--model": "model", "--level": "level", "--kind": "kind", "--spec": "spec", "--expire-at": "expireAt", "--max-runs": "maxRuns", "--request-id": "requestId", "--id": "id", "--to": "to", "--thread": "thread", "--wait": "wait", "--timeout": "timeout",
+    "--after": "after", "--limit": "limit", "--page": "page", "--model": "model", "--level": "level", "--kind": "kind", "--spec": "spec", "--expire-at": "expireAt", "--max-runs": "maxRuns", "--request-id": "requestId", "--id": "id", "--to": "to", "--thread": "thread", "--timeout": "timeout",
     "--thinking": "level", "--provider": "provider", "--retention": "retention",
   };
-  const flags = { "--json": "json", "--help": "help", "-h": "help", "--all": "all", "--recursive": "recursive", "--plan": "plan" };
+  const flags = { "--json": "json", "--help": "help", "-h": "help", "--all": "all", "--recursive": "recursive", "--plan": "plan", "--wait": "wait" };
   const positionals = [];
   let baseSet = false;
   for (let i = 0; i < argv.length; i++) {
@@ -622,7 +622,7 @@ async function doInbox(base, json, opts, sub) {
     const payload = { to: opts.to, body: opts.body };
     if (opts.thread !== undefined) payload.thread = opts.thread;
     if (opts.requestId !== undefined) payload.requestId = opts.requestId;
-    if (opts.wait) { payload.wait = true; payload.timeout = opts.timeout === undefined ? undefined : checkedUint(opts.timeout, `inbox send needs --timeout S (seconds).`, help("inbox:send"), 1); }
+    if (opts.wait === true) { payload.wait = true; payload.timeout = opts.timeout === undefined ? undefined : checkedUint(opts.timeout, `inbox send needs --timeout S (seconds).`, help("inbox:send"), 1); }
     const data = await postJson(base, json, sessUrl(base, opts.ws, opts.sid, "/inbox"), payload);
     R.done(json, data, `inbox ${data.message.id} to=${data.message.to} delivered=${data.message.deliveredAt ?? "no"}`, `inbox ${data.message.id} to=${data.message.to} delivered=${data.message.deliveredAt ?? "no"}`);
     return;
