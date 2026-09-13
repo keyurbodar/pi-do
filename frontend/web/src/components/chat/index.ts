@@ -2,6 +2,7 @@
 // replacement for thread/Thread (same props plus avatarSlot); mapper.ts is
 // the pure TurnViewState → ThreadItemVM mapping.
 export { ThreadPane } from "./ThreadPane";
+export { GroupPane } from "./GroupPane";
 export { useFixturePlayback } from "./useFixturePlayback";
 export { useApprovalDecision } from "./useApprovalDecision";
 export {

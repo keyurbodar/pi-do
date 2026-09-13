@@ -1,15 +1,24 @@
 // Local roster state for the sidebar. Server sessions are the truth for a
 // bot's existence, name, and backstory (hydrated from GET /sessions on load);
-// localStorage keeps only the client-side overlay keyed by sid — identity,
-// pinned/order, unread, preview, and the fixture-local detail fields — plus
-// the local-only groups and the hidden list for client-side deletes.
+// server groups are the truth for crews (hydrated from GET /groups on load,
+// created/deleted through the groups routes). localStorage keeps only the
+// client-side overlay keyed by sid — identity, pinned/order, unread, preview,
+// and the fixture-local detail fields — plus the group order/updatedAt
+// overlay and the hidden list for client-side deletes.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createBotSession,
+  ensureWorkspace,
   evictSession,
   listSessions,
   type SessionSummary,
 } from "../../lib/session";
+import {
+  createGroup,
+  deleteGroup as deleteGroupRemote,
+  listGroups,
+  type GroupSummary,
+} from "../../lib/groups";
 import {
   type BloubIdentity,
   type RosterBot,
@@ -32,14 +41,36 @@ interface PersistedRoster {
   railCollapsed: boolean;
 }
 
-function makeId(prefix: string): string {
-  const random =
-    typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
-      : Math.random().toString(36).slice(2);
-  return `${prefix}-${random}`;
+/** Server group → roster row; the persisted groups array doubles as the
+ * order/updatedAt overlay, so a known id keeps its local timestamp. */
+function toGroup(summary: GroupSummary, prior: RosterGroup | undefined): RosterGroup {
+  return {
+    id: summary.id,
+    name: summary.name,
+    memberIds: summary.members,
+    thread: summary.thread,
+    updatedAt: prior?.updatedAt ?? Date.now(),
+  };
 }
 
+/** Merge a server group list into the persisted overlay: keep local order
+ * and updatedAt for known ids, append new ones, drop rows the server lost. */
+function mergeServerGroups(prev: RosterGroup[], server: GroupSummary[]): RosterGroup[] {
+  const byId = new Map(server.map((summary) => [summary.id, summary]));
+  const merged: RosterGroup[] = [];
+  const seen = new Set<string>();
+  for (const group of prev) {
+    const summary = byId.get(group.id);
+    if (summary === undefined) continue;
+    merged.push(toGroup(summary, group));
+    seen.add(group.id);
+  }
+  for (const summary of server) {
+    if (seen.has(summary.id)) continue;
+    merged.push(toGroup(summary, undefined));
+  }
+  return merged;
+}
 function loadPersisted(): PersistedRoster {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -108,7 +139,7 @@ export interface RosterApi {
   setActive: (id: string | null) => void;
   toggleRail: () => void;
   addBot: (name: string, identity: BloubIdentity, extra?: Partial<RosterBot>) => Promise<RosterBot>;
-  addGroup: (name: string, memberIds: string[]) => RosterGroup;
+  addGroup: (name: string, memberIds: string[]) => Promise<RosterGroup>;
   deleteBot: (id: string) => void;
   deleteGroup: (id: string) => void;
   setItemPinned: (id: string, pinned: boolean) => void;
@@ -122,20 +153,22 @@ export function useRosterState(): RosterApi {
   const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
   const sessionsRef = useRef<SessionSummary[] | null>(null);
   sessionsRef.current = sessions;
-
   useEffect(() => {
     let cancelled = false;
-    listSessions().then(
-      (rows) => {
-        if (cancelled) return;
-        sessionsRef.current = rows;
-        setSessions(rows);
-      },
-      () => {
-        // Worker unreachable: the roster stays empty and the app-level boot
-        // gate already surfaces the connection error.
-      },
-    );
+    ensureWorkspace()
+      .then((ws) => Promise.all([listSessions(), listGroups(ws)]))
+      .then(
+        ([rows, serverGroups]) => {
+          if (cancelled) return;
+          sessionsRef.current = rows;
+          setSessions(rows);
+          setState((prev) => ({ ...prev, groups: mergeServerGroups(prev.groups, serverGroups) }));
+        },
+        () => {
+          // Worker unreachable: the roster stays empty and the app-level boot
+          // gate already surfaces the connection error.
+        },
+      );
     return () => {
       cancelled = true;
     };
@@ -233,8 +266,10 @@ export function useRosterState(): RosterApi {
     return toBot(summary, overlayEntry);
   }, []);
 
-  const addGroup = useCallback((name: string, memberIds: string[]) => {
-    const group: RosterGroup = { id: makeId("group"), name, memberIds, updatedAt: Date.now() };
+  const addGroup = useCallback(async (name: string, memberIds: string[]) => {
+    const ws = await ensureWorkspace();
+    const summary = await createGroup(ws, { name, members: memberIds });
+    const group = toGroup(summary, undefined);
     setState((prev) => ({ ...prev, groups: [...prev.groups, group], activeId: group.id }));
     return group;
   }, []);
@@ -246,20 +281,22 @@ export function useRosterState(): RosterApi {
       ...prev,
       hidden: prev.hidden.includes(id) ? prev.hidden : [...prev.hidden, id],
       order: prev.order.filter((sid) => sid !== id),
-      groups: prev.groups.map((group) => ({
-        ...group,
-        memberIds: group.memberIds.filter((memberId) => memberId !== id),
-      })),
       activeId: prev.activeId === id ? null : prev.activeId,
     }));
   }, []);
 
   const deleteGroup = useCallback((id: string) => {
+    // Optimistic local removal; the server row goes away via DELETE /groups.
     setState((prev) => ({
       ...prev,
       groups: prev.groups.filter((group) => group.id !== id),
       activeId: prev.activeId === id ? null : prev.activeId,
     }));
+    ensureWorkspace()
+      .then((ws) => deleteGroupRemote(ws, id))
+      .catch((e: unknown) => {
+        console.error("delete group failed", e instanceof Error ? e.message : e);
+      });
   }, []);
 
   const setActivity = useCallback((id: string, preview: string, presence: RosterBot["presence"]) => {
