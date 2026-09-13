@@ -39,7 +39,7 @@ function def<const M extends Method, const O extends string | null, const I exte
 // Every route shape once, in the same order index.ts registers them. The
 // three outer:null entries are inner-only (no edge route forwards to them).
 export const ROUTE = {
-  sessions: def(["POST"], "/workspaces/:id/sessions", "/sessions"),
+  sessions: def(["POST", "GET"], "/workspaces/:id/sessions", "/sessions"),
   git: def(["POST"], "/workspaces/:id/sessions/:sid/git", "/git", { sid: true }),
   claim: def(["POST"], "/workspaces/:id/sessions/:sid/claim", "/claim", { sid: true }),
   model: def(["POST"], "/workspaces/:id/sessions/:sid/model", "/model", { sid: true }),
@@ -65,6 +65,8 @@ export const ROUTE = {
   stream: def(["GET"], "/workspaces/:id/sessions/:sid/stream", "/stream", { sid: true, stream: true }),
   routines: def(["POST", "GET", "DELETE"], "/workspaces/:id/sessions/:sid/routines", "/routines", { sid: true, query: ["id"] }),
   inbox: def(["POST", "GET"], "/workspaces/:id/sessions/:sid/inbox", "/inbox", { sid: true, query: ["thread", "all"] }),
+  groups: def(["POST", "GET", "DELETE"], "/workspaces/:id/groups", "/groups", { query: ["id"] }),
+  groupMessages: def(["POST", "GET"], "/workspaces/:id/groups/messages", "/groups/messages", { query: ["id", "sid"] }),
   create: def(["POST"], null, "/create"),
   exists: def(["GET"], null, "/exists"),
   modelsInner: def(["GET"], null, "/models"),
@@ -75,7 +77,7 @@ export const FORWARD_TABLE: ForwardDef[] = [
   ROUTE.run, ROUTE.compact, ROUTE.archive, ROUTE.entries, ROUTE.meta,
   ROUTE.doctor, ROUTE.fork, ROUTE.clone, ROUTE.checkpoints, ROUTE.rewind, ROUTE.files,
   ROUTE.exec, ROUTE.execKill, ROUTE.execDispose, ROUTE.bgPost, ROUTE.bgGet, ROUTE.bgKill,
-  ROUTE.stream, ROUTE.routines, ROUTE.inbox,
+  ROUTE.stream, ROUTE.routines, ROUTE.inbox, ROUTE.groups, ROUTE.groupMessages,
 ];
 
 const handlers = new Map<string, RouteHandler>();

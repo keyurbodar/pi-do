@@ -17,6 +17,9 @@ import { COMPACTION_JOB, COMPACTION_REARM_MS, KEEPALIVE_JOB, KEEPALIVE_MS, cance
 import { ROUTINE_JOB, ensureRoutinesSchema, fireDueRoutines, type RoutineRow } from "./routines";
 import { INBOX_JOB, INBOX_REARM_MS, deliverDueInbox, inboxPrompt, rearmInbox } from "./inbox";
 import { readBackstory } from "./backstory";
+import { resolveSendTarget } from "./groups";
+import { listMembers } from "pi-cf/store/groups";
+import { ensureGroupsSchema } from "pi-cf/store/groups";
 import { insertInbox, markDelivered, ensureInboxSchema, type InboxAccess, type InboxRow } from "pi-cf/store/inbox";
 import { makeSidLiveCheck, RECOVERY_JOB, scanTurns } from "pi-cf/store/recovery";
 import { nextRunAtMin } from "pi-cf/store/runs";
@@ -33,6 +36,7 @@ import { opRoutes } from "./routes/ops";
 import { doctorRoutes } from "./routes/doctor";
 import { routineRoutes } from "./routes/routines";
 import { inboxRoutes } from "./routes/inbox";
+import { groupMessageRoutes, groupRoutes } from "./routes/groups";
 
 const ROUTES: Record<string, RouteHandler> = {
   ...fileRoutes,
@@ -42,6 +46,8 @@ const ROUTES: Record<string, RouteHandler> = {
   ...doctorRoutes,
   ...routineRoutes,
   ...inboxRoutes,
+  ...groupRoutes,
+  ...groupMessageRoutes,
 };
 
 export class WorkspaceBase implements DurableObject {
@@ -83,6 +89,7 @@ export class WorkspaceBase implements DurableObject {
     ensureCompactionSchema(sql);
     ensureRoutinesSchema(sql);
     ensureInboxSchema(sql);
+    ensureGroupsSchema(sql);
     sql.exec("DROP TABLE IF EXISTS pi_owners");
   }
 
@@ -379,19 +386,28 @@ export class WorkspaceBase implements DurableObject {
         if (to === from) return { ok: false, error: "self-send", hint: "the recipient must be a different session; a session cannot message itself" };
         const sql = this.state.storage.sql;
         ensureInboxSchema(sql);
-        let toSid = to;
+        const target = resolveSendTarget(sql, ws, (w, s) => this.sessionExists(w, s), to);
+        if (target.kind === "group") {
+          const members = listMembers(sql, ws, target.group.id).filter((m) => m !== from);
+          if (members.length === 0) return { ok: false, error: "empty group", hint: "every member is the sender; add members with POST /workspaces/:id/groups" };
+          const ids: string[] = [];
+          for (const member of members) {
+            const result = insertInbox(sql, ws, from, member, { body, thread: thread ?? target.group.thread, requestId: requestId === undefined ? undefined : `${requestId}:${member}` });
+            if (!result.ok) return result;
+            ids.push(result.row.id);
+          }
+          rearmInbox(sql, Date.now());
+          const nextAt = earliestDeadline(sql);
+          if (nextAt !== null) await this.state.storage.setAlarm(nextAt);
+          return { ok: true, id: ids[0], toSid: target.group.thread, created: false };
+        }
+        let toSid: string;
         let createdFlag = false;
-        if (!this.sessionExists(ws, toSid)) {
-          for (const row of sql.exec("SELECT sid FROM sessions WHERE ws = ? AND name = ? LIMIT 1", ws, toSid)) {
-            if (row !== null && typeof row === "object" && typeof (row as Record<string, unknown>).sid === "string") {
-              toSid = (row as Record<string, unknown>).sid as string;
-            }
-            break;
-          }
-          if (!this.sessionExists(ws, toSid)) {
-            toSid = this.mintSession(ws, toSid, body.slice(0, 8192));
-            createdFlag = true;
-          }
+        if (target.kind === "session") {
+          toSid = target.sid;
+        } else {
+          toSid = this.mintSession(ws, target.name, body.slice(0, 8192));
+          createdFlag = true;
         }
         const result = insertInbox(sql, ws, from, toSid, { body, thread, requestId });
         if (!result.ok) return result;

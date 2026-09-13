@@ -11,8 +11,24 @@ import { composePrompt, SYSTEM_PROMPT } from "pi-cf/agent/session";
 import { readBackstory } from "../backstory";
 
 const sessions: RouteHandler = async (ctx, request, url) => {
-  if (request.method !== "POST") return null;
   const ws = url.searchParams.get("ws") ?? "";
+  // Roster hydration: every session in the workspace with its identity and
+  // durable presence (openRun), so a client reloads its bot list in one call.
+  if (request.method === "GET") {
+    const bad = ctx.requireSession(ws, null, "call GET /workspaces/:id/sessions on the Worker instead", MINT_WS_HINT);
+    if (bad) return bad;
+    const out: Array<Record<string, unknown>> = [];
+    for (const row of ctx.state.storage.sql.exec("SELECT sid, name, backstory, created_at FROM sessions WHERE ws = ? ORDER BY created_at", ws)) {
+      if (row === null || typeof row !== "object") continue;
+      const r = row as Record<string, unknown>;
+      const sid = typeof r.sid === "string" ? r.sid : "";
+      const openRun = [...ctx.state.storage.sql.exec("SELECT runId FROM runs WHERE sid = ? AND status = 'open' LIMIT 1", sid)].length > 0;
+      const headInfo = entryHead(ctx.state.storage.sql, sid);
+      out.push({ sid, name: typeof r.name === "string" ? r.name : null, backstory: typeof r.backstory === "string" ? r.backstory : null, created: r.created_at ?? null, openRun, head: headInfo.head, count: headInfo.count });
+    }
+    return json({ ws, sessions: out });
+  }
+  if (request.method !== "POST") return null;
   const bad = ctx.requireSession(ws, null, "call POST /workspaces/:id/sessions on the Worker instead", "create one with POST /workspaces first, then POST /workspaces/:id/sessions");
   if (bad) return bad;
   let body: Record<string, unknown> = {};

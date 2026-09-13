@@ -27,7 +27,7 @@ usage:
 commands:
   doctor | workspace create | session create | files put|get|ls|rm | exec | git
   run | claim | model | thinking | models | settings | entries | meta
-  routines list|create|delete | inbox list|send | compact | archive | stream
+  routines list|create|delete | inbox list|send | groups create|list|messages|send | compact | archive | stream
 flags: --base URL (default ${DEFAULT_BASE})  --json  --help, -h
 examples:
   pi-do doctor
@@ -58,11 +58,21 @@ examples:
   compact: T("pi-do compact — summarize old entries and archive the originals", "pi-do compact --ws WS --sid SID [--base URL] [--json]"),
   archive: T("pi-do archive — re-read one paginated cold-storage page", "pi-do archive --ws WS --sid SID [--page N] [--base URL] [--json]"),
   inbox: T("pi-do inbox — durable peer messaging between sessions", "pi-do inbox list|send --ws WS --sid SID [options] [--base URL] [--json]"),
+  groups: T("pi-do groups — bot crews with a shared channel", "pi-do groups create|list|messages|send --ws WS [--sid SID] [options] [--base URL] [--json]"),
+  "groups:create": T("pi-do groups create — create a crew", "pi-do groups create --ws WS --name N --members a,b,c [--base URL] [--json]", "Members are session ids or names; unknown names materialize new sessions. Stdout is \"group <id>\"."),
+  "groups:list": T("pi-do groups list — every group in the workspace", "pi-do groups list --ws WS [--base URL] [--json]"),
+  "groups:messages": T("pi-do groups messages — the group channel", "pi-do groups messages --ws WS --id GROUP [--base URL] [--json]"),
+  "groups:send": T("pi-do groups send — message every member from a session (or the user)", "pi-do groups send --ws WS --id GROUP --body T [--from SID|user] [--request-id R] [--base URL] [--json]", "Stdout is \"delivered <n>\"."),
   routines: T("pi-do routines — scheduled durable turns on a session", "pi-do routines list|create|delete --ws WS --sid SID [options] [--base URL] [--json]"),
   "routines:list": T("pi-do routines list — every routine in the session, active first", "pi-do routines list --ws WS --sid SID [--base URL] [--json]"),
   "routines:create": T("pi-do routines create — schedule a prompt as a durable turn", "pi-do routines create --ws WS --sid SID --kind once|interval|weekly --spec S --prompt T [--expire-at ISO] [--max-runs N] [--request-id R] [--base URL] [--json]", `Spec: ISO timestamp (once), seconds >= 60 (interval), weekday:HH:MM like mon:09:30 (weekly). Stdout is "routine <id>".`),
   "routines:delete": T("pi-do routines delete — remove one routine", "pi-do routines delete --ws WS --sid SID --id ROUTINE [--base URL] [--json]"),
   inbox: T("pi-do inbox — durable peer messaging between sessions", "pi-do inbox list|send --ws WS --sid SID [options] [--base URL] [--json]"),
+  groups: T("pi-do groups — bot crews with a shared channel", "pi-do groups create|list|messages|send --ws WS [--sid SID] [options] [--base URL] [--json]"),
+  "groups:create": T("pi-do groups create — create a crew", "pi-do groups create --ws WS --name N --members a,b,c [--base URL] [--json]", "Members are session ids or names; unknown names materialize new sessions. Stdout is \"group <id>\"."),
+  "groups:list": T("pi-do groups list — every group in the workspace", "pi-do groups list --ws WS [--base URL] [--json]"),
+  "groups:messages": T("pi-do groups messages — the group channel", "pi-do groups messages --ws WS --id GROUP [--base URL] [--json]"),
+  "groups:send": T("pi-do groups send — message every member from a session (or the user)", "pi-do groups send --ws WS --id GROUP --body T [--from SID|user] [--request-id R] [--base URL] [--json]", "Stdout is \"delivered <n>\"."),
   "inbox:list": T("pi-do inbox list — messages to or from the session", "pi-do inbox list --ws WS --sid SID [--thread T] [--all] [--base URL] [--json]"),
   "inbox:send": T("pi-do inbox send — deliver a durable message to another session", "pi-do inbox send --ws WS --sid SID --to SESSION --body T [--thread T] [--request-id R] [--wait] [--timeout S] [--base URL] [--json]", `An unknown --to materializes a new named session on first message. --wait long-polls until the recipient's consuming turn completes (capped at 120s). Stdout is "inbox <id>".`),
   stream: T("pi-do stream — live turns over a WebSocket", "pi-do stream --ws WS --sid SID [--fence F --expected N] [--base URL] [--json]", `Stdin lines are prompts ("/abort", "/steer TEXT", or {raw JSON}); frames print on stdout.`, "Needs node >= 22 for the global WebSocket."),
@@ -121,7 +131,7 @@ function parseArgs(argv) {
     "--base": "base", "--ws": "ws", "--workspace": "ws", "--sid": "sid", "--session": "sid",
     "--path": "path", "--body": "body", "--body-file": "bodyFile", "--out": "out", "-o": "out",
     "--command": "command", "--cwd": "cwd", "--fence": "fence", "--expected": "expected", "--prompt": "prompt",
-    "--after": "after", "--limit": "limit", "--page": "page", "--model": "model", "--level": "level", "--kind": "kind", "--spec": "spec", "--expire-at": "expireAt", "--max-runs": "maxRuns", "--request-id": "requestId", "--id": "id", "--to": "to", "--thread": "thread", "--backstory": "backstory", "--system-prompt": "systemPrompt", "--timeout": "timeout",
+    "--after": "after", "--limit": "limit", "--page": "page", "--model": "model", "--level": "level", "--kind": "kind", "--spec": "spec", "--expire-at": "expireAt", "--max-runs": "maxRuns", "--request-id": "requestId", "--id": "id", "--to": "to", "--thread": "thread", "--members": "members", "--backstory": "backstory", "--system-prompt": "systemPrompt", "--timeout": "timeout",
     "--thinking": "level", "--provider": "provider", "--retention": "retention",
   };
   const flags = { "--json": "json", "--help": "help", "-h": "help", "--all": "all", "--recursive": "recursive", "--plan": "plan", "--wait": "wait", "--system-prompt": "systemPrompt" };
@@ -631,6 +641,47 @@ async function doInbox(base, json, opts, sub) {
   }
   failUsage(`inbox needs a subcommand (list|send).`, HELP.inbox);
 }
+async function doGroups(base, json, opts, sub) {
+  const help = (k) => HELP[k] ?? HELP.groups;
+  const gid = () => { need(opts.id, `groups needs --id GROUP.`, help("groups:messages")); return opts.id; };
+  if (sub === "list") {
+    need(opts.ws, `groups list needs --ws WS.`, help("groups:list"));
+    const data = await getJson(base, json, wsUrl(base, opts.ws, "/groups"));
+    const list = Array.isArray(data.groups) ? data.groups : [];
+    R.done(json, data, R.list(list, (g) => `${g.id} ${g.name} members=${g.members.join(",")}`, `(empty)`), `${list.length} group(s)`);
+    return;
+  }
+  if (sub === "create") {
+    need(opts.ws, `groups create needs --ws WS.`, help("groups:create"));
+    need(opts.name, `groups create needs --name N.`, help("groups:create"));
+    need(opts.members, `groups create needs --members a,b,c (at least two).`, help("groups:create"));
+    const members = opts.members.split(",").map((m) => m.trim()).filter(Boolean);
+    if (members.length < 2) failUsage(`groups create needs at least two members.`, help("groups:create"));
+    const data = await postJson(base, json, wsUrl(base, opts.ws, "/groups"), { name: opts.name, members });
+    R.done(json, data, `group ${data.group.id} ${data.group.name} members=${data.group.members.join(",")}`, `group ${data.group.id} ${data.group.name}`);
+    return;
+  }
+  if (sub === "messages") {
+    need(opts.ws, `groups messages needs --ws WS.`, help("groups:messages"));
+    gid();
+    const data = await getJson(base, json, wsUrl(base, opts.ws, `/groups/messages?id=${encodeURIComponent(opts.id)}`));
+    const list = Array.isArray(data.messages) ? data.messages : [];
+    R.done(json, data, R.list(list, (m) => `${m.id} from=${m.from}${m.thread ? ` thread=${m.thread}` : ""} delivered=${m.deliveredAt ?? "no"} ${m.body}`, `(empty)`), `${list.length} message(s)`);
+    return;
+  }
+  if (sub === "send") {
+    need(opts.ws, `groups send needs --ws WS.`, help("groups:send"));
+    gid();
+    need(opts.body, `groups send needs --body T.`, help("groups:send"));
+    const payload = { body: opts.body };
+    if (opts.sid !== undefined) payload.from = opts.sid;
+    if (opts.requestId !== undefined) payload.requestId = opts.requestId;
+    const data = await postJson(base, json, wsUrl(base, opts.ws, `/groups/messages?id=${encodeURIComponent(opts.id)}`), payload);
+    R.done(json, data, `delivered ${data.delivered} to thread ${data.thread}`, `delivered ${data.delivered}`);
+    return;
+  }
+  failUsage(`groups needs a subcommand (create|list|messages|send).`, HELP.groups);
+}
 async function doExec(base, json, opts) {
   need(opts.ws, `exec needs --ws WS.`, HELP.exec);
   if (opts.command === undefined) failUsage(`exec needs --command CMD.`, HELP.exec);
@@ -683,6 +734,8 @@ async function main() {
     await doRoutines(opts.base, opts.json, opts, sub);
   } else if (cmd === "inbox") {
     await doInbox(opts.base, opts.json, opts, sub);
+  } else if (cmd === "groups") {
+    await doGroups(opts.base, opts.json, opts, sub);
   } else if (cmd === "settings") {
     await doSettings(opts.base, opts.json, opts);
   } else {

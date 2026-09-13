@@ -1,5 +1,5 @@
 // routes.test.mjs — proves the edge forwarder and the inner dispatcher share
-// one route table: all 26 forwarded shapes resolve through routes/table.ts
+// one route table: all 28 forwarded shapes resolve through routes/table.ts
 // with byte-identical method plus path plus param mapping, and no route shape
 // is declared anywhere else. Imports table.ts only (it has no runtime deps).
 import test from "node:test";
@@ -13,11 +13,11 @@ const workerDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const srcDir = path.join(workerDir, "src");
 const readSrc = (rel) => fs.readFileSync(path.join(srcDir, rel), "utf8");
 
-// The 26 forwarded shapes, in registration order: key plus method plus outer
+// The 28 forwarded shapes, in registration order: key plus method plus outer
 // path plus inner path plus param mapping, exactly as the legacy double
 // declaration served them.
 const EXPECTED = [
-  { key: "sessions", methods: ["POST"], outer: "/workspaces/:id/sessions", inner: "/sessions", sid: false, query: [], passthrough: false, stream: false },
+  { key: "sessions", methods: ["POST", "GET"], outer: "/workspaces/:id/sessions", inner: "/sessions", sid: false, query: [], passthrough: false, stream: false },
   { key: "git", methods: ["POST"], outer: "/workspaces/:id/sessions/:sid/git", inner: "/git", sid: true, query: [], passthrough: false, stream: false },
   { key: "claim", methods: ["POST"], outer: "/workspaces/:id/sessions/:sid/claim", inner: "/claim", sid: true, query: [], passthrough: false, stream: false },
   { key: "model", methods: ["POST"], outer: "/workspaces/:id/sessions/:sid/model", inner: "/model", sid: true, query: [], passthrough: false, stream: false },
@@ -43,10 +43,12 @@ const EXPECTED = [
   { key: "stream", methods: ["GET"], outer: "/workspaces/:id/sessions/:sid/stream", inner: "/stream", sid: true, query: [], passthrough: false, stream: true },
   { key: "routines", methods: ["POST", "GET", "DELETE"], outer: "/workspaces/:id/sessions/:sid/routines", inner: "/routines", sid: true, query: ["id"], passthrough: false, stream: false },
   { key: "inbox", methods: ["POST", "GET"], outer: "/workspaces/:id/sessions/:sid/inbox", inner: "/inbox", sid: true, query: ["thread", "all"], passthrough: false, stream: false },
+  { key: "groups", methods: ["POST", "GET", "DELETE"], outer: "/workspaces/:id/groups", inner: "/groups", sid: false, query: ["id"], passthrough: false, stream: false },
+  { key: "groupMessages", methods: ["POST", "GET"], outer: "/workspaces/:id/groups/messages", inner: "/groups/messages", sid: false, query: ["id", "sid"], passthrough: false, stream: false },
 ];
 
-test("forward table holds all 26 route shapes byte-identical", () => {
-  assert.equal(FORWARD_TABLE.length, 26);
+test("forward table holds all 28 route shapes byte-identical", () => {
+  assert.equal(FORWARD_TABLE.length, 28);
   EXPECTED.forEach((want, i) => {
     const got = FORWARD_TABLE[i];
     assert.deepEqual(
@@ -104,14 +106,19 @@ test("every route resolves through the single table", () => {
     ["DELETE", "/workspaces/w1/sessions/s1/routines", "/routines"],
     ["POST", "/workspaces/w1/sessions/s1/inbox", "/inbox"],
     ["GET", "/workspaces/w1/sessions/s1/inbox", "/inbox"],
+    ["POST", "/workspaces/w1/groups", "/groups"],
+    ["GET", "/workspaces/w1/groups", "/groups"],
+    ["DELETE", "/workspaces/w1/groups", "/groups"],
+    ["POST", "/workspaces/w1/groups/messages", "/groups/messages"],
+    ["GET", "/workspaces/w1/groups/messages", "/groups/messages"],
   ];
-  assert.equal(cases.length, 33);
+  assert.equal(cases.length, 38);
   for (const [method, concrete, inner] of cases) {
     const def = matchRoute(method, concrete);
     assert.ok(def, `${method} ${concrete} resolves`);
     assert.equal(def.inner, inner);
   }
-  assert.equal(matchRoute("GET", "/workspaces/w1/sessions"), undefined);
+  assert.ok(matchRoute("GET", "/workspaces/w1/sessions"), "sessions list resolves");
   assert.equal(matchRoute("POST", "/workspaces/w1/doctor"), undefined);
   assert.equal(matchRoute("DELETE", "/workspaces/w1/sessions/s1/run"), undefined);
   assert.equal(matchRoute("GET", "/workspaces/w1/sessions/s1"), undefined);
@@ -146,7 +153,7 @@ test("every inner path is declared once, in table.ts", () => {
     .join("\n");
   const countQuoted = (literal) => allSrc.split(`"${literal}"`).length - 1;
   const inners = [...new Set([...FORWARD_TABLE.map((d) => d.inner), "/create", "/exists", "/models"])];
-  assert.deepEqual(inners.length, 28);
+  assert.deepEqual(inners.length, 30);
   for (const inner of inners) {
     // "/bg" serves two forward shapes; "/models" is both the edge-local
     // catalog route and an inner path. Everything else appears exactly once.
@@ -156,7 +163,7 @@ test("every inner path is declared once, in table.ts", () => {
 });
 
 test("every table def is handler-bound exactly once", () => {
-  const routeSrcs = ["routes/files.ts", "routes/sessions.ts", "routes/turns.ts", "routes/ops.ts", "routes/doctor.ts", "routes/routines.ts", "routes/inbox.ts"].map(readSrc).join("\n");
+  const routeSrcs = ["routes/files.ts", "routes/sessions.ts", "routes/turns.ts", "routes/ops.ts", "routes/doctor.ts", "routes/routines.ts", "routes/inbox.ts", "routes/groups.ts"].map(readSrc).join("\n");
   // POST and GET share one bg handler bound through ROUTE.bgPost.
   const unbound = new Set(["bgGet"]);
   for (const key of Object.keys(ROUTE)) {
@@ -170,10 +177,12 @@ test("every table def is handler-bound exactly once", () => {
       || routeSrcs.includes(`registerHandler("ops", ROUTE.${key}`)
       || routeSrcs.includes(`registerHandler("doctor", ROUTE.${key}`)
       || routeSrcs.includes(`registerHandler("routines", ROUTE.${key}`)
-      || routeSrcs.includes(`registerHandler("inbox", ROUTE.${key}`);
+      || routeSrcs.includes(`registerHandler("inbox", ROUTE.${key}`)
+      || routeSrcs.includes(`registerHandler("groups", ROUTE.${key}`)
+      || routeSrcs.includes(`registerHandler("groupMessages", ROUTE.${key}`);
     assert.equal(bound, !unbound.has(key), `${key} handler binding`);
   }
-  for (const [file, owner] of [["routes/files.ts", "files"], ["routes/sessions.ts", "sessions"], ["routes/turns.ts", "turns"], ["routes/ops.ts", "ops"], ["routes/doctor.ts", "doctor"], ["routes/routines.ts", "routines"], ["routes/inbox.ts", "inbox"]]) {
+  for (const [file, owner] of [["routes/files.ts", "files"], ["routes/sessions.ts", "sessions"], ["routes/turns.ts", "turns"], ["routes/ops.ts", "ops"], ["routes/doctor.ts", "doctor"], ["routes/routines.ts", "routines"], ["routes/inbox.ts", "inbox"], ["routes/groups.ts", "groups"], ["routes/groups.ts", "groupMessages"]]) {
     assert.ok(readSrc(file).includes(`ownedRoutes("${owner}")`), `${file} exports its owned slice`);
   }
 });
