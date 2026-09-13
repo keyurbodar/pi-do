@@ -66,6 +66,7 @@ done
 
 echo "### 4 fixtures: chief session + two crew sessions (one created by name)"
 WS_JSON="$(${CLI} workspace create --base "${BASE}" --json)" || fail "workspace create"
+printf '%s' "${WS_JSON}" > "${OUT}/ws.json"
 WS="$(json_field "${OUT}/ws.json" ".workspaceId")"
 printf '%s' "seeded-body-${RUN_ID}" | ${CLI} files put --ws "${WS}" --path "seed.txt" --base "${BASE}" --json > "${OUT}/seed-put.json" || fail "seed put"
 ${CLI} session create --ws "${WS}" --backstory "You are the Chief of Staff for ${RUN_ID}." --base "${BASE}" --json > "${OUT}/chief.json" || fail "chief session"
@@ -78,7 +79,13 @@ echo "### 5 create group: members by id and by materialized name"
 ${CLI} groups create --ws "${WS}" --name "offsite-crew-${RUN_ID}" --members "${CHIEF},${AM},scout-${RUN_ID}" --base "${BASE}" --json > "${OUT}/group.json" || fail "group create"
 GID="$(json_field "${OUT}/group.json" ".group.id")"
 ${CLI} groups list --ws "${WS}" --base "${BASE}" --json > "${OUT}/groups-list.json" || fail "groups list"
-M3="$(json_field "${OUT}/groups-list.json" ".groups.find(g=>g.id==='${GID}').members.find(m=>m.includes('${RUN_ID}') && !m.startsWith('${CHIEF}') && m !== '${AM}')")"
+node -e "
+const d=require('${OUT}/groups-list.json');
+const g=d.groups.find(g=>g.id==='${GID}');
+if (!g || g.members.length !== 3) throw new Error('expected 3 members, got ' + JSON.stringify(g));
+" || fail "group members"
+curl -sf "${BASE}/workspaces/${WS}/sessions" -o "${OUT}/sessions.json" || fail "sessions list"
+M3="$(json_field "${OUT}/sessions.json" ".sessions.find(s=>s.name==='scout-${RUN_ID}').sid")"
 [ -n "${M3}" ] && [ "${M3}" != "null" ] || fail "materialized member missing"
 curl -sf "${BASE}/workspaces/${WS}/sessions/${M3}/meta" -o "${OUT}/scout-meta.json" || fail "materialized member meta"
 [ "$(json_field "${OUT}/scout-meta.json" ".name")" = "scout-${RUN_ID}" ] || fail "materialized member name"
@@ -124,11 +131,11 @@ N8="$(node -e "const d=require('${OUT}/channel-8.json'); process.stdout.write(St
 echo "PASS 8 dedupe: one row per member across the retry"
 
 echo "### 9 non-member receives nothing"
-${CLI} entries --ws "${WS}" --sid "${S1}" --all --base "${BASE}" --json > "${OUT}/entries-chief.json" 2>/dev/null || true
-CHEIF_INBOX_N="$(node -e "
-try { const d=require('${OUT}/entries-chief.json'); process.stdout.write(String((d.entries||[]).filter(e=>e.type==='prompt'&&String(e.body).includes('sound-off-${RUN_ID}')).length)); } catch { process.stdout.write('0'); }
+${CLI} entries --ws "${WS}" --sid "${CHIEF}" --all --base "${BASE}" --json > "${OUT}/entries-chief.json" 2>/dev/null || true
+CHIEF_INBOX_N="$(node -e "
+try { const d=require('${OUT}/entries-chief.json'); process.stdout.write(String((d.entries||[]).filter(e=>e.type==='prompt'&&String(e.body).includes('dedupe-${RUN_ID}')).length)); } catch { process.stdout.write('0'); }
 ")"
-[ "${CHEIF_INBOX_N}" = "0" ] || fail "chief (the sender) received its own message"
+[ "${CHIEF_INBOX_N}" = "0" ] || fail "chief (the sender) received its own message"
 echo "PASS 9 sender excluded from fan-out"
 
 echo "PASS groups-proof: all scenario checks green"

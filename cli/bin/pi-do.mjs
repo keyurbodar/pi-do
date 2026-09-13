@@ -131,7 +131,7 @@ function parseArgs(argv) {
     "--base": "base", "--ws": "ws", "--workspace": "ws", "--sid": "sid", "--session": "sid",
     "--path": "path", "--body": "body", "--body-file": "bodyFile", "--out": "out", "-o": "out",
     "--command": "command", "--cwd": "cwd", "--fence": "fence", "--expected": "expected", "--prompt": "prompt",
-    "--after": "after", "--limit": "limit", "--page": "page", "--model": "model", "--level": "level", "--kind": "kind", "--spec": "spec", "--expire-at": "expireAt", "--max-runs": "maxRuns", "--request-id": "requestId", "--id": "id", "--to": "to", "--thread": "thread", "--members": "members", "--backstory": "backstory", "--system-prompt": "systemPrompt", "--timeout": "timeout",
+    "--after": "after", "--limit": "limit", "--page": "page", "--model": "model", "--level": "level", "--kind": "kind", "--spec": "spec", "--expire-at": "expireAt", "--max-runs": "maxRuns", "--request-id": "requestId", "--id": "id", "--to": "to", "--thread": "thread", "--from": "from", "--name": "name", "--members": "members", "--members": "members", "--backstory": "backstory", "--system-prompt": "systemPrompt", "--timeout": "timeout",
     "--thinking": "level", "--provider": "provider", "--retention": "retention",
   };
   const flags = { "--json": "json", "--help": "help", "-h": "help", "--all": "all", "--recursive": "recursive", "--plan": "plan", "--wait": "wait", "--system-prompt": "systemPrompt" };
@@ -674,7 +674,8 @@ async function doGroups(base, json, opts, sub) {
     gid();
     need(opts.body, `groups send needs --body T.`, help("groups:send"));
     const payload = { body: opts.body };
-    if (opts.sid !== undefined) payload.from = opts.sid;
+    const from = opts.from ?? opts.sid;
+    if (from !== undefined) payload.from = from;
     if (opts.requestId !== undefined) payload.requestId = opts.requestId;
     const data = await postJson(base, json, wsUrl(base, opts.ws, `/groups/messages?id=${encodeURIComponent(opts.id)}`), payload);
     R.done(json, data, `delivered ${data.delivered} to thread ${data.thread}`, `delivered ${data.delivered}`);

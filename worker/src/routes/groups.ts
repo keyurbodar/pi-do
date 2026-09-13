@@ -1,6 +1,6 @@
 import { createGroup, deleteGroup, ensureGroupsSchema, getGroup, listGroups, listMembers } from "pi-cf/store/groups";
 import { resolveSendTarget } from "../groups";
-import { insertInbox, listThread } from "pi-cf/store/inbox";
+import { insertInbox, listThread, type InboxRow } from "pi-cf/store/inbox";
 import type { EntriesSql } from "pi-cf/store/entries";
 import { rearmInbox } from "../inbox";
 import { earliestDeadline } from "../alarm-mux";
@@ -15,7 +15,7 @@ function fmtGroup(sql: EntriesSql, ws: string, g: { id: string; name: string; th
 const groups: RouteHandler = async (ctx, request, url) => {
   if (request.method !== "POST" && request.method !== "GET" && request.method !== "DELETE") return null;
   const ws = url.searchParams.get("ws") ?? "";
-  const bad = ctx.requireSession(ws, url.searchParams.get("sid") ?? "", "call /workspaces/:id/groups on the Worker instead", MINT_WS_HINT);
+  const bad = ctx.requireSession(ws, null, "call /workspaces/:id/groups on the Worker instead", MINT_WS_HINT);
   if (bad) return bad;
   const sql = ctx.state.storage.sql;
   ensureGroupsSchema(sql);
@@ -56,8 +56,8 @@ const groups: RouteHandler = async (ctx, request, url) => {
   return json({ ws, group: fmtGroup(sql, ws, group) }, 201);
 };
 
-// Members resolve like send targets minus materialization: create-time
-// members must exist (id or name); spawning is the inbox send's job.
+// Members resolve like send targets: id, name, else materialize a new
+// named session — a crew created with a not-yet-existing bot gets that bot.
 function resolveGroupMember(ctx: RouteCtx, ws: string, ref: string): string {
   if (ctx.sessionExists(ws, ref)) return ref;
   for (const row of ctx.state.storage.sql.exec("SELECT sid FROM sessions WHERE ws = ? AND name = ? LIMIT 1", ws, ref)) {
@@ -65,22 +65,23 @@ function resolveGroupMember(ctx: RouteCtx, ws: string, ref: string): string {
       return (row as Record<string, unknown>).sid as string;
     }
   }
-  return ref;
+  return ctx.mintSession(ws, ref, null);
 }
 
 const groupMessages: RouteHandler = async (ctx, request, url) => {
   if (request.method !== "POST" && request.method !== "GET") return null;
   const ws = url.searchParams.get("ws") ?? "";
   const gid = url.searchParams.get("id") ?? "";
-  const from = url.searchParams.get("sid") ?? "user";
+  let from = url.searchParams.get("sid") ?? "user";
   const bad = ctx.requireSession(ws, from === "user" ? null : from, "retry as POST /workspaces/:id/groups/messages with {from, body} instead", MINT_WS_HINT);
-  if (bad && from !== "user") return bad;
+  if (bad) return bad;
   const sql = ctx.state.storage.sql;
   ensureGroupsSchema(sql);
   const group = getGroup(sql, ws, gid);
   if (group === null) return err("unknown group", "retry with an id from GET /workspaces/:id/groups", 404);
 
-  if (request.method === "GET") return json({ group: fmtGroup(sql, ws, group), messages: listThread(sql, ws, group.thread) });
+  const fmt = (r: InboxRow) => ({ id: r.id, thread: r.thread, from: r.fromSid, to: r.toSid, body: r.body, requestId: r.requestId, createdAt: r.createdAt, deliveredAt: r.deliveredAt, outcomeCursor: r.outcomeCursor });
+  if (request.method === "GET") return json({ group: fmtGroup(sql, ws, group), messages: listThread(sql, ws, group.thread).map(fmt) });
 
   let body: unknown;
   try {
@@ -89,6 +90,7 @@ const groupMessages: RouteHandler = async (ctx, request, url) => {
     body = undefined;
   }
   const rec = body !== null && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  if (rec["from"] !== undefined && typeof rec["from"] === "string" && rec["from"].length > 0) from = rec["from"];
   if (typeof rec["body"] !== "string" || rec["body"].length === 0) {
     return err("missing body", 'retry with {"body": "text"}', 400);
   }
