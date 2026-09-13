@@ -816,6 +816,8 @@ export function BotRosterSidebar({ api }: { api: RosterApi }) {
             avatarVariant,
             avatarImage,
             identiconStyle,
+          }).catch((e: unknown) => {
+            console.error("create bot failed", e instanceof Error ? e.message : e);
           });
           setNewBotOpen(false);
         }}

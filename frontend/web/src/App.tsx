@@ -149,14 +149,14 @@ function ReadyThread({ ownerId, activeBot, bots, onActivity }: {
   bots: RosterBot[];
   onActivity: (id: string, preview: string, presence: RosterBot["presence"]) => void;
 }) {
-  const [session, setSession] = useState<SessionHandle | null>(null);
+  const [session, setSession] = useState<SessionHandle | null | false>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     setSession(null);
     setError(null);
     sessionForOwner(ownerId).then(
-      (s) => { if (!cancelled) setSession(s); },
+      (s) => { if (!cancelled) setSession(s ?? false); },
       (e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); },
     );
     return () => { cancelled = true; };
@@ -166,6 +166,15 @@ function ReadyThread({ ownerId, activeBot, bots, onActivity }: {
       <main className="main">
         <div className="thread" role="alert">
           <p style={{ color: 'var(--destructive)' }}>{error}</p>
+        </div>
+      </main>
+    );
+  }
+  if (session === false) {
+    return (
+      <main className="main">
+        <div className="flex flex-1 flex-col items-center justify-center gap-4">
+          <p className="text-sm text-muted-foreground">Group threads are coming soon</p>
         </div>
       </main>
     );
