@@ -25,6 +25,7 @@ import {
   type ChatItemVM,
   type SystemEventVM,
 } from "./mapper";
+import { ActivityRow } from "./ActivityRow";
 import { ApprovalCard } from "./ApprovalCard";
 import { DelegationCard } from "./DelegationCard";
 import { InterBotDivider } from "./InterBotDivider";
@@ -278,6 +279,12 @@ export function ThreadPane({
             ? turns.slice(start, end).map((turn, i) => renderTurn(turn, start + i))
             : turns.map((turn, turnIndex) => renderTurn(turn, turnIndex))}
           {windowing && bottomPad > 0 && <div aria-hidden style={{ height: bottomPad }} />}
+          {lastTurn?.status === "streaming" && (
+            <>
+              <StepMeter turn={lastTurn} />
+              <ActivityRow avatarSlot={avatarSlot} />
+            </>
+          )}
           {pending.map((p) => (
             <MessageBubble
               key={p.id}
