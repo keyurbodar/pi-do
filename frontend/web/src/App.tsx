@@ -234,7 +234,7 @@ function ReadyThreadInner({ session, ownerId, activeBot, bots, onActivity }: {
       <footer className="composer-footer" style={{ padding: "12px 24px 16px" }}>
         {/* Full-width bar: the composer spans the thread column. */}
         <div className="composer" style={{ maxWidth: "none", margin: "0", width: "100%" }}>
-          <PromptInput key={composerKey} onSubmit={send} running={thread.running} onAbort={thread.abort} botName={activeBot?.name ?? 'the group'} />
+          <PromptInput key={composerKey} onSubmit={send} running={thread.running} onAbort={thread.abort} botName={activeBot?.name ?? 'the group'} contextPercent={thread.meta === null || thread.meta.contextUsage.contextWindow <= 0 ? undefined : (thread.meta.contextUsage.usedTokens / thread.meta.contextUsage.contextWindow) * 100} compactionPending={thread.meta?.compaction.pending ?? false} />
         </div>
       </footer>
     </main>
