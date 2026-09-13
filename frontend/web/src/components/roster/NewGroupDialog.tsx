@@ -3,7 +3,7 @@
 // bots (akeru's boss/specialist split has no equivalent in the contract).
 import { useState } from "react";
 import type { RosterBot } from "../../lib/roster";
-import { BotAvatarPlaceholder } from "./BotAvatarPlaceholder";
+import BotAvatar from "./BotAvatar";
 import { DialogShell } from "./DialogShell";
 
 export function canCreateGroup(name: string, selectedIds: readonly string[]): boolean {
@@ -77,7 +77,7 @@ export function NewGroupDialog({
                       onChange={() => toggleMember(bot.id)}
                       className="size-4 accent-[var(--primary)]"
                     />
-                    <BotAvatarPlaceholder identity={bot.bloub} name={bot.name} className="size-5" />
+                    <BotAvatar identity={bot.bloub} size={20} />
                     <span className="truncate">{bot.name}</span>
                   </label>
                 );

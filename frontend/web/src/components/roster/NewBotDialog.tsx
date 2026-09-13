@@ -3,7 +3,7 @@
 // replaced by the placeholder avatar and the roster.ts identity unions.
 import { useState, type FormEvent } from "react";
 import type { BloubIdentity } from "../../lib/roster";
-import { BotAvatarPlaceholder } from "./BotAvatarPlaceholder";
+import BotAvatar from "./BotAvatar";
 import { BLOUB_COLORS, BLOUB_EXPRESSIONS, BLOUB_SHAPES, colorHex } from "./identity";
 import { DialogShell } from "./DialogShell";
 import { cn } from "./roster.logic";
@@ -42,7 +42,7 @@ export function NewBotDialog({
 
         <div className="space-y-6 px-6 py-6">
           <div className="flex items-center gap-4">
-            <BotAvatarPlaceholder identity={identity} name={trimmedName} className="size-16" />
+            <BotAvatar identity={identity} size={64} />
             <label className="flex min-w-0 flex-1 flex-col gap-2 text-sm font-medium">
               Name
               <input
@@ -77,10 +77,9 @@ export function NewBotDialog({
                       selected ? "border-border bg-accent" : "border-transparent hover:bg-accent/60",
                     )}
                   >
-                    <BotAvatarPlaceholder
+                    <BotAvatar
                       identity={{ ...identity, shape }}
-                      name={trimmedName}
-                      className="size-9"
+                      size={36}
                     />
                   </button>
                 );

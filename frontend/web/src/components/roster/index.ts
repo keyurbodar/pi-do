@@ -1,3 +1,3 @@
 export { BotRosterSidebar } from "./BotRosterSidebar";
-export { BotAvatarPlaceholder } from "./BotAvatarPlaceholder";
+export { default as BotAvatar } from "./BotAvatar";
 export { useRosterState, type RosterApi } from "./useRosterState";

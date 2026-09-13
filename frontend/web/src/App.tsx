@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { PromptInput } from './components/prompt-input';
-import { Thread, useThread, type SessionRef } from './components/thread';
+import { ThreadPane } from './components/chat';
+import { useThread, type SessionRef } from './components/thread';
+import { BotAvatar } from './components/roster';
+import type { RosterBot } from './lib/roster';
 import { Shimmer } from './components/aicss';
 import { BotRosterSidebar, useRosterState } from './components/roster';
 import { bootstrapSession, fetchKeyedProviders, type SessionHandle } from './lib/session';
@@ -42,12 +45,14 @@ export default function App() {
     };
   }, []);
 
-  const activeName = useMemo(() => {
+  const activeBot = useMemo(() => {
     if (roster.activeId === null) return null;
-    const bot = roster.bots.find((candidate) => candidate.id === roster.activeId);
-    if (bot !== undefined) return bot.name;
+    return roster.bots.find((candidate) => candidate.id === roster.activeId) ?? null;
+  }, [roster.activeId, roster.bots]);
+  const activeName = useMemo(() => {
+    if (activeBot !== null) return activeBot.name;
     return roster.groups.find((group) => group.id === roster.activeId)?.name ?? null;
-  }, [roster.activeId, roster.bots, roster.groups]);
+  }, [activeBot, roster.activeId, roster.groups]);
 
   return (
     <div className="flex h-dvh overflow-hidden bg-background">
@@ -58,13 +63,13 @@ export default function App() {
             {activeName ?? 'pi-do'}
           </span>
         </header>
-        <ChatPane boot={boot} />
+        <ChatPane boot={boot} activeBot={activeBot} />
       </div>
     </div>
   );
 }
 
-function ChatPane({ boot }: { boot: BootState }) {
+function ChatPane({ boot, activeBot }: { boot: BootState; activeBot: RosterBot | null }) {
   if (boot.status === 'loading') {
     return (
       <main className="main">
@@ -87,19 +92,27 @@ function ChatPane({ boot }: { boot: BootState }) {
     );
   }
 
-  return <ReadyThread key={boot.session.sessionId} session={boot.session} />;
+  return <ReadyThread key={boot.session.sessionId} session={boot.session} activeBot={activeBot} />;
 }
 
-function ReadyThread({ session }: { session: SessionRef }) {
+function ReadyThread({ session, activeBot }: { session: SessionRef; activeBot: RosterBot | null }) {
   const thread = useThread(session);
   return (
     <main className="main">
       <div className="thread">
-        <Thread turns={thread.turns} pending={thread.pending} conn={thread.conn} onRetry={thread.send} />
+        <ThreadPane
+          turns={thread.turns}
+          pending={thread.pending}
+          conn={thread.conn}
+          onRetry={thread.send}
+          avatarSlot={activeBot
+            ? <BotAvatar identity={activeBot.bloub} presence={activeBot.presence} size={28} />
+            : null}
+        />
       </div>
       <footer className="composer-footer">
         <div className="composer">
-          <PromptInput onSubmit={thread.send} running={thread.running} onAbort={thread.abort} />
+          <PromptInput onSubmit={thread.send} running={thread.running} onAbort={thread.abort} botName={activeBot?.name} />
         </div>
       </footer>
     </main>

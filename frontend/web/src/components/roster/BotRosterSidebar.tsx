@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { RosterBot, RosterGroup, RosterSection } from "../../lib/roster";
-import { BotAvatarPlaceholder } from "./BotAvatarPlaceholder";
+import BotAvatar from "./BotAvatar";
 import { GroupMemberStack } from "./GroupMemberStack";
 import { NewBotDialog } from "./NewBotDialog";
 import { NewGroupDialog } from "./NewGroupDialog";
@@ -78,7 +78,7 @@ function BotRow({
         )}
       >
         <span className="relative shrink-0">
-          <BotAvatarPlaceholder identity={bot.bloub} name={bot.name} className="size-9" />
+          <BotAvatar identity={bot.bloub} presence={bot.presence} size={36} className="shrink-0" />
           {bot.presence === "working" ? (
             <span className="absolute -bottom-px -right-px size-2 rounded-full bg-success ring-1 ring-sidebar" />
           ) : null}
@@ -408,7 +408,7 @@ export function BotRosterSidebar({ api }: { api: RosterApi }) {
                 activeId === bot.id ? "ring-2 ring-primary ring-offset-2 ring-offset-sidebar" : "opacity-80 hover:opacity-100",
               )}
             >
-              <BotAvatarPlaceholder identity={bot.bloub} name={bot.name} className="size-8" />
+              <BotAvatar identity={bot.bloub} size={32} />
             </button>
           ))}
           {unassignedGroups.map((group) => (

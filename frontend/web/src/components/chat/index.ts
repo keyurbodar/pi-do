@@ -10,4 +10,3 @@ export { InterBotDivider } from "./InterBotDivider";
 export { ApprovalCard } from "./ApprovalCard";
 export { ActivityRow } from "./ActivityRow";
 export { Lightbox } from "./Lightbox";
-export { FIXTURE_TURNS } from "./fixture";

@@ -38,7 +38,7 @@ export interface BloubProps {
 
 // Page-background color the eye holes let through; the engine's depth mist for
 // particles is mixed against it, so it must stay a concrete hex.
-const PAPER = '#f9f9f9';
+const PAPER = '#0a0a0a';
 
 const VB = DEMI_VIEWBOX;
 
