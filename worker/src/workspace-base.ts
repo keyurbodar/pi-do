@@ -392,7 +392,7 @@ export class WorkspaceBase implements DurableObject {
           if (members.length === 0) return { ok: false, error: "empty group", hint: "every member is the sender; add members with POST /workspaces/:id/groups" };
           const ids: string[] = [];
           for (const member of members) {
-            const result = insertInbox(sql, ws, from, member, { body, thread: thread ?? target.group.thread, requestId: requestId === undefined ? undefined : `${requestId}:${member}` });
+            const result = insertInbox(sql, ws, from, member, { body, thread: target.group.thread, requestId: requestId === undefined ? undefined : `${requestId}:${member}` });
             if (!result.ok) return result;
             ids.push(result.row.id);
           }
