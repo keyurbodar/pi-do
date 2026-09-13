@@ -82,9 +82,11 @@ export type PromptInputProps = {
   // Dismissible banner stack above the composer.
   banners?: readonly ComposerBanner[];
   onDismissBanner?: (id: string) => void;
-  // Accepted-but-ignored (meter UI removed). Kept optional so old callers
-  // keep compiling.
+  // Context meter: usedTokens/contextWindow as a percent, rendered as a
+  // compact bar beside the send button. Omitted → no meter.
   contextPercent?: number;
+  // Compaction is queued server-side; the meter shows a pending hint.
+  compactionPending?: boolean;
 };
 
 const MAX_DRAFT_CHARS = 20_000;
@@ -347,9 +349,8 @@ export function PromptInput({
   banners = [],
   onDismissBanner,
   contextPercent,
+  compactionPending = false,
 }: PromptInputProps = {}) {
-  // contextPercent no longer renders a meter; accepted-but-ignored.
-  void contextPercent;
   // Draft persists per bot: restored on mount (and on draftKey change),
   // saved on every change, cleared on send.
   const [value, setValue] = useState(() => readDraft(draftKey));
@@ -977,17 +978,41 @@ export function PromptInput({
               />
             </span>
             </div>
-            <button
-              type="button"
-              data-testid="composer-send"
-              data-status="ready"
-              aria-label="Send"
-              disabled={!hasText}
-              onClick={send}
-              className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-transform disabled:opacity-25"
-            >
-              <ArrowUp className="size-4" />
-            </button>
+            <div className="flex items-center gap-2.5">
+              {contextPercent !== undefined ? (
+                <span
+                  data-testid="context-meter"
+                  role="meter"
+                  aria-label={`Context ${Math.round(contextPercent)}% used`}
+                  aria-valuenow={Math.round(contextPercent)}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  title={compactionPending ? "Compaction pending" : "Context used"}
+                  className="flex items-center gap-1.5"
+                >
+                  <span className="h-1 w-14 overflow-hidden rounded-full bg-foreground/15">
+                    <span
+                      className="block h-full rounded-full bg-muted-foreground transition-[width] duration-300"
+                      style={{ width: `${Math.max(0, Math.min(100, contextPercent))}%` }}
+                    />
+                  </span>
+                  <span className="text-[10px] tabular-nums text-muted-foreground">
+                    {compactionPending ? "compacting" : `${Math.round(contextPercent)}%`}
+                  </span>
+                </span>
+              ) : null}
+              <button
+                type="button"
+                data-testid="composer-send"
+                data-status="ready"
+                aria-label="Send"
+                disabled={!hasText}
+                onClick={send}
+                className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-transform disabled:opacity-25"
+              >
+                <ArrowUp className="size-4" />
+              </button>
+            </div>
           </div>
         </div>
         {isDragOver ? (

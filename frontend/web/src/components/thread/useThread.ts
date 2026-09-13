@@ -4,6 +4,7 @@
 
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { workerBaseUrl } from "../../lib/hc-client";
+import { fetchMeta, type SessionMeta } from "../../lib/meta";
 import { initial, reducer, type Action, type ThreadState } from "./reducer";
 import {
   type ConnState,
@@ -23,6 +24,11 @@ function streamUrl(session: SessionRef): string {
 // both page until a short page or head instead of one wide request.
 const ENTRY_PAGE = 1000;
 const RECONNECT_MIN_MS = 500;
+
+// Terminal row types: a turn that lands one of these has settled, so the
+// meter re-reads meta once per settle (covers fast turns whose streaming
+// state never rendered, plus error/interrupted settles).
+const SETTLE_TYPES: Record<string, true> = { result: true, error: true, interrupted: true };
 const RECONNECT_MAX_MS = 5000;
 
 /** Pull every entry past `after` in server-clamped pages, handing each page
@@ -57,6 +63,7 @@ export interface ThreadApi {
   send: (text: string) => void;
   abort: () => void;
   running: boolean;
+  meta: SessionMeta | null;
 }
 
 export function useThread(session: SessionRef): ThreadApi {
@@ -77,6 +84,19 @@ export function useThread(session: SessionRef): ThreadApi {
   const pendIdRef = useRef(0);
   const cancelledRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
+  const [meta, setMeta] = useState<SessionMeta | null>(null);
+
+  // Meta (context usage, compaction state) refreshes on mount and once per
+  // turn settle — the only moments usedTokens/compaction can have moved.
+  const refreshMeta = useCallback(() => {
+    fetchMeta(session).then(
+      (next) => {
+        if (!cancelledRef.current) setMeta(next);
+      },
+      () => {},
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session.workspaceId, session.sessionId]);
   const queueRef = useRef<string[]>([]);
 
   const flush = useCallback(() => {
@@ -101,8 +121,11 @@ export function useThread(session: SessionRef): ThreadApi {
       seenRef.current.add(buffered.cursor);
       maxSeenRef.current = buffered.cursor;
       dispatch({ kind: "live", row: buffered });
+      // Result rows can surface here instead of acceptLiveRow when they
+      // buffered behind a cursor gap — same settle signal.
+      if (SETTLE_TYPES[buffered.type] === true) refreshMeta();
     }
-  }, []);
+  }, [refreshMeta]);
 
   // Merge replay/heal rows by cursor: dedupe against everything already
   // applied (StrictMode remounts, live frames racing the fetch), advance
@@ -117,8 +140,11 @@ export function useThread(session: SessionRef): ThreadApi {
       return true;
     });
     if (fresh.length > 0) dispatch({ kind: "resume", rows: fresh });
+    // A terminal row in a heal page (socket was already live) means a turn
+    // settled while we were disconnected — refresh the meter once.
+    if (wsRef.current !== null && fresh.some((row) => SETTLE_TYPES[row.type] === true)) refreshMeta();
     drainGap();
-  }, [drainGap]);
+  }, [drainGap, refreshMeta]);
 
   // Ordered live apply: a row at the next cursor applies now; one further
   // out buffers until the heal fetch fills the gap ahead of it.
@@ -132,9 +158,12 @@ export function useThread(session: SessionRef): ThreadApi {
       seenRef.current.add(row.cursor);
       maxSeenRef.current = row.cursor;
       dispatch({ kind: "live", row });
+      // Terminal row = turn settled. Refresh even when the running edge
+      // never rendered (a fast stub turn can open and close in one batch).
+      if (SETTLE_TYPES[row.type] === true) refreshMeta();
       drainGap();
     },
-    [drainGap],
+    [drainGap, refreshMeta],
   );
 
   // (Re)opens the session socket; a no-op while one is open or connecting so
@@ -262,6 +291,7 @@ export function useThread(session: SessionRef): ThreadApi {
         // Replay failure leaves an empty thread; live frames still append.
       }
       if (!cancelledRef.current) connect();
+      refreshMeta();
     })();
 
     return () => {
@@ -273,7 +303,19 @@ export function useThread(session: SessionRef): ThreadApi {
       wsRef.current?.close();
       wsRef.current = null;
     };
-  }, [session.workspaceId, session.sessionId, connect, ingestRows]);
+  }, [session.workspaceId, session.sessionId, connect, ingestRows, refreshMeta]);
+
+  const turns = pair.state.order.map((runId) => pair.state.byId[runId]).filter(Boolean);
+  const running = turns.some((turn) => turn.status === "streaming");
+
+  // running→false edge: the turn's rows just settled, so the context meter
+  // re-reads usedTokens/compaction once — never per frame.
+  const wasRunningRef = useRef(false);
+  useEffect(() => {
+    const settled = wasRunningRef.current && !running;
+    wasRunningRef.current = running;
+    if (settled) refreshMeta();
+  }, [running, refreshMeta]);
 
   const abort = useCallback(() => {
     const ws = wsRef.current;
@@ -287,13 +329,13 @@ export function useThread(session: SessionRef): ThreadApi {
     connect();
   }, [connect]);
 
-  const turns = pair.state.order.map((runId) => pair.state.byId[runId]).filter(Boolean);
   return {
     turns,
     pending: pair.state.pending,
     conn,
     send,
     abort,
-    running: turns.some((turn) => turn.status === "streaming"),
+    running,
+    meta,
   };
 }
