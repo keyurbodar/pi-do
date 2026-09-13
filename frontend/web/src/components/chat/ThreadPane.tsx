@@ -25,6 +25,10 @@ import {
   type ChatItemVM,
   type SystemEventVM,
 } from "./mapper";
+import { ApprovalCard } from "./ApprovalCard";
+import { DelegationCard } from "./DelegationCard";
+import { InterBotDivider } from "./InterBotDivider";
+import { Lightbox } from "./Lightbox";
 import { MessageBubble } from "./MessageBubble";
 import { StatusCard } from "./StatusCard";
 import { StepMeter } from "./StepMeter";

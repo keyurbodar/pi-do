@@ -225,18 +225,19 @@ export function useFixturePlayback(botId: string | null): FixturePlayback {
           cursor += EXCHANGE_GAP_MS;
         });
       } else if (exchange.response !== undefined) {
-        cursor = playBotTurn(
-          botRunId,
-          {
-            senderId: exchange.senderId,
-            systemEvent: exchange.systemEvent,
-            interBotFrom: exchange.interBotFrom,
-            delegation: exchange.delegation,
-            userInput: exchange.userInput,
-            approval: exchange.approval,
-          },
-          exchange.response,
-        );
+      cursor = playBotTurn(
+        botRunId,
+        {
+          senderId: exchange.senderId,
+          systemEvent: exchange.systemEvent,
+          interBotFrom: exchange.interBotFrom,
+          delegation: exchange.delegation,
+          userInput: exchange.userInput,
+          approval: exchange.approval,
+        },
+        exchange.response,
+        cursor,
+      );
       }
 
       lastDone = cursor;

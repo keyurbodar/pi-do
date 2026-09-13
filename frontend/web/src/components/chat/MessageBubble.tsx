@@ -8,7 +8,7 @@
 // bubble carries a hover toolbar: copy-to-clipboard with Copied feedback,
 // retry (re-sends via onRetry), and — on user bubbles — edit, which loads
 // the text back into the composer via onEdit (default no-op).
-import { Check, Copy, Pencil, RotateCcw } from "lucide-react";
+import { Check, Copy, FileText, Pencil, RotateCcw } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 
