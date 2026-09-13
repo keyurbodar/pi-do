@@ -20,7 +20,11 @@ export interface FixtureResponse {
 
 export interface FixtureExchange {
   prompt: string;
-  response: FixtureResponse;
+  /**
+   * Single-speaker reply. Optional when segments carries a multi-sender
+   * exchange instead — the group turn streams one sender at a time.
+   */
+  response?: FixtureResponse;
   /**
    * Wall-clock the exchange lands at (epoch ms). Omitted exchanges use
    * Date.now() at playback; scripts that span yesterday evening → this
@@ -33,17 +37,41 @@ export interface FixtureExchange {
   systemEvent?: string;
   /** Roster bot ids folded into the response turn (inter-bot divider). */
   interBotFrom?: string[];
+  /** Delegated sub-task card rendered under the prompt. */
+  delegation?: { childBot: string; task: string; state: "working" | "done" | "failed" };
+  /** Inline question with quick-reply options, trailing the response. */
+  userInput?: { question: string; options: string[] };
+  /** Approval gate trailing the response; decided locally on click. */
+  approval?: { title: string; description: string };
+  /**
+   * Multi-sender reply: each segment streams as its own turn in order, so
+   * group sends play as an interleaved per-sender exchange, not all at
+   * once. Carries the prompt's exchange timestamp unless a segment sets at.
+   */
+  segments?: FixtureSegment[];
+}
+
+/** One voice inside a multi-sender (group) fixture exchange. */
+export interface FixtureSegment {
+  /** Roster bot id streaming this segment. */
+  senderId: string;
+  thinking?: { text: string; ms: number };
+  tools?: FixtureTool[];
+  text: string;
 }
 
 export type FixtureScript = FixtureExchange[];
-
-/** Epoch ms N hours before now — fixture timestamps stay plausible as time passes. */
 const hoursAgo = (h: number) => Date.now() - h * 3_600_000;
 
 export const FIXTURE_SCRIPTS: Record<string, FixtureScript> = {
   chief: [
     {
       prompt: "Where are we on the offsite?",
+      delegation: {
+        childBot: "talent-scout",
+        task: "Pull three backend profiles in Lisbon for the hiring sync",
+        state: "working",
+      },
       response: {
         thinking: {
           text: "Pulling the offsite thread — venue, calendar holds, and who still hasn't confirmed travel.",
@@ -82,6 +110,10 @@ export const FIXTURE_SCRIPTS: Record<string, FixtureScript> = {
   "sales-outbound": [
     {
       prompt: "Draft a follow-up for the Meridian thread.",
+      userInput: {
+        question: "Send the Meridian follow-up as drafted?",
+        options: ["Send it", "Edit first", "Hold for Friday"],
+      },
       response: {
         thinking: {
           text: "Meridian went quiet after the demo — pull the thread and the last-touch notes before drafting.",
@@ -204,6 +236,10 @@ export const FIXTURE_SCRIPTS: Record<string, FixtureScript> = {
     {
       at: hoursAgo(3.5),
       prompt: "Flag anything weird.",
+      approval: {
+        title: "Dispute duplicate taxi charge",
+        description: "One duplicate taxi charge on the 4th — approve to file the dispute, reject to leave it on the report.",
+      },
       response: {
         tools: [{ tool: "ramp.query", args: { anomaly: "duplicates" }, output: "1 flag · duplicate taxi" }],
         text: "one duplicate taxi charge on the 4th — flagged and disputed. that's the only surprise. everything else is exactly as boring as it should be.",
@@ -242,6 +278,34 @@ export const FIXTURE_SCRIPTS: Record<string, FixtureScript> = {
         ],
         text: "Inbox Manager pulled the confirmations — Ana and Cole are still out. I'll take the venue call while Chief nudges them this afternoon. Everything else for the offsite week is booked.",
       },
+    },
+    {
+      at: hoursAgo(27),
+      prompt: "Sound off — who's doing what tomorrow?",
+      // Multi-sender exchange: each segment streams as its own turn in
+      // order, so the group send plays as an interleaved per-sender
+      // round-robin instead of one wall of text.
+      segments: [
+        {
+          senderId: "chief",
+          text: "I'll take the morning venue walk-through — AV, seating, and the agenda print run.",
+        },
+        {
+          senderId: "account-manager",
+          tools: [
+            { tool: "gcal.search", args: { query: "offsite", range: "30d" }, output: "3 events · offsite week" },
+          ],
+          text: "I'll confirm the QBR deck with Vicky first thing, then join the walk-through.",
+        },
+        {
+          senderId: "talent-scout",
+          thinking: {
+            text: "interviews run till noon — what can move without me",
+            ms: 900,
+          },
+          text: "I'll hold interviews till noon, then bring the shortlist to the loft.",
+        },
+      ],
     },
   ],
 };

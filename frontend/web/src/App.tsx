@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { PromptInput } from './components/prompt-input';
-import { ThreadPane, useFixturePlayback } from './components/chat';
+import { ChatHeader, ThreadPane, buildTranscript, useFixturePlayback } from './components/chat';
 import { useThread, type SessionRef, type TurnViewState } from './components/thread';
 import { BotAvatar } from './components/roster';
 import type { RosterBot } from './lib/roster';
@@ -53,25 +53,54 @@ export default function App() {
     return roster.groups.find((group) => group.id === roster.activeId)?.name ?? null;
   }, [activeBot, roster.activeId, roster.groups]);
 
+  const activeGroup = useMemo(() => {
+    if (activeBot !== null || roster.activeId === null) return null;
+    return roster.groups.find((group) => group.id === roster.activeId) ?? null;
+  }, [activeBot, roster.activeId, roster.groups]);
+  const presenceText = useMemo(() => {
+    if (activeBot !== null) return PRESENCE_TEXT[activeBot.presence];
+    if (activeGroup !== null) return `Group · ${activeGroup.memberIds.length} members`;
+    return 'pi-do';
+  }, [activeBot, activeGroup]);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    const onDone = () => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    };
+    window.addEventListener('pi-do:copy-transcript-done', onDone);
+    return () => window.removeEventListener('pi-do:copy-transcript-done', onDone);
+  }, []);
+
   return (
     <div className="flex h-dvh overflow-hidden bg-background">
       <BotRosterSidebar api={roster} />
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-4">
-          {activeBot !== null ? (
-            <span data-testid="header-avatar" className="flex shrink-0 items-center">
-              <BotAvatar identity={activeBot.bloub} presence={activeBot.presence} size={22} />
-            </span>
-          ) : null}
-          <span className="truncate text-sm font-semibold text-foreground">
-            {activeName ?? 'pi-do'}
-          </span>
+          <ChatHeader
+            name={activeName ?? 'pi-do'}
+            presenceText={presenceText}
+            avatar={activeBot !== null
+              ? <BotAvatar identity={activeBot.bloub} presence={activeBot.presence} size={22} />
+              : null}
+            copied={copied}
+            onScrollBottom={() => window.dispatchEvent(new CustomEvent('pi-do:scroll-bottom'))}
+            onCopyTranscript={() => window.dispatchEvent(new CustomEvent('pi-do:copy-transcript'))}
+            onNewTurn={() => window.dispatchEvent(new CustomEvent('pi-do:new-turn'))}
+          />
         </header>
         <ChatPane boot={boot} activeBot={activeBot} activeId={roster.activeId} bots={roster.bots} onActivity={roster.setActivity} />
       </div>
     </div>
   );
 }
+
+const PRESENCE_TEXT: Record<RosterBot['presence'], string> = {
+  idle: 'Idle',
+  typing: 'Typing…',
+  working: 'Working…',
+  sleeping: 'Away',
+};
 
 function ChatPane({
   boot,
@@ -181,15 +210,61 @@ function ReadyThreadInner({ session, ownerId, activeBot, bots, onActivity }: {
     if (activeBot === null || preview === null) return;
     onActivity(activeBot.id, preview, thread.running ? "typing" : "idle");
   }, [activeBot, preview, thread.running, onActivity]);
+  // Header "new turn" clears the live turns view locally (fixtures stay);
+  // the next send brings the live view back.
+  const [hideLive, setHideLive] = useState(false);
+  // Composer remount key: edit actions write the draft then bump this so
+  // PromptInput re-reads it (its draft store lives in localStorage).
+  const [composerKey, setComposerKey] = useState(0);
+  const liveTurns = hideLive ? [] : thread.turns;
+  useEffect(() => {
+    const onNewTurn = () => setHideLive(true);
+    const onCopy = () => {
+      const text = buildTranscript([...playback.turns, ...thread.turns]);
+      const done = () => window.dispatchEvent(new CustomEvent('pi-do:copy-transcript-done'));
+      if (text.length === 0) {
+        done();
+        return;
+      }
+      const clipboard = navigator.clipboard;
+      if (clipboard !== undefined) {
+        clipboard.writeText(text).then(done, done);
+      } else {
+        done();
+      }
+    };
+    window.addEventListener('pi-do:new-turn', onNewTurn);
+    window.addEventListener('pi-do:copy-transcript', onCopy);
+    return () => {
+      window.removeEventListener('pi-do:new-turn', onNewTurn);
+      window.removeEventListener('pi-do:copy-transcript', onCopy);
+    };
+  }, [playback.turns, thread.turns]);
+  const send = (prompt: string) => {
+    setHideLive(false);
+    thread.send(prompt);
+  };
+  const editInComposer = (text: string) => {
+    try {
+      globalThis.localStorage.setItem('pidof-draft-default', text.slice(0, 20_000));
+    } catch {
+      // Quota or private mode: remount still focuses the composer.
+    }
+    setComposerKey((key) => key + 1);
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>('[data-testid="composer-input"]')?.focus();
+    });
+  };
   return (
     <main className="main">
       <div className="thread">
         <ThreadPane
-          turns={[...playback.turns, ...thread.turns]}
+          turns={[...playback.turns, ...liveTurns]}
           pending={thread.pending}
           conn={thread.conn}
           playing={playback.playing}
-          onRetry={thread.send}
+          onRetry={send}
+          onEdit={editInComposer}
           bots={bots}
           avatarSlot={activeBot
             ? <BotAvatar identity={activeBot.bloub} presence={activeBot.presence} size={36} />
@@ -198,7 +273,7 @@ function ReadyThreadInner({ session, ownerId, activeBot, bots, onActivity }: {
       </div>
       <footer className="composer-footer">
         <div className="composer">
-          <PromptInput onSubmit={thread.send} running={thread.running} onAbort={thread.abort} botName={activeBot?.name ?? 'the group'} />
+          <PromptInput key={composerKey} onSubmit={send} running={thread.running} onAbort={thread.abort} botName={activeBot?.name ?? 'the group'} />
         </div>
       </footer>
     </main>

@@ -1,13 +1,16 @@
 // components/chat/MessageBubble.tsx — akeru UserTimelineRow /
 // AssistantTimelineRow markup (refs/akeru-bot, MIT), stripped of their state
-// layer: no copy buttons, no reactions, no revert. User bubbles right-align
-// on --message-surface; bot bubbles sit left with an avatar slot the shell
-// fills (BotAvatar) later. Image attachments render as a clickable grid that
-// opens the lightbox. Group threads add a muted sender label above the
-// bubble, and text that names a roster bot renders that run as an inline
-// BotMention chip instead of markdown.
-import { FileText } from "lucide-react";
+// layer. User bubbles right-align on --message-surface; bot bubbles sit left
+// with an avatar slot the shell fills (BotAvatar) later. Image attachments
+// render as a clickable grid that opens the lightbox. Group threads add a
+// muted sender label above the bubble, and text that names a roster bot
+// renders that run as an inline BotMention chip instead of markdown. Every
+// bubble carries a hover toolbar: copy-to-clipboard with Copied feedback,
+// retry (re-sends via onRetry), and — on user bubbles — edit, which loads
+// the text back into the composer via onEdit (default no-op).
+import { Check, Copy, Pencil, RotateCcw } from "lucide-react";
 import type { ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { RosterBot } from "../../lib/roster";
 import type { AttachmentVM, MessageBubbleVM } from "../thread/viewModel";
@@ -21,6 +24,9 @@ export function MessageBubble({
   senderLabel,
   bots = [],
   onOpenImage,
+  onRetry,
+  onEdit,
+  retryText,
 }: {
   vm: MessageBubbleVM;
   avatarSlot?: ReactNode;
@@ -31,21 +37,104 @@ export function MessageBubble({
   /** Roster bots resolvable as inline mentions; empty disables chip rendering. */
   bots?: RosterBot[];
   onOpenImage: (attachment: AttachmentVM) => void;
+  /** Re-sends text (the shell passes the turn prompt as retryText). */
+  onRetry?: (prompt: string) => void;
+  /** Loads a user bubble's text back into the composer; default no-op. */
+  onEdit?: (text: string) => void;
+  /** Prompt re-sent by the retry action; defaults to the bubble text. */
+  retryText?: string;
 }) {
+  const [copied, setCopied] = useState(false);
+  const copyTimer = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
+    };
+  }, []);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(vm.text);
+    } catch {
+      // Clipboard API unavailable (permissions, insecure context): fall
+      // back to a transient textarea + execCommand.
+      try {
+        const area = document.createElement("textarea");
+        area.value = vm.text;
+        document.body.appendChild(area);
+        area.select();
+        document.execCommand("copy");
+        document.body.removeChild(area);
+      } catch {
+        return;
+      }
+    }
+    setCopied(true);
+    if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
+    copyTimer.current = window.setTimeout(() => setCopied(false), 1500);
+  };
+
+  const toolbar = (
+    <div
+      data-testid={`message-actions-${vm.id}`}
+      className="absolute -top-3 right-1 z-10 flex items-center gap-0.5 rounded-full border border-[var(--border)] bg-[var(--card)] p-0.5 opacity-0 shadow-[var(--shadow-float)] transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100"
+    >
+      <button
+        type="button"
+        data-testid={`message-copy-${vm.id}`}
+        aria-label="Copy message"
+        title="Copy message"
+        onClick={copy}
+        className="flex size-6 cursor-pointer items-center justify-center rounded-full text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]/70"
+      >
+        {copied ? <Check aria-hidden className="size-3.5" /> : <Copy aria-hidden className="size-3.5" />}
+      </button>
+      <button
+        type="button"
+        data-testid={`message-retry-${vm.id}`}
+        aria-label="Retry prompt"
+        title="Retry prompt"
+        onClick={() => onRetry?.(retryText ?? vm.text)}
+        className="flex size-6 cursor-pointer items-center justify-center rounded-full text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]/70"
+      >
+        <RotateCcw aria-hidden className="size-3.5" />
+      </button>
+      {vm.role === "user" && (
+        <button
+          type="button"
+          data-testid={`message-edit-${vm.id}`}
+          aria-label="Edit in composer"
+          title="Edit in composer"
+          onClick={() => onEdit?.(vm.text)}
+          className="flex size-6 cursor-pointer items-center justify-center rounded-full text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]/70"
+        >
+          <Pencil aria-hidden className="size-3.5" />
+        </button>
+      )}
+    </div>
+  );
+
   if (vm.role === "user") {
     return (
-      <div data-testid={`thread-item-${vm.id}`} className="group flex flex-col items-end">
+      <div data-testid={`thread-item-${vm.id}`} className="group relative flex flex-col items-end">
+        {toolbar}
         <div className="max-w-[80%] rounded-2xl bg-[var(--message-surface)] px-3.5 py-2.5 text-[var(--message-foreground)]">
           {renderText(vm.text, bots)}
           <AttachmentGrid attachments={vm.attachments} onOpen={onOpenImage} />
         </div>
+        {copied && (
+          <span data-testid={`message-copied-${vm.id}`} className="px-1 text-xs text-[var(--muted-foreground)]">
+            Copied
+          </span>
+        )}
       </div>
     );
   }
 
   return (
-    <div data-testid={`thread-item-${vm.id}`} className="flex min-w-0 items-start gap-3 px-2 py-1">
+    <div data-testid={`thread-item-${vm.id}`} className="group relative flex min-w-0 items-start gap-3 px-2 py-1">
       {avatarSlot !== null && <div className="flex size-8 shrink-0 items-center justify-center">{avatarSlot}</div>}
+      {toolbar}
       <div className="min-w-0 flex-1">
         {senderLabel !== undefined && (
           <div className="px-0.5 pb-0.5 text-xs text-[var(--muted-foreground)]">{senderLabel}</div>
@@ -64,6 +153,11 @@ export function MessageBubble({
           </div>
         )}
         <AttachmentGrid attachments={vm.attachments} onOpen={onOpenImage} />
+        {copied && (
+          <span data-testid={`message-copied-${vm.id}`} className="text-xs text-[var(--muted-foreground)]">
+            Copied
+          </span>
+        )}
       </div>
     </div>
   );
