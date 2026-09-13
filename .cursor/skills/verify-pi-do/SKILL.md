@@ -92,6 +92,12 @@ is not yet proven for the user.
 - The web app reaches the Worker at `workerBaseUrl()` (default
   `http://127.0.0.1:8787`, override `PUBLIC_WORKER_URL`). Web drives share
   the CLI's BASE; run Doctor first as with any drive.
+### Fast pass (one ego-browser drive per surface)
+
+`ego-browser` is the driving harness for every web verification; raw headless-browser flags are a fallback, never the plan. The prebuilt helper `sh helpers/verify-ui.sh URL OUT_DIR FEATURE` runs the whole fast pass in one `ego-browser nodejs` inline drive: curl load check, then snapshot + console-error capture + one screenshot into `OUT_DIR` (`artifacts/{RUN_ID}/{feature}/`). Exit `0` pass (HTTP 200, zero console errors, non-empty snapshot), `1` fail (console errors, empty snapshot, or drive error — see `OUT_DIR/drive.log`), `2` unreachable (non-200/timeout).
+Usage: `sh helpers/verify-ui.sh http://localhost:3000 artifacts/{RUN_ID}/web-thread web-thread; echo "exit=$?"`
+Time budget: the full fast pass completes in under 60 seconds. A hung load check (5s curl timeout) or a stalled drive is a failed check, not a wait — report it with its artifact and stop.
+No duplication: each surface is driven once per change. The fast pass covers load, zero console errors, and one screenshot; the feature recipe then drives only its own new behavior on the already-proven page. The integration pass drives each feature file exactly once — never re-drive a feature another pass already proved, never re-prove verified behavior, no retry loops.
 
 ## Evidence
 
@@ -130,3 +136,5 @@ reported with its unmet precondition, never as verified-by-another-path.
   console-error capture, screenshot in one headless pass. Exit `0` pass,
   `1` console errors, `2` unreachable, `3` no browser found. Usage:
   `sh helpers/web-check.sh http://localhost:3000; echo "exit=$?"`
+- `helpers/verify-ui.sh URL OUT_DIR FEATURE` — prebuilt fast-pass harness: curl load check, then a single `ego-browser nodejs` inline drive (snapshot + console errors + one screenshot into `OUT_DIR`). Exit `0` pass, `1` fail, `2` unreachable. Usage:
+  `sh helpers/verify-ui.sh http://localhost:3000 artifacts/verify-1/web-thread web-thread; echo "exit=$?"`

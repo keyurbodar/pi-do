@@ -60,3 +60,9 @@ behavior, then exactly four H2 sections in this order.
 - [Web thread](./web-thread.md) — chat thread in the browser: bootstrap, send, stream, settle. Live with the web frontend (shared dev server).
 - [Web roster](./web-roster.md) — bot roster sidebar: view/search/pin/delete, create bot/group/section, icon rail, select bot. Live with the web frontend (shared dev server).
 - [Web composer](./web-composer.md) — prompt composer: type, send/stop states, abort while running. Live with the web frontend (shared dev server).
+- [Web sidebar shortcuts](./web-sidebar-shortcuts.md) — keyboard shortcuts (cmd-k, j/k, Enter, n, e, p, Delete) and drag-drop reorder. Live with the web frontend.
+- [Web sidebar identity](./web-sidebar-identity.md) — avatar picker (bloub/upload/generated) and bot details sheet. Live with the web frontend.
+- [Web sidebar sheets](./web-sidebar-sheets.md) — channels, memory, and tools sheets per bot. Live with the web frontend.
+- [Web composer new](./web-composer-new.md) — model picker, slash/mention menus, reply preview, pending banner, chips, banners, meter, badges, compression, voice. Live with the web frontend.
+- [Web thread actions](./web-thread-actions.md) — message actions, delegation card, step meter, user-input prompt, approvals, header actions. Live with the web frontend.
+- [Web thread scale](./web-thread-scale.md) — virtualized scroll window and group runtime. Live with the web frontend.
