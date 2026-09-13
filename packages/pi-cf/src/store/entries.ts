@@ -111,22 +111,20 @@ export function sessionCwd(sql: EntriesSql, sid: string): string | null {
 // tx (recordTurnWithOpen, routes) must not open a nested SQLite transaction.
 const txActive = new WeakSet<object>();
 
-export function runInSyncTx(sql: EntriesSql, fn: () => void): void {
+export function runInSyncTx<T>(sql: EntriesSql, fn: () => T): T {
   const tx = sql.transactionSync;
   if (txActive.has(sql)) {
-    fn();
-    return;
+    return fn();
   }
   if (typeof tx !== "function") {
     // SqlStorage has no transactionSync; in the single-threaded DO a fully
     // synchronous sql.exec sequence cannot interleave with other events,
     // so running fn() directly is still atomic with respect to DO work.
-    fn();
-    return;
+    return fn();
   }
   txActive.add(sql);
   try {
-    tx.call(sql, fn);
+    return tx.call(sql, fn) as T;
   } finally {
     txActive.delete(sql);
   }

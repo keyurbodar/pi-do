@@ -3,7 +3,7 @@ import { createCheckpoint, getCheckpoint, listCheckpoints, rewindSession } from 
 import { drainPages, readSingleRow } from "pi-cf/store/sql-util";
 import { buildRuntime, clampThinkingLevel, resolveCatalogModel, supportedThinkingLevels, THINKING_LEVELS, type RuntimeEnv, type RuntimeModel } from "../model-runtime";
 import { archiveMeta, compactionPending, contextUsage as contextUsageState, lastSummarySource } from "../compaction";
-import { checkedRotate } from "../stream";
+import { broadcastEntry, checkedRotate } from "../stream";
 import { MINT_WS_HINT, err, fmtModel, fmtSettings, fmtThinking, fmtUsage, json, saveSettings, type RouteHandler } from "./_shared";
 import { ROUTE, ownedRoutes, registerHandler } from "./table";
 import { loadProjectContextMessage } from "pi-cf/agent/project-context";
@@ -152,14 +152,16 @@ const modelOrThinking: RouteHandler = async (ctx, request, url) => {
     if (rot !== null && "status" in rot) return json(rot.body, rot.status);
     const sql = ctx.state.storage.sql;
     const from = ctx.readTriple(sid);
+    let cursor = -1;
     runInSyncTx(sql, () => {
       sql.exec("UPDATE sessions SET modelProvider = ?, modelId = ? WHERE sid = ?", provider, id, sid);
       saveSettings(sql, ws, provider, id, ctx.readSettings(ws).thinking);
-      appendEntry(sql, sid, "model_change", {
+      cursor = appendEntry(sql, sid, "model_change", {
         from: { provider: from?.provider ?? null, id: from?.id ?? null },
         to: { provider, id },
       });
     });
+    broadcastEntry(ctx.streamHost(ws, sid), cursor);
     const cur = ctx.readFence(sid);
     return fmtModel(sid, provider, id, rot, cur?.revision ?? 0);
   }
@@ -194,14 +196,16 @@ const modelOrThinking: RouteHandler = async (ctx, request, url) => {
   if (rotated !== null && "status" in rotated) return json(rotated.body, rotated.status);
   const applied = clampThinkingLevel(like, level);
   const sql = ctx.state.storage.sql;
+  let cursor = -1;
   runInSyncTx(sql, () => {
     sql.exec("UPDATE sessions SET thinkingLevel = ? WHERE sid = ?", applied, sid);
-    appendEntry(sql, sid, "thinking_level_change", {
+    cursor = appendEntry(sql, sid, "thinking_level_change", {
       from: triple?.thinking ?? null,
       requested: level,
       level: applied,
     });
   });
+  broadcastEntry(ctx.streamHost(ws, sid), cursor);
   const cur = ctx.readFence(sid);
   return fmtThinking(sid, applied, level, rotated, cur?.revision ?? 0);
 };
@@ -440,10 +444,8 @@ const rewind: RouteHandler = async (ctx, request, url) => {
     cursor = body.cursor;
   }
   try {
-    let out: unknown = null;
-    runInSyncTx(sql, () => {
-      out = rewindSession(sql, sid, cursor);
-    });
+    const out = runInSyncTx(sql, () => rewindSession(sql, sid, cursor));
+    if (out.summaryCursor !== null) broadcastEntry(ctx.streamHost(ws, sid), out.summaryCursor);
     return json(out);
   } catch (e) {
     if (e !== null && typeof e === "object" && "error" in e && typeof e.error === "string") {

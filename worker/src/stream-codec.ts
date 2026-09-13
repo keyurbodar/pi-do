@@ -172,13 +172,19 @@ export function emitEntry(host: StreamHost, sock: StreamSocket, type: string, bo
     sock.close(CLOSE_UNKNOWN, "chunk persist failed; turn orphaned for the recovery scan");
     return;
   }
-  let row: ReturnType<typeof getEntry> = null;
+  broadcastEntry(host, cursor);
+}
+
+// Session-level rows appended outside a turn (model change, compaction,
+// rewind, error) still owe live sockets their frame; without it a client's
+// gap-buffer holds every later row until reconnect. The row is already
+// durable, so a failed read or send is swallowed instead of escalating.
+export function broadcastEntry(host: StreamHost, cursor: number): void {
   try {
-    row = getEntry(host.sql, host.sid, cursor);
+    const row = getEntry(host.sql, host.sid, cursor);
+    if (row !== null) broadcast(host, { entry: row });
   } catch {
-    row = null;
   }
-  if (row !== null) broadcast(host, { entry: row });
 }
 
 export function readAttachment(ws: WebSocket): StreamAttachment | null {

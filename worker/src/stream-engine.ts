@@ -13,7 +13,7 @@ import { createAgentSession, type SessionRunBudgets, type SessionTurn } from "pi
 import { clampThinkingLevel, keyedProviders, resolveCatalogModel, resolveKeyedModel, resolveProviderKey, resolveTurnModel, type RuntimeEnv, type RuntimeModel, type TurnModel } from "./model-runtime";
 import { compactionPending, maybeMarkForCompaction, runCompaction } from "./compaction";
 import { sessionSummarizer } from "./summarizer";
-import { broadcast, CLOSE_CONFLICT, CLOSE_FENCED, CLOSE_UNKNOWN, emitEntry, wrapSocket, type StreamAttachment, type StreamHost, type StreamSocket } from "./stream-codec";
+import { broadcast, broadcastEntry, CLOSE_CONFLICT, CLOSE_FENCED, CLOSE_UNKNOWN, emitEntry, wrapSocket, type StreamAttachment, type StreamHost, type StreamSocket } from "./stream-codec";
 import { isUnknownModel, parseBudgets, shaped } from "./protocol";
 
 export type CheckedFence =
@@ -537,7 +537,8 @@ export async function executeTurnInner(host: StreamHost, input: TurnInput, sink:
     const overflowTag = (e as { overflow?: unknown } | null)?.overflow === true;
     if (overflowDepth === 0 && overflowTag) {
       try {
-        await runCompaction(host.sql, host.sid, true, [], sessionSummarizer(host.runtimeEnv, host.sql, host.sid));
+        const out = await runCompaction(host.sql, host.sid, true, [], sessionSummarizer(host.runtimeEnv, host.sql, host.sid));
+        if (out.summaryCursor !== null) broadcastEntry(host, out.summaryCursor);
       } catch {
         // A failed emergency compaction still leaves the single retry to run
         // against the unchanged history; its outcome surfaces as today.
