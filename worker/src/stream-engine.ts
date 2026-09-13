@@ -487,6 +487,7 @@ export async function executeTurnInner(host: StreamHost, input: TurnInput, sink:
       cacheRetention: host.retention,
       plan: input.plan,
       cwd: sessionCwd(host.sql, host.sid),
+      systemPromptExtras: host.backstory,
     });
     const turn = await session.run(input.prompt, {
       signal: input.signal,

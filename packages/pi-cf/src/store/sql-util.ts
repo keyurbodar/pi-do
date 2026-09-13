@@ -104,6 +104,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { table: "sessions", column: "modelId", ddl: "ALTER TABLE sessions ADD COLUMN modelId TEXT" },
   { table: "sessions", column: "thinkingLevel", ddl: "ALTER TABLE sessions ADD COLUMN thinkingLevel TEXT" },
   { table: "sessions", column: "cacheRetention", ddl: "ALTER TABLE sessions ADD COLUMN cacheRetention TEXT" },
+  { table: "sessions", column: "backstory", ddl: "ALTER TABLE sessions ADD COLUMN backstory TEXT" },
   { table: "sessions", column: "leaf", ddl: "ALTER TABLE sessions ADD COLUMN leaf INTEGER NOT NULL DEFAULT 0" },
   { table: "sessions", column: "name", ddl: "ALTER TABLE sessions ADD COLUMN name TEXT" },
   { table: "sessions", column: "cwd", ddl: "ALTER TABLE sessions ADD COLUMN cwd TEXT" },

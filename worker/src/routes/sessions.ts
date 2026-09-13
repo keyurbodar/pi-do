@@ -8,6 +8,8 @@ import { MINT_WS_HINT, err, fmtModel, fmtSettings, fmtThinking, fmtUsage, json, 
 import { ROUTE, ownedRoutes, registerHandler } from "./table";
 import { readEvents, readSnapshot } from "pi-cf/agent/snapshots";
 import { loadProjectContextMessage } from "pi-cf/agent/project-context";
+import { composePrompt, SYSTEM_PROMPT } from "pi-cf/agent/session";
+import { readBackstory } from "../backstory";
 
 const sessions: RouteHandler = async (ctx, request, url) => {
   if (request.method !== "POST") return null;
@@ -28,11 +30,21 @@ const sessions: RouteHandler = async (ctx, request, url) => {
   }
   const name = typeof body.name === "string" ? body.name : null;
   const cwd = typeof body.cwd === "string" ? body.cwd : null;
+  let backstory: string | null = null;
+  if (body.backstory !== undefined) {
+    if (typeof body.backstory !== "string" || body.backstory.length === 0) {
+      return err("bad backstory", 'retry with {"backstory": "<persona text>"} or omit it', 400);
+    }
+    if (body.backstory.length > 8192) {
+      return err("backstory too long", "backstory must be at most 8192 characters", 400);
+    }
+    backstory = body.backstory;
+  }
   const sessionId = crypto.randomUUID();
   const fence = crypto.randomUUID();
   const defaults = ctx.readSettings(ws);
   ctx.state.storage.sql.exec(
-    "INSERT INTO sessions(sid, ws, created_at, ownerFence, revision, modelProvider, modelId, thinkingLevel, cacheRetention, name, cwd) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO sessions(sid, ws, created_at, ownerFence, revision, modelProvider, modelId, thinkingLevel, cacheRetention, name, cwd, backstory) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)",
     sessionId,
     ws,
     new Date().toISOString(),
@@ -43,8 +55,9 @@ const sessions: RouteHandler = async (ctx, request, url) => {
     effRetention,
     name,
     cwd,
+    backstory,
   );
-  return json({ sessionId, fence, revision: 0, model: { provider: defaults.provider, id: defaults.id }, thinking: defaults.thinking, retention: effRetention, name, cwd, parentSessionId: null });
+  return json({ sessionId, fence, revision: 0, model: { provider: defaults.provider, id: defaults.id }, thinking: defaults.thinking, retention: effRetention, name, cwd, backstory, parentSessionId: null });
 };
 
 const claim: RouteHandler = async (ctx, request, url) => {
@@ -288,11 +301,16 @@ const meta: RouteHandler = (ctx, request, url) => {
   const archive = archiveMeta(sql, sid);
   const usage = fmtUsage(sumResultUsage(sql, sid), ctx.sessionContextWindow(triple));
   // ?context=1 exposes the composed project-context section the agent would
-  // lead with; it is read-time state over the VFS, so it is opt-in.
+  // lead with; ?systemPrompt=1 exposes the fully composed system prompt
+  // (base + sections + backstory). Both are read-time state, so opt-in.
   const context = url.searchParams.has("context")
     ? loadProjectContextMessage({ sql, files: ctx.files, ws, sid })?.text ?? null
     : undefined;
-  return json({ sid, ws, created, name, cwd, parentSessionId, head, count, leaf, openRun, context, model: { provider: triple?.provider ?? null, id: triple?.id ?? null }, thinking: triple?.thinking ?? null, retention: triple?.retention ?? "short", usage, compaction: { pending: compactionPending(sql, sid), archivePages: archive.pages, archiveTotal: archive.total }, fence: fenced?.fence ?? null });
+  const backstory = readBackstory(sql, sid);
+  const systemPrompt = url.searchParams.has("systemPrompt")
+    ? composePrompt(SYSTEM_PROMPT, backstory ?? undefined)
+    : undefined;
+  return json({ sid, ws, created, name, cwd, backstory, parentSessionId, head, count, leaf, openRun, context, systemPrompt, model: { provider: triple?.provider ?? null, id: triple?.id ?? null }, thinking: triple?.thinking ?? null, retention: triple?.retention ?? "short", usage, compaction: { pending: compactionPending(sql, sid), archivePages: archive.pages, archiveTotal: archive.total }, fence: fenced?.fence ?? null });
 };
 const snapshot: RouteHandler = (ctx, request, url) => {
   if (request.method !== "GET") return null;

@@ -26,6 +26,7 @@ export interface StreamHost {
   thinking: string | null;
   retention: "short" | "long";
   model: { provider: string; id: string } | null;
+  backstory: string | null;
   workspaceKnown: boolean;
   sessionKnown: boolean;
   readFence(): { fence: string | null; revision: number } | null;

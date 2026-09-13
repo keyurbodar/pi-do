@@ -16,6 +16,7 @@ import { sessionSummarizer } from "./summarizer";
 import { COMPACTION_JOB, COMPACTION_REARM_MS, KEEPALIVE_JOB, KEEPALIVE_MS, cancelJob, earliestDeadline, runDueJobs, scheduleJob } from "./alarm-mux";
 import { ROUTINE_JOB, ensureRoutinesSchema, fireDueRoutines, type RoutineRow } from "./routines";
 import { INBOX_JOB, INBOX_REARM_MS, deliverDueInbox, inboxPrompt, rearmInbox } from "./inbox";
+import { readBackstory } from "./backstory";
 import { markDelivered, ensureInboxSchema, type InboxRow } from "pi-cf/store/inbox";
 import { makeSidLiveCheck, RECOVERY_JOB, scanTurns } from "pi-cf/store/recovery";
 import { nextRunAtMin } from "pi-cf/store/runs";
@@ -196,7 +197,7 @@ export class WorkspaceBase implements DurableObject {
       sessionContextWindow: (triple) => this.sessionContextWindow(triple),
       streamHost: (ws, sid) => this.streamHost(ws, sid),
       enqueueSessionTurn: (sid, fn) => this.enqueueSessionTurn(sid, fn),
-      mintSession: (ws, name) => this.mintSession(ws, name),
+      mintSession: (ws, name, backstory) => this.mintSession(ws, name, backstory),
     };
   }
 
@@ -370,13 +371,13 @@ export class WorkspaceBase implements DurableObject {
 
   // Session materialization for spawn-by-message: the same INSERT the
   // sessions route performs, callable from the wake path.
-  protected mintSession(ws: string, name: string | null): string {
+  protected mintSession(ws: string, name: string | null, backstory: string | null = null): string {
     const sql = this.state.storage.sql;
     const defaults = this.readSettings(ws);
     const sessionId = crypto.randomUUID();
     const fence = crypto.randomUUID();
     sql.exec(
-      "INSERT INTO sessions(sid, ws, created_at, ownerFence, revision, modelProvider, modelId, thinkingLevel, cacheRetention, name, cwd) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO sessions(sid, ws, created_at, ownerFence, revision, modelProvider, modelId, thinkingLevel, cacheRetention, name, cwd, backstory) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)",
       sessionId,
       ws,
       new Date().toISOString(),
@@ -387,8 +388,13 @@ export class WorkspaceBase implements DurableObject {
       "short",
       name,
       null,
+      backstory,
     );
     return sessionId;
+  }
+
+  protected readBackstory(sid: string): string | null {
+    return readBackstory(this.state.storage.sql, sid);
   }
 
   protected streamHost(ws: string, sid: string): StreamHost {
@@ -403,6 +409,7 @@ export class WorkspaceBase implements DurableObject {
       thinking: triple?.thinking ?? null,
       retention: triple?.retention ?? "short",
       model: triple?.provider != null && triple?.id != null ? { provider: triple.provider, id: triple.id } : null,
+      backstory: this.readBackstory(sid),
       workspaceKnown: ws !== "" && this.workspaceExists(ws),
       sessionKnown: ws !== "" && sid !== "" && this.sessionExists(ws, sid),
       readFence: () => this.readFence(sid),

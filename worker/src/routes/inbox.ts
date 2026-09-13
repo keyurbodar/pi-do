@@ -56,7 +56,7 @@ const inbox: RouteHandler = async (ctx, request, url) => {
       }
       break;
     }
-    if (!ctx.sessionExists(ws, toSid)) toSid = ctx.mintSession(ws, toSid);
+    if (!ctx.sessionExists(ws, toSid)) toSid = ctx.mintSession(ws, toSid, (rec["body"] as string).slice(0, 8192));
   }
   const result = insertInbox(sql, ws, sid, toSid, { body: rec["body"], thread: rec["thread"], requestId: rec["requestId"] });
   if (!result.ok) return err(result.error, result.hint, 400);

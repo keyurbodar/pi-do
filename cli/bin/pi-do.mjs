@@ -39,7 +39,7 @@ examples:
   workspace: T("pi-do workspace — manage workspaces", "pi-do workspace create [--base URL] [--json]"),
   "workspace:create": T("pi-do workspace create — create a workspace", "pi-do workspace create [--base URL] [--json]", `POSTs /workspaces. Stdout is "workspace <id>" (raw JSON with --json).`),
   session: T("pi-do session — manage sessions", "pi-do session create --ws WS [--retention short|long] [--cwd D] [--base URL] [--json]"),
-  "session:create": T("pi-do session create — mint a session in a workspace", "pi-do session create --ws WS [--retention short|long] [--cwd D] [--base URL] [--json]", `POSTs /workspaces/:id/sessions with {retention, cwd}. Stdout is "session <id>" (raw JSON with --json).`),
+  "session:create": T("pi-do session create — mint a session [--backstory T] in a workspace", "pi-do session create --ws WS [--retention short|long] [--cwd D] [--base URL] [--json]", `POSTs /workspaces/:id/sessions with {retention, cwd}. Stdout is "session <id>" (raw JSON with --json).`),
   claim: T("pi-do claim — rotate the owner fence via revision CAS", "pi-do claim --ws WS --sid SID --fence F --expected N [--base URL] [--json]", "Wrong fence is 403, stale expected is 409. Success rotates fence and bumps revision."),
   run: T("pi-do run — one headless harness turn in a session", "pi-do run --ws WS --sid SID --prompt T [--plan] [--model provider/id] [--thinking L] [--fence F --expected N] [--base URL] [--json]", "Without --json stdout is the result text; with --json stdout is the raw server JSON. With --plan the turn is read-only: every write tool fails closed."),
   model: T("pi-do model — switch the session model mid-session", "pi-do model --ws WS --sid SID --model provider/id [--fence F --expected N] [--base URL] [--json]"),
@@ -54,7 +54,7 @@ examples:
   "files:rm": T("pi-do files rm — delete a workspace file or directory tree", "pi-do files rm --ws WS --path P [--recursive] [--base URL] [--json]"),
   exec: T("pi-do exec — run a one-off shell command in a workspace", "pi-do exec --ws WS --command CMD [--cwd D] [--base URL] [--json]"),
   entries: T("pi-do entries — ordered replay slice of persisted session entries", "pi-do entries --ws WS --sid SID [--after N] [--limit L] [--all] [--base URL] [--json]", "--all pages gaplessly and prints every entry (JSON mode prints one merged payload)."),
-  meta: T("pi-do meta — resume cursor for a session", "pi-do meta --ws WS --sid SID [--base URL] [--json]"),
+  meta: T("pi-do meta — resume cursor for a session", "pi-do meta --ws WS --sid SID [--system-prompt] [--base URL] [--json]"),
   compact: T("pi-do compact — summarize old entries and archive the originals", "pi-do compact --ws WS --sid SID [--base URL] [--json]"),
   archive: T("pi-do archive — re-read one paginated cold-storage page", "pi-do archive --ws WS --sid SID [--page N] [--base URL] [--json]"),
   inbox: T("pi-do inbox — durable peer messaging between sessions", "pi-do inbox list|send --ws WS --sid SID [options] [--base URL] [--json]"),
@@ -121,10 +121,10 @@ function parseArgs(argv) {
     "--base": "base", "--ws": "ws", "--workspace": "ws", "--sid": "sid", "--session": "sid",
     "--path": "path", "--body": "body", "--body-file": "bodyFile", "--out": "out", "-o": "out",
     "--command": "command", "--cwd": "cwd", "--fence": "fence", "--expected": "expected", "--prompt": "prompt",
-    "--after": "after", "--limit": "limit", "--page": "page", "--model": "model", "--level": "level", "--kind": "kind", "--spec": "spec", "--expire-at": "expireAt", "--max-runs": "maxRuns", "--request-id": "requestId", "--id": "id", "--to": "to", "--thread": "thread", "--timeout": "timeout",
+    "--after": "after", "--limit": "limit", "--page": "page", "--model": "model", "--level": "level", "--kind": "kind", "--spec": "spec", "--expire-at": "expireAt", "--max-runs": "maxRuns", "--request-id": "requestId", "--id": "id", "--to": "to", "--thread": "thread", "--backstory": "backstory", "--system-prompt": "systemPrompt", "--timeout": "timeout",
     "--thinking": "level", "--provider": "provider", "--retention": "retention",
   };
-  const flags = { "--json": "json", "--help": "help", "-h": "help", "--all": "all", "--recursive": "recursive", "--plan": "plan", "--wait": "wait" };
+  const flags = { "--json": "json", "--help": "help", "-h": "help", "--all": "all", "--recursive": "recursive", "--plan": "plan", "--wait": "wait", "--system-prompt": "systemPrompt" };
   const positionals = [];
   let baseSet = false;
   for (let i = 0; i < argv.length; i++) {
@@ -265,6 +265,7 @@ async function doSessionCreate(base, json, opts) {
   const payload = {};
   if (opts.retention !== undefined) payload.retention = opts.retention;
   if (opts.cwd !== undefined) payload.cwd = opts.cwd;
+  if (opts.backstory !== undefined) payload.backstory = opts.backstory;
   const data = await postJson(base, json, wsUrl(base, opts.ws, "/sessions"), Object.keys(payload).length > 0 ? payload : undefined);
   R.done(json, data, `session ${data.sessionId} ret ${data.retention ?? "short"}`, `session ${data.sessionId} ret ${data.retention ?? "short"}`);
 }
@@ -428,8 +429,9 @@ async function doEntries(base, json, opts) {
 }
 async function doMeta(base, json, opts) {
   needWsSid(opts, "meta", HELP.meta);
-  const data = await getJson(base, json, sessUrl(base, opts.ws, opts.sid, "/meta"));
-  R.show(json, data, `sid ${data.sid}\nws ${data.ws}\ncreated ${data.created}\nhead ${data.head}\ncount ${data.count}\nopenRun ${data.openRun ?? "null"}`, `meta head ${data.head} count ${data.count} openRun ${data.openRun ?? "null"}`);
+  const qs = opts.systemPrompt === true ? "?systemPrompt=1" : "";
+  const data = await getJson(base, json, sessUrl(base, opts.ws, opts.sid, `/meta${qs}`));
+  R.show(json, data, `sid ${data.sid}\nws ${data.ws}\ncreated ${data.created}\nhead ${data.head}\ncount ${data.count}\nopenRun ${data.openRun ?? "null"}\nbackstory ${data.backstory ?? "null"}${data.systemPrompt !== undefined ? `\nsystemPrompt:\n${data.systemPrompt}` : ""}`, `meta head ${data.head} count ${data.count} openRun ${data.openRun ?? "null"}`);
   if (!json) R.note(`meta head ${data.head} count ${data.count}`);
   process.exitCode = 0; return;
 }

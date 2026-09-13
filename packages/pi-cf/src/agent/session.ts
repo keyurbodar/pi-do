@@ -38,6 +38,9 @@ export interface CreateAgentSessionOptions {
   // Workspace-relative default for relative tool paths, read from the
   // sessions row at turn bind. Null/empty keeps the workspace root.
   cwd?: string | null;
+  // Per-session persona (bot backstory) appended to the composed system
+  // prompt. Null/empty leaves the prompt byte-identical.
+  systemPromptExtras?: string | null;
 }
 
 export interface SessionToolCall {
@@ -101,7 +104,9 @@ function abortablePause(signal: AbortSignal | undefined): Promise<void> {
 }
 const MIN_TURN_MS = 100;
 
-const SYSTEM_PROMPT =
+export { composePrompt } from "./prompt.ts";
+
+export const SYSTEM_PROMPT =
   'You are a coding assistant inside a Cloudflare Worker workspace. File paths are workspace-relative ("" is the workspace root). Use the tools to inspect and change files, then answer with a short summary of what you did.';
 
 const STREAM_IDLE_TIMEOUT_MS = 300_000;
@@ -364,7 +369,7 @@ export function createAgentSession(options: CreateAgentSessionOptions): {
       });
     const agent = new Agent({
       initialState: {
-        systemPrompt: composePrompt(SYSTEM_PROMPT), model: piModel,
+        systemPrompt: composePrompt(SYSTEM_PROMPT, options.systemPromptExtras ?? undefined), model: piModel,
         messages, tools: agentTools,
         thinkingLevel: (thinking ?? "off") as ThinkingLevel,
       },
