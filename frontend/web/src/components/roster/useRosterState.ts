@@ -7,7 +7,6 @@ import {
   type BloubIdentity,
   type RosterBot,
   type RosterGroup,
-  type RosterSection,
 } from "../../lib/roster";
 
 const STORAGE_KEY = "pi-do.roster.v2";
@@ -15,10 +14,8 @@ const STORAGE_KEY = "pi-do.roster.v2";
 interface PersistedRoster {
   bots: RosterBot[];
   groups: RosterGroup[];
-  sections: RosterSection[];
   activeId: string | null;
   railCollapsed: boolean;
-  collapsedSections: string[];
 }
 
 function makeId(prefix: string): string {
@@ -35,14 +32,13 @@ function loadPersisted(): PersistedRoster {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (raw !== null) {
       const parsed = JSON.parse(raw) as Partial<PersistedRoster>;
-      if (Array.isArray(parsed.bots) && Array.isArray(parsed.groups) && Array.isArray(parsed.sections)) {
+      if (Array.isArray(parsed.bots) && Array.isArray(parsed.groups)) {
+        // Unknown stored fields from older persists are ignored.
         return {
           bots: parsed.bots,
           groups: parsed.groups,
-          sections: parsed.sections,
           activeId: typeof parsed.activeId === "string" ? parsed.activeId : null,
           railCollapsed: parsed.railCollapsed === true,
-          collapsedSections: Array.isArray(parsed.collapsedSections) ? parsed.collapsedSections : [],
         };
       }
     }
@@ -52,34 +48,26 @@ function loadPersisted(): PersistedRoster {
   return {
     bots: seed.bots,
     groups: seed.groups,
-    sections: seed.sections,
     activeId: null,
     railCollapsed: false,
-    collapsedSections: [],
   };
 }
 
 export interface RosterApi {
   bots: RosterBot[];
   groups: RosterGroup[];
-  sections: RosterSection[];
   activeId: string | null;
   railCollapsed: boolean;
-  isSectionCollapsed: (sectionId: string) => boolean;
   setActive: (id: string | null) => void;
   toggleRail: () => void;
-  toggleSectionCollapsed: (sectionId: string) => void;
   addBot: (name: string, identity: BloubIdentity, extra?: Partial<RosterBot>) => RosterBot;
   addGroup: (name: string, memberIds: string[]) => RosterGroup;
-  addSection: (name: string) => RosterSection;
   deleteBot: (id: string) => void;
   deleteGroup: (id: string) => void;
-  deleteSection: (id: string) => void;
   setItemPinned: (id: string, pinned: boolean) => void;
-  moveItem: (id: string, sectionId: string | null) => void;
   setActivity: (id: string, preview: string, presence: RosterBot["presence"]) => void;
   updateBot: (id: string, patch: Partial<RosterBot>) => void;
-  reorderItem: (dragId: string, targetId: string | null, sectionId: string | null) => void;
+  reorderItem: (dragId: string, targetId: string | null) => void;
 }
 
 export function useRosterState(): RosterApi {
@@ -107,15 +95,6 @@ export function useRosterState(): RosterApi {
 
   const toggleRail = useCallback(() => {
     setState((prev) => ({ ...prev, railCollapsed: !prev.railCollapsed }));
-  }, []);
-
-  const toggleSectionCollapsed = useCallback((sectionId: string) => {
-    setState((prev) => ({
-      ...prev,
-      collapsedSections: prev.collapsedSections.includes(sectionId)
-        ? prev.collapsedSections.filter((id) => id !== sectionId)
-        : [...prev.collapsedSections, sectionId],
-    }));
   }, []);
 
   const addBot = useCallback((name: string, identity: BloubIdentity, extra?: Partial<RosterBot>) => {
@@ -150,12 +129,6 @@ export function useRosterState(): RosterApi {
     return group;
   }, []);
 
-  const addSection = useCallback((name: string) => {
-    const section: RosterSection = { id: makeId("section"), name, childIds: [] };
-    setState((prev) => ({ ...prev, sections: [...prev.sections, section] }));
-    return section;
-  }, []);
-
   const deleteBot = useCallback((id: string) => {
     setState((prev) => ({
       ...prev,
@@ -163,10 +136,6 @@ export function useRosterState(): RosterApi {
       groups: prev.groups.map((group) => ({
         ...group,
         memberIds: group.memberIds.filter((memberId) => memberId !== id),
-      })),
-      sections: prev.sections.map((section) => ({
-        ...section,
-        childIds: section.childIds.filter((childId) => childId !== id),
       })),
       activeId: prev.activeId === id ? null : prev.activeId,
     }));
@@ -176,19 +145,7 @@ export function useRosterState(): RosterApi {
     setState((prev) => ({
       ...prev,
       groups: prev.groups.filter((group) => group.id !== id),
-      sections: prev.sections.map((section) => ({
-        ...section,
-        childIds: section.childIds.filter((childId) => childId !== id),
-      })),
       activeId: prev.activeId === id ? null : prev.activeId,
-    }));
-  }, []);
-
-  const deleteSection = useCallback((id: string) => {
-    setState((prev) => ({
-      ...prev,
-      sections: prev.sections.filter((section) => section.id !== id),
-      collapsedSections: prev.collapsedSections.filter((collapsed) => collapsed !== id),
     }));
   }, []);
 
@@ -210,15 +167,6 @@ export function useRosterState(): RosterApi {
     }));
   }, []);
 
-  const moveItem = useCallback((id: string, sectionId: string | null) => {
-    setState((prev) => ({
-      ...prev,
-      sections: prev.sections.map((section) => {
-        const withoutId = section.childIds.filter((childId) => childId !== id);
-        return section.id === sectionId ? { ...section, childIds: [...withoutId, id] } : { ...section, childIds: withoutId };
-      }),
-    }));
-  }, []);
   const updateBot = useCallback((id: string, patch: Partial<RosterBot>) => {
     setState((prev) => ({
       ...prev,
@@ -226,7 +174,7 @@ export function useRosterState(): RosterApi {
     }));
   }, []);
 
-  const reorderItem = useCallback((dragId: string, targetId: string | null, sectionId: string | null) => {
+  const reorderItem = useCallback((dragId: string, targetId: string | null) => {
     setState((prev) => {
       if (targetId !== null && dragId === targetId) return prev;
       const dragBot = prev.bots.find((bot) => bot.id === dragId);
@@ -260,77 +208,40 @@ export function useRosterState(): RosterApi {
               : [...without.slice(0, targetIndex), dragGroup, ...without.slice(targetIndex)];
         }
       }
-      // Section membership: remove everywhere, then insert before the target
-      // inside the destination section (or append when dropping on a section).
-      const stripped = prev.sections.map((section) => ({
-        ...section,
-        childIds: section.childIds.filter((childId) => childId !== dragId),
-      }));
-      const sections =
-        sectionId === null
-          ? stripped
-          : stripped.map((section) => {
-              if (section.id !== sectionId) return section;
-              if (targetId === null || !section.childIds.includes(targetId)) {
-                return { ...section, childIds: [...section.childIds, dragId] };
-              }
-              const at = section.childIds.indexOf(targetId);
-              return {
-                ...section,
-                childIds: [...section.childIds.slice(0, at), dragId, ...section.childIds.slice(at)],
-              };
-            });
-      return { ...prev, bots, groups, sections };
+      return { ...prev, bots, groups };
     });
   }, []);
-
-  const isSectionCollapsed = useCallback(
-    (sectionId: string) => state.collapsedSections.includes(sectionId),
-    [state.collapsedSections],
-  );
 
   return useMemo(
     () => ({
       bots: state.bots,
       groups: state.groups,
-      sections: state.sections,
       activeId: state.activeId,
       railCollapsed: state.railCollapsed,
-      isSectionCollapsed,
       setActive,
       toggleRail,
-      toggleSectionCollapsed,
       addBot,
       addGroup,
-      addSection,
       deleteBot,
       deleteGroup,
-      deleteSection,
       setItemPinned,
       setActivity,
-      moveItem,
       updateBot,
       reorderItem,
     }),
     [
       state.bots,
       state.groups,
-      state.sections,
       state.activeId,
       state.railCollapsed,
-      isSectionCollapsed,
       setActive,
       toggleRail,
-      toggleSectionCollapsed,
       addBot,
       addGroup,
-      addSection,
       deleteBot,
       deleteGroup,
-      deleteSection,
       setItemPinned,
       setActivity,
-      moveItem,
       updateBot,
       reorderItem,
     ],

@@ -2,15 +2,12 @@
 // of its Effect/atom store, router, drag-and-drop, and base-ui menu layers:
 // plain React state + Tailwind utilities against the lib/roster.ts contract.
 // Kept from akeru: iMessage-style rows (avatar, name, relative timestamp,
-// one-line preview, presence, unread badge), pinned area, collapsible
-// sections, search filtering, icon rail, and the create menu.
+// one-line preview, presence, unread badge), pinned area, search filtering,
+// icon rail, and the create menu.
 // Fixture-local additions: keyboard shortcuts, HTML5 drag-and-drop reorder,
 // per-bot details/channels/memory/tools sheets, and a delete confirm dialog.
 import {
   BotIcon,
-  ChevronDownIcon,
-  ChevronRightIcon,
-  FolderIcon,
   PanelLeftIcon,
   PinIcon,
   PlusIcon,
@@ -19,7 +16,7 @@ import {
   UsersIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
-import type { RosterBot, RosterGroup, RosterSection } from "../../lib/roster";
+import type { RosterBot, RosterGroup } from "../../lib/roster";
 import BotAvatar from "./BotAvatar";
 import { BotChannelsSheet } from "./BotChannelsSheet";
 import { BotDetailsPanel } from "./BotDetailsPanel";
@@ -34,10 +31,9 @@ import type { RosterApi } from "./useRosterState";
 
 type MenuTarget =
   | { kind: "bot"; id: string; pinned: boolean }
-  | { kind: "group"; id: string }
-  | { kind: "section"; id: string };
+  | { kind: "group"; id: string };
 
-type PendingDelete = { kind: "bot" | "group" | "section"; id: string; label: string };
+type PendingDelete = { kind: "bot" | "group"; id: string; label: string };
 
 /** Three staggered blinking dots for the typing presence. */
 function TypingDots() {
@@ -195,48 +191,10 @@ function GroupRow({
   );
 }
 
-function SectionHeader({
-  name,
-  count,
-  collapsed,
-  onToggle,
-  onMenu,
-}: {
-  name: string;
-  count: number;
-  collapsed: boolean;
-  onToggle: () => void;
-  onMenu: (position: { x: number; y: number }) => void;
-}) {
-  return (
-    <div
-      className="mx-2 flex h-8 items-center rounded-md hover:bg-accent"
-      onContextMenu={(event) => {
-        event.preventDefault();
-        onMenu({ x: event.clientX, y: event.clientY });
-      }}
-    >
-      <button
-        type="button"
-        aria-expanded={!collapsed}
-        onClick={onToggle}
-        className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 px-3 text-left text-xs font-medium text-sidebar-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        {collapsed ? <ChevronRightIcon className="size-3.5" /> : <ChevronDownIcon className="size-3.5" />}
-        <span className="truncate">{name}</span>
-        <span className="tabular-nums">{count}</span>
-      </button>
-    </div>
-  );
-}
-
-/** Floating action menu shared by rows and sections; opens on right-click only. */
+/** Floating action menu shared by rows; opens on right-click only. */
 function ContextMenu({
   menu,
-  sections,
-  childSectionId,
   onPin,
-  onMove,
   onDelete,
   onDetails,
   onChannels,
@@ -245,10 +203,7 @@ function ContextMenu({
   onClose,
 }: {
   menu: { x: number; y: number; target: MenuTarget };
-  sections: readonly RosterSection[];
-  childSectionId: string | null;
   onPin: (pinned: boolean) => void;
-  onMove: (sectionId: string | null) => void;
   onDelete: () => void;
   onDetails: () => void;
   onChannels: () => void;
@@ -266,7 +221,6 @@ function ContextMenu({
 
   const itemClassName =
     "flex w-full cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm outline-none hover:bg-accent focus-visible:bg-accent";
-  const isSection = menu.target.kind === "section";
   const pinnedBot = menu.target.kind === "bot" ? menu.target : null;
   const isBot = menu.target.kind === "bot";
 
@@ -308,34 +262,9 @@ function ContextMenu({
             {pinnedBot.pinned ? "Unpin" : "Pin"}
           </button>
         ) : null}
-        {!isSection && sections.length > 0 ? (
-          <>
-            <div className="my-1 h-px bg-border" />
-            {sections.map((section) => (
-              <button
-                key={section.id}
-                type="button"
-                role="menuitem"
-                data-testid={`menu-move-${section.id}`}
-                className={itemClassName}
-                onClick={() => { onMove(section.id); onClose(); }}
-              >
-                <UsersIcon className="size-3.5" />
-                Move to {section.name}
-                {childSectionId === section.id ? <span className="ml-auto text-xs text-muted-foreground">✓</span> : null}
-              </button>
-            ))}
-            {childSectionId !== null ? (
-              <button type="button" role="menuitem" className={itemClassName} onClick={() => { onMove(null); onClose(); }}>
-                No section
-              </button>
-            ) : null}
-            <div className="my-1 h-px bg-border" />
-          </>
-        ) : null}
         <button type="button" role="menuitem" data-testid="menu-delete" className={cn(itemClassName, "text-destructive hover:bg-destructive/15")} onClick={() => { onDelete(); onClose(); }}>
           <Trash2Icon className="size-3.5" />
-          {isSection ? "Delete section" : "Delete"}
+          Delete
         </button>
       </div>
     </div>
@@ -412,7 +341,7 @@ function UserProfileFooter({ collapsed = false }: { collapsed?: boolean }) {
 const byRecency = (a: RosterBot, b: RosterBot) => b.updatedAt - a.updatedAt;
 
 export function BotRosterSidebar({ api }: { api: RosterApi }) {
-  const { bots, groups, sections, activeId, railCollapsed } = api;
+  const { bots, groups, activeId, railCollapsed } = api;
   const [query, setQuery] = useState("");
   const [plusOpen, setPlusOpen] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number; target: MenuTarget } | null>(null);
@@ -438,44 +367,13 @@ export function BotRosterSidebar({ api }: { api: RosterApi }) {
     () => visibleBots.filter((bot) => bot.pinned).sort(byRecency),
     [visibleBots],
   );
-  const assignedIds = useMemo(
-    () => new Set(sections.flatMap((section) => section.childIds)),
-    [sections],
+  const restBots = useMemo(
+    () => visibleBots.filter((bot) => !bot.pinned).sort(byRecency),
+    [visibleBots],
   );
-  const unassignedBots = useMemo(
-    () =>
-      visibleBots
-        .filter((bot) => !bot.pinned && !assignedIds.has(bot.id))
-        .sort(byRecency),
-    [visibleBots, assignedIds],
-  );
-  const unassignedGroups = useMemo(
-    () => visibleGroups.filter((group) => !assignedIds.has(group.id)),
-    [visibleGroups, assignedIds],
-  );
-
-  const sectionChildren = (section: RosterSection) =>
-    section.childIds
-      .map((childId) => {
-        const bot = visibleBots.find((candidate) => candidate.id === childId);
-        if (bot !== undefined) return { kind: "bot" as const, bot };
-        const group = visibleGroups.find((candidate) => candidate.id === childId);
-        return group !== undefined ? { kind: "group" as const, group } : null;
-      })
-      .filter((child) => child !== null);
 
   const openMenu = (target: MenuTarget) => (position: { x: number; y: number }) =>
     setMenu({ ...position, target });
-
-  const menuSectionId =
-    menu !== null && (menu.target.kind === "bot" || menu.target.kind === "group")
-      ? sections.find((section) => section.childIds.includes(menu.target.id))?.id ?? null
-      : null;
-
-  const handleNewSection = () => {
-    const name = window.prompt("Section name");
-    if (name !== null && name.trim().length > 0) api.addSection(name.trim());
-  };
 
   const select = (id: string | null) => {
     setSelectedId(id);
@@ -487,28 +385,22 @@ export function BotRosterSidebar({ api }: { api: RosterApi }) {
   const confirmDelete = () => {
     if (pendingDelete === null) return;
     if (pendingDelete.kind === "bot") api.deleteBot(pendingDelete.id);
-    else if (pendingDelete.kind === "group") api.deleteGroup(pendingDelete.id);
-    else api.deleteSection(pendingDelete.id);
+    else api.deleteGroup(pendingDelete.id);
     if (selectedId === pendingDelete.id) setSelectedId(null);
     setPendingDelete(null);
   };
 
-  // Flat keyboard order: pinned, then each section's children, then unassigned.
+  // Flat keyboard order: pinned, then groups, then the rest by recency.
   const flatIds = useMemo(() => {
     if (searching) {
       return [...visibleGroups.map((group) => group.id), ...visibleBots.map((bot) => bot.id)];
     }
-    const ids: string[] = [...pinnedBots.map((bot) => bot.id)];
-    for (const section of sections) {
-      for (const child of sectionChildren(section)) {
-        ids.push(child.kind === "bot" ? child.bot.id : child.group.id);
-      }
-    }
-    ids.push(...unassignedGroups.map((group) => group.id));
-    ids.push(...unassignedBots.map((bot) => bot.id));
-    return ids;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searching, visibleBots, visibleGroups, pinnedBots, sections, unassignedBots, unassignedGroups]);
+    return [
+      ...pinnedBots.map((bot) => bot.id),
+      ...visibleGroups.map((group) => group.id),
+      ...restBots.map((bot) => bot.id),
+    ];
+  }, [searching, visibleBots, visibleGroups, pinnedBots, restBots]);
 
   const effectiveSelected = selectedId !== null && flatIds.includes(selectedId) ? selectedId : null;
 
@@ -594,11 +486,6 @@ export function BotRosterSidebar({ api }: { api: RosterApi }) {
             requestDelete({ kind: "group", id: group.id, label: group.name });
             break;
           }
-          const section = sections.find((candidate) => candidate.id === effectiveSelected);
-          if (section !== undefined) {
-            event.preventDefault();
-            requestDelete({ kind: "section", id: section.id, label: section.name });
-          }
           break;
         }
         default:
@@ -607,14 +494,10 @@ export function BotRosterSidebar({ api }: { api: RosterApi }) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [flatIds, effectiveSelected, bots, groups, sections, api]);
+  }, [flatIds, effectiveSelected, bots, groups, api]);
 
   // Drag and drop: rows are HTML5-draggable; hovering the top/bottom half of
-  // a row picks before/after; dropping on a section appends to it, dropping
-  // on the unassigned tail clears the section. All persisted via reorderItem.
-  const sectionOf = (id: string): string | null =>
-    sections.find((section) => section.childIds.includes(id))?.id ?? null;
-
+  // a row picks before/after. All persisted via reorderItem.
   const handleDragStart = (id: string) => (event: DragEvent) => {
     setDragId(id);
     setDropTarget(null);
@@ -640,21 +523,16 @@ export function BotRosterSidebar({ api }: { api: RosterApi }) {
     event.preventDefault();
     event.stopPropagation();
     const before = dropTarget?.id === id ? dropTarget.before : true;
-    const targetSection = sectionOf(id);
     setDragId(null);
     setDropTarget(null);
     if (before) {
-      api.reorderItem(dragId, id, targetSection);
+      api.reorderItem(dragId, id);
     } else {
       // Insert after: drop before the row that follows the target in the
-      // flat order, falling back to appending within the target's section.
+      // flat order, falling back to appending.
       const at = flatIds.indexOf(id);
       const next = at >= 0 ? flatIds[at + 1] : undefined;
-      if (next === undefined) {
-        api.reorderItem(dragId, null, targetSection);
-      } else {
-        api.reorderItem(dragId, next, sectionOf(next) ?? targetSection);
-      }
+      api.reorderItem(dragId, next ?? null);
     }
     setSelectedId(dragId);
   };
@@ -662,17 +540,6 @@ export function BotRosterSidebar({ api }: { api: RosterApi }) {
   const handleDragEnd = () => {
     setDragId(null);
     setDropTarget(null);
-  };
-
-  const handleDropOnSection = (sectionId: string | null) => (event: DragEvent) => {
-    if (dragId === null) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const id = dragId;
-    setDragId(null);
-    setDropTarget(null);
-    api.reorderItem(id, null, sectionId);
-    setSelectedId(id);
   };
 
   const indicatorFor = (id: string): "before" | "after" | null =>
@@ -762,7 +629,7 @@ export function BotRosterSidebar({ api }: { api: RosterApi }) {
               <BotAvatar identity={bot.bloub} size={28} />
             </button>
           ))}
-          {unassignedGroups.map((group) => (
+          {visibleGroups.map((group) => (
             <button
               key={group.id}
               type="button"
@@ -854,10 +721,6 @@ export function BotRosterSidebar({ api }: { api: RosterApi }) {
                   <UsersIcon className="size-3.5" />
                   New group
                 </button>
-                <button type="button" role="menuitem" data-testid="new-section-menu-item" className="flex w-full cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm outline-none hover:bg-accent" onClick={() => { setPlusOpen(false); handleNewSection(); }}>
-                  <FolderIcon className="size-3.5" />
-                  New section
-                </button>
               </div>
             </div>
           ) : null}
@@ -886,61 +749,9 @@ export function BotRosterSidebar({ api }: { api: RosterApi }) {
               </div>
             ) : null}
 
-            {sections.map((section) => {
-              const collapsed = api.isSectionCollapsed(section.id);
-              const children = sectionChildren(section);
-              return (
-                <div
-                  key={section.id}
-                  className="mb-1"
-                  onDragOver={dragId !== null ? (event) => { event.preventDefault(); } : undefined}
-                  onDrop={dragId !== null ? handleDropOnSection(section.id) : undefined}
-                >
-                  <SectionHeader
-                    name={section.name}
-                    count={children.length}
-                    collapsed={collapsed}
-                    onToggle={() => api.toggleSectionCollapsed(section.id)}
-                    onMenu={openMenu({ kind: "section", id: section.id })}
-                  />
-                  {!collapsed
-                    ? children.map((child) =>
-                        child.kind === "bot" ? (
-                          renderBotRow(child.bot)
-                        ) : (
-                          renderGroupRow(child.group)
-                        ),
-                      )
-                    : null}
-                </div>
-              );
-            })}
+            {visibleGroups.map((group) => renderGroupRow(group))}
 
-            {unassignedGroups.length > 0 ? (
-              <div className="mb-1">
-                {sections.length > 0 ? (
-                  <div className="mx-2 flex h-8 items-center gap-1.5 px-3 text-xs font-medium text-sidebar-muted-foreground">
-                    <span>Unassigned</span>
-                    <span className="tabular-nums">{unassignedBots.length + unassignedGroups.length}</span>
-                  </div>
-                ) : null}
-                {unassignedGroups.map((group) => renderGroupRow(group))}
-              </div>
-            ) : null}
-
-            {unassignedBots.map((bot) => renderBotRow(bot))}
-
-            {dragId !== null ? (
-              <div
-                data-testid="roster-drop-unassigned"
-                onDragOver={(event) => event.preventDefault()}
-                onDrop={handleDropOnSection(null)}
-                className="mx-2 rounded-md border border-dashed border-border px-3 py-2 text-center text-xs text-sidebar-muted-foreground"
-              >
-                Drop here to unassign
-              </div>
-            ) : null}
-
+            {restBots.map((bot) => renderBotRow(bot))}
             {visibleBots.length === 0 && visibleGroups.length === 0 ? (
               <div className="px-2 py-6 text-center text-sm text-sidebar-muted-foreground">No bots yet</div>
             ) : null}
@@ -953,26 +764,17 @@ export function BotRosterSidebar({ api }: { api: RosterApi }) {
       {menu !== null ? (
         <ContextMenu
           menu={menu}
-          sections={sections}
-          childSectionId={menuSectionId}
           onPin={(pinned) => {
             if (menu.target.kind === "bot") api.setItemPinned(menu.target.id, pinned);
-          }}
-          onMove={(sectionId) => {
-            if (menu.target.kind === "bot") api.moveItem(menu.target.id, sectionId);
-            else if (menu.target.kind === "group") api.moveItem(menu.target.id, sectionId);
           }}
           onDelete={() => {
             if (menu === null) return;
             if (menu.target.kind === "bot") {
               const bot = bots.find((candidate) => candidate.id === menu.target.id);
               requestDelete({ kind: "bot", id: menu.target.id, label: bot?.name ?? "bot" });
-            } else if (menu.target.kind === "group") {
+            } else {
               const group = groups.find((candidate) => candidate.id === menu.target.id);
               requestDelete({ kind: "group", id: menu.target.id, label: group?.name ?? "group" });
-            } else {
-              const section = sections.find((candidate) => candidate.id === menu.target.id);
-              requestDelete({ kind: "section", id: menu.target.id, label: section?.name ?? "section" });
             }
           }}
           onDetails={() => {

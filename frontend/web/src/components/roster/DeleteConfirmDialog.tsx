@@ -1,4 +1,4 @@
-// Delete confirmation dialog for sidebar rows (bots, groups, sections).
+// Delete confirmation dialog for sidebar rows (bots, groups).
 import { DialogShell } from "./DialogShell";
 
 export function DeleteConfirmDialog({

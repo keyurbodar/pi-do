@@ -1,4 +1,4 @@
-// Roster domain: the sidebar's bots, groups, and sections. Fixtures back the
+// Roster domain: the sidebar's bots and groups. Fixtures back the
 // UI until real sessions replace them; the swap point is loadRoster() only.
 // Identity vocab (shapes, colors, expressions) mirrors the bloub engine
 // catalogue in lib/bloub so a bot id deterministically yields its avatar.
@@ -114,17 +114,9 @@ export interface RosterGroup {
   updatedAt: number;
 }
 
-export interface RosterSection {
-  id: string;
-  name: string;
-  /** Ordered ids of bots and groups nested under this section. */
-  childIds: string[];
-}
-
 export interface Roster {
   bots: RosterBot[];
   groups: RosterGroup[];
-  sections: RosterSection[];
 }
 
 export function loadRoster(): Roster {
@@ -215,5 +207,4 @@ const SEED_ROSTER: Roster = {
       updatedAt: minutesAgo(355),
     },
   ],
-  sections: [],
 };
