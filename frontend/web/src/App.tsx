@@ -138,7 +138,7 @@ function ReadyThread({ session, activeBot }: { session: SessionRef; activeBot: R
           playing={playback.playing}
           onRetry={thread.send}
           avatarSlot={activeBot
-            ? <BotAvatar identity={activeBot.bloub} presence={activeBot.presence} size={28} />
+            ? <BotAvatar identity={activeBot.bloub} presence={activeBot.presence} size={36} />
             : null}
         />
       </div>

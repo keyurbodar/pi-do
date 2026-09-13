@@ -11,9 +11,9 @@ export function ActivityRow({ avatarSlot = null }: { avatarSlot?: ReactNode }) {
     <div
       aria-live="polite"
       data-testid="activity-row"
-      className="flex items-center gap-2.5 px-1 py-0.5 text-sm"
+      className="flex min-h-8 items-center gap-3 px-2 py-1 text-sm"
     >
-      {avatarSlot !== null && <div className="shrink-0">{avatarSlot}</div>}
+      {avatarSlot !== null && <div className="flex size-8 shrink-0 items-center justify-center">{avatarSlot}</div>}
       <Shimmer>Receiving context…</Shimmer>
     </div>
   );

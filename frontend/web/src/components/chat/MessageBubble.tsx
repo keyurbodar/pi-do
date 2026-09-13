@@ -34,8 +34,8 @@ export function MessageBubble({
   }
 
   return (
-    <div data-testid={`thread-item-${vm.id}`} className="flex min-w-0 items-start gap-2 px-1 py-0.5">
-      {avatarSlot !== null && <div className="mt-0.5 shrink-0">{avatarSlot}</div>}
+    <div data-testid={`thread-item-${vm.id}`} className="flex min-w-0 items-start gap-3 px-2 py-1">
+      {avatarSlot !== null && <div className="flex size-8 shrink-0 items-center justify-center">{avatarSlot}</div>}
       <div className="min-w-0 flex-1">
         {vm.text.length > 0 && (
           <div className="flex items-start gap-0.5">
