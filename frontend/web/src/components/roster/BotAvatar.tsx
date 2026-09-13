@@ -12,9 +12,11 @@ export interface BotAvatarProps {
 }
 
 const STATE_BY_PRESENCE: Record<BotPresence, BloubState> = {
+  // Working keeps the resting face: the engine's alert state paints the body
+  // gray, which reads as the avatar dying mid-task. Only typing morphs.
   idle: 'idle',
   typing: 'thinking',
-  working: 'alert',
+  working: 'idle',
   sleeping: 'sleep',
 };
 

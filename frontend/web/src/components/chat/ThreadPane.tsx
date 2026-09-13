@@ -60,13 +60,15 @@ import { UserInputCard } from "./UserInputCard";
 const PIN_THRESHOLD = 64;
 
 // Working-row face: uploaded image first, bloub second, bloub again when the
-// image fails to load (broken data URL after a restore). Never renders empty.
+// image fails to load (broken data URL after a restore). Always the resting
+// face (presence idle): the thread never morphs the avatar, the dots beside
+// it are the working signal.
 function WorkingFace({ bot }: { bot: RosterBot }) {
   const [imgOk, setImgOk] = useState(true);
   if (bot.avatarVariant === "upload" && bot.avatarImage && imgOk) {
     return <img src={bot.avatarImage} alt="" onError={() => setImgOk(false)} className="size-9 shrink-0 rounded-full object-cover" />;
   }
-  return <BotAvatar identity={bot.bloub} presence={bot.presence} size={36} />;
+  return <BotAvatar identity={bot.bloub} presence="idle" size={36} />;
 }
 /** Consecutive turns gap by more than this before a time divider renders. */
 const DIVIDER_GAP_MS = 20 * 60_000;
