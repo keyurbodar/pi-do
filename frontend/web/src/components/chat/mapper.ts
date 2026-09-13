@@ -2,9 +2,10 @@
 // mapping for the akeru-style ThreadPane. No React, no store access: the
 // orchestrator unit-tests this file directly.
 //
-// Contract additions (reported to Main): ThinkingRowVM lives HERE, not in
-// thread/viewModel.ts, per the wave-1 brief. ChatItemVM = ThreadItemVM |
-// ThinkingRowVM is what ThreadPane renders.
+// Contract additions (reported to Main): ThinkingRowVM and SystemEventVM
+// live HERE, not in thread/viewModel.ts, per the wave-1 brief. ChatItemVM =
+// ThreadItemVM | ThinkingRowVM | SystemEventVM is what ThreadPane renders.
+import type { RosterBot } from "../../lib/roster";
 import type {
   ApprovalVM,
   InterBotMessageVM,
@@ -15,6 +16,13 @@ import type {
 import { stateOfTurn, toolRowOf } from "../thread/viewModel";
 import type { ToolCallView, TurnViewState } from "../thread/types";
 
+/** Centered system row ("Created routine · Month-end close"). */
+export interface SystemEventVM {
+  kind: "system";
+  id: string;
+  text: string;
+}
+
 /** Collapsed reasoning row: "Thought for Ns" (akeru ThinkingActivityRow). */
 export interface ThinkingRowVM {
   kind: "thinking";
@@ -24,8 +32,14 @@ export interface ThinkingRowVM {
   ms: number | null;
 }
 
-/** Everything the timeline renders, including the mapper-local thinking row. */
-export type ChatItemVM = ThreadItemVM | ThinkingRowVM;
+/** Bot bubble carrying an optional group-thread sender label. */
+export interface SenderMessageBubbleVM extends MessageBubbleVM {
+  /** Resolved sender name (from turn.senderId via the bots param); unset for 1:1 turns. */
+  senderLabel?: string;
+}
+
+/** Everything the timeline renders, including the mapper-local rows. */
+export type ChatItemVM = ThreadItemVM | ThinkingRowVM | SystemEventVM;
 
 /**
  * One turn → ordered timeline items:
@@ -38,14 +52,21 @@ export type ChatItemVM = ThreadItemVM | ThinkingRowVM;
  *                       rows via viewModel.toolRowOf, card state via
  *                       viewModel.stateOfTurn
  *   error / halt      → trailing failed StatusCardVM carrying turn.error
+ *   systemEvent       → SystemEventVM prepended above the turn's content
+ *   interBotFrom      → InterBotMessageVM inserted before the first bot text
+ *                       bubble ("Messages from Account Manager and Chief")
+ *   senderId          → bot bubbles carry senderLabel, resolved via the
+ *                       optional bots param (default [])
  *
  * InterBotMessageVM / ApprovalVM are renderable (see InterBotDivider /
- * ApprovalCard) but TurnViewState carries no metadata for them yet, so the
- * mapper never emits them.
+ * ApprovalCard); only interBotFrom drives emission today.
  */
-export function turnToItems(turn: TurnViewState): ChatItemVM[] {
+export function turnToItems(turn: TurnViewState, bots: RosterBot[] = []): ChatItemVM[] {
   const items: ChatItemVM[] = [];
 
+  if (turn.systemEvent !== undefined && turn.systemEvent.length > 0) {
+    items.push({ kind: "system", id: `${turn.runId}:system`, text: turn.systemEvent });
+  }
   // Fixture bot turns carry an empty prompt (the exchange's prompt is its
   // own user turn); real turns always have one — reducer rejects empties.
   if (turn.prompt.length > 0) {
@@ -85,13 +106,16 @@ export function turnToItems(turn: TurnViewState): ChatItemVM[] {
     } else if (part.type === "text") {
       flushTools();
       if (part.text.trim().length > 0) {
-        items.push({
+        const sender = turn.senderId !== undefined ? bots.find((b) => b.id === turn.senderId) : undefined;
+        const bubble: SenderMessageBubbleVM = {
           id: `${turn.runId}:text:${index}`,
           role: "bot",
           text: part.text,
           attachments: [],
           ts: turn.endedAt,
-        });
+        };
+        if (sender !== undefined) bubble.senderLabel = sender.name;
+        items.push(bubble);
       }
     } else {
       for (const id of part.ids) {
@@ -101,6 +125,20 @@ export function turnToItems(turn: TurnViewState): ChatItemVM[] {
     }
   });
   flushTools();
+
+  // Inter-bot divider sits directly above the first bot text bubble.
+  if (turn.interBotFrom !== undefined && turn.interBotFrom.length > 0) {
+    const firstBotText = items.findIndex(
+      (item) => "role" in item && item.role === "bot",
+    );
+    const divider: InterBotMessageVM = {
+      id: `${turn.runId}:inter-bot`,
+      fromBotIds: turn.interBotFrom,
+      text: "Messages from",
+    };
+    if (firstBotText >= 0) items.splice(firstBotText, 0, divider);
+    else items.push(divider);
+  }
 
   if (turn.error !== null && turn.error.length > 0) {
     items.push({

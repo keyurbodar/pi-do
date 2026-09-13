@@ -8,6 +8,7 @@ export { MessageBubble } from "./MessageBubble";
 export { StatusCard } from "./StatusCard";
 export { ThinkingRow } from "./ThinkingRow";
 export { InterBotDivider } from "./InterBotDivider";
+export { BotMention } from "./BotMention";
 export { ApprovalCard } from "./ApprovalCard";
 export { ActivityRow } from "./ActivityRow";
 export { Lightbox } from "./Lightbox";

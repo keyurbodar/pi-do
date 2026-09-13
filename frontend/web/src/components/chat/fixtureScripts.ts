@@ -21,9 +21,24 @@ export interface FixtureResponse {
 export interface FixtureExchange {
   prompt: string;
   response: FixtureResponse;
+  /**
+   * Wall-clock the exchange lands at (epoch ms). Omitted exchanges use
+   * Date.now() at playback; scripts that span yesterday evening → this
+   * morning set these so ThreadPane's time dividers render.
+   */
+  at?: number;
+  /** Roster bot id speaking the response in a multi-sender (group) script. */
+  senderId?: string;
+  /** System row rendered above the response turn ("Created routine · …"). */
+  systemEvent?: string;
+  /** Roster bot ids folded into the response turn (inter-bot divider). */
+  interBotFrom?: string[];
 }
 
 export type FixtureScript = FixtureExchange[];
+
+/** Epoch ms N hours before now — fixture timestamps stay plausible as time passes. */
+const hoursAgo = (h: number) => Date.now() - h * 3_600_000;
 
 export const FIXTURE_SCRIPTS: Record<string, FixtureScript> = {
   chief: [
@@ -120,17 +135,20 @@ export const FIXTURE_SCRIPTS: Record<string, FixtureScript> = {
 
   "account-manager": [
     {
+      at: hoursAgo(30),
       prompt: "What's the latest with Globex?",
       response: {
         tools: [
           { tool: "salesforce.search", args: { account: "Globex" }, output: "1 account · renewal oct 1" },
           { tool: "hex.query", args: { metric: "usage_trend", window: "90d" }, output: "+12% · quarter over quarter" },
         ],
-        text: "renewal lands oct 1 and usage is up 12% quarter over quarter. invite's out to vicky for the qbr. globex note drafted — want to review before it goes?",
+        text: "renewal lands oct 1 and usage is up 12% quarter over quarter. invite's out to vicky for the qbr. globex note drafted — Chief wanted it before the board sync, so want to review before it goes?",
       },
     },
     {
+      at: hoursAgo(29.5),
       prompt: "Send the note.",
+      interBotFrom: ["account-manager", "chief"],
       response: {
         tools: [
           { tool: "gmail.send", args: { to: "vicky@globex.com" }, output: "sent · globex note" },
@@ -143,6 +161,7 @@ export const FIXTURE_SCRIPTS: Record<string, FixtureScript> = {
 
   "talent-scout": [
     {
+      at: hoursAgo(26),
       prompt: "Find backend engineers in Lisbon.",
       response: {
         thinking: {
@@ -153,24 +172,27 @@ export const FIXTURE_SCRIPTS: Record<string, FixtureScript> = {
           { tool: "linkedin.search", args: { role: "backend", location: "Lisbon" }, output: "38 profiles · lisbon" },
           { tool: "hex.query", args: { metric: "warm_contacts" }, output: "9 warm contacts" },
         ],
-        text: "38 profiles match — 9 are warm from past threads. 3 intros drafted in your voice, ready to send. The strongest is a staff engineer leaving a fintech next month.",
+        text: "38 profiles match — 9 are warm from past threads. 3 intros drafted in your voice, ready to send. The strongest is a staff engineer leaving a fintech next month — Chief flagged the fintech stack as a match last week.",
       },
     },
     {
+      at: hoursAgo(25),
       prompt: "Send the top intro.",
       response: {
         tools: [
           { tool: "gmail.send", args: { template: "intro" }, output: "1 sent · intro email" },
           { tool: "notion.query", args: { database: "pipeline" }, output: "pipeline updated · 4 candidates" },
         ],
-        text: "Sent, with a note about the Lisbon hub. Pipeline updated — 4 candidates now at the top of the funnel.",
+        text: "Sent, with a note about the Lisbon hub. Pipeline updated — 4 candidates now at the top of the funnel. Chief has the shortlist.",
       },
     },
   ],
 
   "expense-manager": [
     {
+      at: hoursAgo(4),
       prompt: "How's the expense report looking?",
+      systemEvent: "Created routine · Month-end close",
       response: {
         tools: [
           { tool: "ramp.query", args: { month: "september" }, output: "9 receipts · unmatched: 0" },
@@ -180,10 +202,45 @@ export const FIXTURE_SCRIPTS: Record<string, FixtureScript> = {
       },
     },
     {
+      at: hoursAgo(3.5),
       prompt: "Flag anything weird.",
       response: {
         tools: [{ tool: "ramp.query", args: { anomaly: "duplicates" }, output: "1 flag · duplicate taxi" }],
         text: "one duplicate taxi charge on the 4th — flagged and disputed. that's the only surprise. everything else is exactly as boring as it should be.",
+      },
+    },
+  ],
+
+  // Group script: multi-sender conversation keyed by the group id. Each
+  // exchange's response carries the senderId of the roster bot speaking it;
+  // ThreadPane renders sender labels above the bubbles and mention chips
+  // wherever a turn names another bot.
+  "offsite-crew": [
+    {
+      at: hoursAgo(28),
+      prompt: "Can someone own the AV setup at the loft?",
+      senderId: "inbox-manager",
+      response: {
+        thinking: {
+          text: "checking the offsite thread for who already talked to the venue",
+          ms: 1200,
+        },
+        tools: [
+          { tool: "slack.search", args: { channel: "#offsite-crew" }, output: "14 messages · 2 open questions" },
+        ],
+        text: "on it. Chief booked the loft, so I'll reply to the venue thread this afternoon and confirm the AV package — projector, mics, and the speaker test. will post the quote here.",
+      },
+    },
+    {
+      at: hoursAgo(27.5),
+      prompt: "What's still open for travel?",
+      senderId: "account-manager",
+      response: {
+        tools: [
+          { tool: "gcal.search", args: { query: "offsite", range: "30d" }, output: "3 events · offsite week" },
+          { tool: "gmail.search", args: { from: "ana" }, output: "no reply · 4 days" },
+        ],
+        text: "Inbox Manager pulled the confirmations — Ana and Cole are still out. I'll take the venue call while Chief nudges them this afternoon. Everything else for the offsite week is booked.",
       },
     },
   ],

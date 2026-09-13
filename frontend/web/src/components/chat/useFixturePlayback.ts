@@ -30,14 +30,24 @@ const EXCHANGE_GAP_MS = 800;
 /** Bots already played this page load — first time per bot only. */
 const played = new Set<string>();
 
-function baseTurn(runId: string, prompt: string, status: TurnViewState["status"]): TurnViewState {
-  const now = Date.now();
+function baseTurn(
+  runId: string,
+  prompt: string,
+  status: TurnViewState["status"],
+  at?: number,
+  meta?: {
+    senderId?: string;
+    systemEvent?: string;
+    interBotFrom?: string[];
+  },
+): TurnViewState {
+  const ts = at ?? Date.now();
   return {
     runId,
     prompt,
     parts: [],
-    startedAt: now,
-    endedAt: status === "done" ? now : null,
+    startedAt: ts,
+    endedAt: status === "done" ? ts : null,
     steers: [],
     calls: [],
     status,
@@ -46,6 +56,9 @@ function baseTurn(runId: string, prompt: string, status: TurnViewState["status"]
     hint: null,
     keyless: false,
     live: false,
+    senderId: meta?.senderId,
+    systemEvent: meta?.systemEvent,
+    interBotFrom: meta?.interBotFrom,
   };
 }
 
@@ -100,11 +113,20 @@ export function useFixturePlayback(botId: string | null): FixturePlayback {
         // First fired timer: playback truly started (StrictMode remounts
         // clear the pending timers before this, so they can replay).
         played.add(botId);
-        setTurns((prev) => [...prev, baseTurn(userRunId, prompt, "done")]);
+        setTurns((prev) => [...prev, baseTurn(userRunId, prompt, "done", exchange.at)]);
       });
 
       const botStart = t + BOT_DELAY_MS;
-      at(botStart, () => setTurns((prev) => [...prev, baseTurn(botRunId, "", "streaming")]));
+      at(botStart, () =>
+        setTurns((prev) => [
+          ...prev,
+          baseTurn(botRunId, "", "streaming", exchange.at, {
+            senderId: exchange.senderId,
+            systemEvent: exchange.systemEvent,
+            interBotFrom: exchange.interBotFrom,
+          }),
+        ]),
+      );
 
       let cursor = botStart;
 
@@ -169,7 +191,7 @@ export function useFixturePlayback(botId: string | null): FixturePlayback {
       at(cursor, () =>
         patch(botRunId, (turn) => {
           turn.status = "done";
-          if (turn.startedAt !== null) turn.endedAt = Date.now();
+          turn.endedAt = turn.startedAt;
         }),
       );
 

@@ -118,6 +118,15 @@ export interface TurnViewState {
    * reopening the page must not re-send dead prompts from history.
    */
   live: boolean;
+  /**
+   * Fixture/group metadata (additive, optional): roster bot id that sent
+   * this turn in a multi-sender (group) thread. Live 1:1 turns never set it.
+   */
+  senderId?: string;
+  /** System event line rendered as a centered row above the turn's content. */
+  systemEvent?: string;
+  /** Roster bot ids whose messages were folded into this turn (inter-bot). */
+  interBotFrom?: string[];
 }
 
 export interface PendingPrompt {

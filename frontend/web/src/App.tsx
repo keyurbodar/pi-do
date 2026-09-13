@@ -67,7 +67,7 @@ export default function App() {
             {activeName ?? 'pi-do'}
           </span>
         </header>
-        <ChatPane boot={boot} activeBot={activeBot} activeId={roster.activeId} onActivity={roster.setActivity} />
+        <ChatPane boot={boot} activeBot={activeBot} activeId={roster.activeId} bots={roster.bots} onActivity={roster.setActivity} />
       </div>
     </div>
   );
@@ -77,11 +77,13 @@ function ChatPane({
   boot,
   activeBot,
   activeId,
+  bots,
   onActivity,
 }: {
   boot: BootState;
   activeBot: RosterBot | null;
   activeId: string | null;
+  bots: RosterBot[];
   onActivity: (id: string, preview: string, presence: RosterBot["presence"]) => void;
 }) {
   if (boot.status === 'loading') {
@@ -123,12 +125,13 @@ function ChatPane({
     );
   }
 
-  return <ReadyThread key={activeId} ownerId={activeId} activeBot={activeBot} onActivity={onActivity} />;
+  return <ReadyThread key={activeId} ownerId={activeId} activeBot={activeBot} bots={bots} onActivity={onActivity} />;
 }
 
-function ReadyThread({ ownerId, activeBot, onActivity }: {
+function ReadyThread({ ownerId, activeBot, bots, onActivity }: {
   ownerId: string;
   activeBot: RosterBot | null;
+  bots: RosterBot[];
   onActivity: (id: string, preview: string, presence: RosterBot["presence"]) => void;
 }) {
   const [session, setSession] = useState<SessionHandle | null>(null);
@@ -161,15 +164,17 @@ function ReadyThread({ ownerId, activeBot, onActivity }: {
       </main>
     );
   }
-  return <ReadyThreadInner key={session.sessionId} session={session} activeBot={activeBot} onActivity={onActivity} />;
+  return <ReadyThreadInner key={session.sessionId} session={session} ownerId={ownerId} activeBot={activeBot} bots={bots} onActivity={onActivity} />;
 }
-function ReadyThreadInner({ session, activeBot, onActivity }: {
+function ReadyThreadInner({ session, ownerId, activeBot, bots, onActivity }: {
   session: SessionRef;
+  ownerId: string;
   activeBot: RosterBot | null;
+  bots: RosterBot[];
   onActivity: (id: string, preview: string, presence: RosterBot["presence"]) => void;
 }) {
   const thread = useThread(session);
-  const playback = useFixturePlayback(activeBot?.id ?? null);
+  const playback = useFixturePlayback(activeBot?.id ?? ownerId);
   const lastTurn = thread.turns[thread.turns.length - 1] ?? null;
   const preview = lastTurn === null ? null : lastTurnPreview(lastTurn);
   useEffect(() => {
@@ -185,6 +190,7 @@ function ReadyThreadInner({ session, activeBot, onActivity }: {
           conn={thread.conn}
           playing={playback.playing}
           onRetry={thread.send}
+          bots={bots}
           avatarSlot={activeBot
             ? <BotAvatar identity={activeBot.bloub} presence={activeBot.presence} size={36} />
             : null}
