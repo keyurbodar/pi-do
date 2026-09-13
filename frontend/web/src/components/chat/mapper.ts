@@ -46,13 +46,17 @@ export type ChatItemVM = ThreadItemVM | ThinkingRowVM;
 export function turnToItems(turn: TurnViewState): ChatItemVM[] {
   const items: ChatItemVM[] = [];
 
-  items.push({
-    id: `${turn.runId}:prompt`,
-    role: "user",
-    text: turn.prompt,
-    attachments: [],
-    ts: turn.startedAt,
-  });
+  // Fixture bot turns carry an empty prompt (the exchange's prompt is its
+  // own user turn); real turns always have one — reducer rejects empties.
+  if (turn.prompt.length > 0) {
+    items.push({
+      id: `${turn.runId}:prompt`,
+      role: "user",
+      text: turn.prompt,
+      attachments: [],
+      ts: turn.startedAt,
+    });
+  }
 
   const state = stateOfTurn(turn.status, turn);
 
@@ -66,6 +70,7 @@ export function turnToItems(turn: TurnViewState): ChatItemVM[] {
       rows: pendingCalls.map(toolRowOf),
       state,
     });
+    pendingCalls = [];
   };
 
   turn.parts.forEach((part, index) => {

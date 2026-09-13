@@ -30,6 +30,7 @@ export function ThreadPane({
   conn,
   onRetry,
   avatarSlot = null,
+  playing = false,
 }: {
   turns: TurnViewState[];
   pending: PendingPrompt[];
@@ -37,6 +38,8 @@ export function ThreadPane({
   onRetry: (prompt: string) => void;
   /** Injected by the shell (BotAvatar); null renders the bare bubble. */
   avatarSlot?: ReactNode;
+  /** True while a scripted fixture conversation is mid-playback; suppresses the empty-state prompt. */
+  playing?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
@@ -61,7 +64,7 @@ export function ThreadPane({
   });
 
   const lastTurn = turns.length > 0 ? turns[turns.length - 1] : null;
-  const empty = turns.length === 0 && pending.length === 0;
+  const empty = turns.length === 0 && pending.length === 0 && !playing;
 
   return (
     <div className="relative min-h-0 flex-1">
@@ -114,7 +117,7 @@ export function ThreadPane({
               onOpenImage={setLightbox}
             />
           ))}
-          {conn === "open" && lastTurn?.status === "streaming" && (
+          {(conn === "open" || lastTurn?.live === false) && lastTurn?.status === "streaming" && (
             <ActivityRow avatarSlot={avatarSlot} />
           )}
           {conn === "closed" && !empty && (

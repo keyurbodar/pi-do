@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { PromptInput } from './components/prompt-input';
-import { ThreadPane } from './components/chat';
+import { ThreadPane, useFixturePlayback } from './components/chat';
 import { useThread, type SessionRef } from './components/thread';
 import { BotAvatar } from './components/roster';
 import type { RosterBot } from './lib/roster';
@@ -127,13 +127,15 @@ function ChatPane({
 
 function ReadyThread({ session, activeBot }: { session: SessionRef; activeBot: RosterBot | null }) {
   const thread = useThread(session);
+  const playback = useFixturePlayback(activeBot?.id ?? null);
   return (
     <main className="main">
       <div className="thread">
         <ThreadPane
-          turns={thread.turns}
+          turns={[...playback.turns, ...thread.turns]}
           pending={thread.pending}
           conn={thread.conn}
+          playing={playback.playing}
           onRetry={thread.send}
           avatarSlot={activeBot
             ? <BotAvatar identity={activeBot.bloub} presence={activeBot.presence} size={28} />

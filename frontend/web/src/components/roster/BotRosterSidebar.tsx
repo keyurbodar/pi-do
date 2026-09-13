@@ -60,7 +60,7 @@ function BotRow({
   const typing = bot.presence === "typing";
   return (
     <div
-      className="group relative flex items-center"
+      className="mx-2"
       onContextMenu={(event) => {
         event.preventDefault();
         onMenu({ x: event.clientX, y: event.clientY });
@@ -69,23 +69,36 @@ function BotRow({
       <button
         type="button"
         data-testid={`roster-row-${bot.id}`}
+        title={bot.name}
         aria-current={isActive || undefined}
         onClick={onSelect}
         className={cn(
-          "flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring",
-          isActive ? "bg-accent text-sidebar-foreground" : "text-sidebar-muted-foreground hover:bg-accent",
+          "flex h-[60px] w-full min-w-0 cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          isActive
+            ? "bg-white/[0.08] text-sidebar-foreground"
+            : "text-sidebar-muted-foreground hover:bg-accent",
           sleeping && "opacity-60",
         )}
       >
-        <span className="relative shrink-0">
-          <BotAvatar identity={bot.bloub} presence={bot.presence} size={36} className="shrink-0" />
+        <span className="relative flex size-10 shrink-0 items-center justify-center">
+          {/* Sleeping blobs collapse to a dot in the bloub engine; render the
+              idle body dimmed so the roster never reads as broken. */}
+          <BotAvatar identity={bot.bloub} presence={sleeping ? "idle" : bot.presence} size={40} />
           {bot.presence === "working" ? (
             <span className="absolute -bottom-px -right-px size-2 rounded-full bg-success ring-1 ring-sidebar" />
           ) : null}
+          {bot.unread > 0 ? (
+            <span
+              data-testid={`roster-unread-${bot.id}`}
+              className="absolute -top-1 -right-1 z-10 grid h-4 min-w-4 place-items-center rounded-full bg-destructive px-1 text-[10px] font-semibold leading-none text-white ring-2 ring-sidebar"
+            >
+              {bot.unread}
+            </span>
+          ) : null}
         </span>
-        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <span className="flex items-center gap-1.5">
-            <span className="min-w-0 flex-1 truncate text-sm font-semibold text-sidebar-foreground">
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span className="flex items-baseline gap-2">
+            <span className="min-w-0 flex-1 truncate text-sm font-medium text-sidebar-foreground">
               {bot.name}
             </span>
             {bot.pinned ? <PinIcon className="size-3 shrink-0 text-sidebar-muted-foreground" /> : null}
@@ -93,30 +106,15 @@ function BotRow({
               {formatRosterTimestamp(bot.updatedAt)}
             </span>
           </span>
-          <span className="flex items-center gap-1.5">
-            {typing ? <TypingDots /> : null}
-            <span className="min-w-0 flex-1 truncate text-[13px]">
-              {typing ? "Typing…" : bot.preview}
+          {typing ? (
+            <span className="flex min-w-0 items-center gap-1.5">
+              <TypingDots />
+              <span className="min-w-0 flex-1 truncate text-sm text-sidebar-muted-foreground">Typing…</span>
             </span>
-          </span>
+          ) : (
+            <span className="min-w-0 truncate text-sm text-sidebar-muted-foreground">{bot.preview}</span>
+          )}
         </span>
-        {bot.unread > 0 ? (
-          <span className="mr-5 shrink-0 rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-semibold leading-none text-primary-foreground">
-            {bot.unread}
-          </span>
-        ) : null}
-      </button>
-      <button
-        type="button"
-        aria-label={`Actions for ${bot.name}`}
-        data-testid={`row-actions-${bot.id}`}
-        onClick={(event) => {
-          const rect = event.currentTarget.getBoundingClientRect();
-          onMenu({ x: rect.left, y: rect.bottom + 4 });
-        }}
-        className="absolute right-1 top-1/2 flex size-6 -translate-y-1/2 cursor-pointer items-center justify-center rounded-md text-sidebar-muted-foreground opacity-0 outline-none hover:bg-accent hover:text-sidebar-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100"
-      >
-        <ChevronRightIcon className="size-3.5 rotate-90" />
       </button>
     </div>
   );
@@ -138,7 +136,7 @@ function GroupRow({
   const members = groupMembers(group, bots);
   return (
     <div
-      className="group relative flex items-center"
+      className="mx-2"
       onContextMenu={(event) => {
         event.preventDefault();
         onMenu({ x: event.clientX, y: event.clientY });
@@ -147,32 +145,27 @@ function GroupRow({
       <button
         type="button"
         data-testid={`roster-row-${group.id}`}
+        title={group.name}
         aria-current={isActive || undefined}
         onClick={onSelect}
         className={cn(
-          "flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring",
-          isActive ? "bg-accent text-sidebar-foreground" : "text-sidebar-muted-foreground hover:bg-accent",
+          "flex h-[60px] w-full min-w-0 cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          isActive
+            ? "bg-white/[0.08] text-sidebar-foreground"
+            : "text-sidebar-muted-foreground hover:bg-accent",
         )}
       >
-        <GroupMemberStack group={group} bots={bots} sizeClassName="size-9" />
-        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <span className="truncate text-sm font-semibold text-sidebar-foreground">{group.name}</span>
-          <span className="truncate text-[13px]">
+        <span className="flex size-10 shrink-0 items-center justify-center">
+          <GroupMemberStack group={group} bots={bots} sizeClassName="size-9" />
+        </span>
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span className="min-w-0 flex-1 truncate text-sm font-medium text-sidebar-foreground">
+            {group.name}
+          </span>
+          <span className="min-w-0 truncate text-sm text-sidebar-muted-foreground">
             {members.map((member) => member.name).join(", ")}
           </span>
         </span>
-      </button>
-      <button
-        type="button"
-        aria-label={`Actions for ${group.name}`}
-        data-testid={`row-actions-${group.id}`}
-        onClick={(event) => {
-          const rect = event.currentTarget.getBoundingClientRect();
-          onMenu({ x: rect.left, y: rect.bottom + 4 });
-        }}
-        className="absolute right-1 top-1/2 flex size-6 -translate-y-1/2 cursor-pointer items-center justify-center rounded-md text-sidebar-muted-foreground opacity-0 outline-none hover:bg-accent hover:text-sidebar-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100"
-      >
-        <ChevronRightIcon className="size-3.5 rotate-90" />
       </button>
     </div>
   );
@@ -193,7 +186,7 @@ function SectionHeader({
 }) {
   return (
     <div
-      className="group relative flex h-8 items-center rounded-md hover:bg-accent"
+      className="mx-2 flex h-8 items-center rounded-md hover:bg-accent"
       onContextMenu={(event) => {
         event.preventDefault();
         onMenu({ x: event.clientX, y: event.clientY });
@@ -203,29 +196,17 @@ function SectionHeader({
         type="button"
         aria-expanded={!collapsed}
         onClick={onToggle}
-        className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 px-2 text-left text-xs font-medium text-sidebar-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 px-3 text-left text-xs font-medium text-sidebar-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {collapsed ? <ChevronRightIcon className="size-3.5" /> : <ChevronDownIcon className="size-3.5" />}
         <span className="truncate">{name}</span>
         <span className="tabular-nums">{count}</span>
       </button>
-      <button
-        type="button"
-        aria-label={`Actions for ${name}`}
-        data-testid={`section-actions-${name}`}
-        onClick={(event) => {
-          const rect = event.currentTarget.getBoundingClientRect();
-          onMenu({ x: rect.left, y: rect.bottom + 4 });
-        }}
-        className="absolute right-1 top-1/2 flex size-6 -translate-y-1/2 cursor-pointer items-center justify-center rounded-md text-sidebar-muted-foreground opacity-0 outline-none hover:bg-accent hover:text-sidebar-foreground focus-visible:opacity-100 group-hover:opacity-100"
-      >
-        <ChevronRightIcon className="size-3.5 rotate-90" />
-      </button>
     </div>
   );
 }
 
-/** Floating action menu shared by rows (right-click / hover button) and sections. */
+/** Floating action menu shared by rows and sections; opens on right-click only. */
 function ContextMenu({
   menu,
   sections,
@@ -257,10 +238,18 @@ function ContextMenu({
   const pinnedBot = menu.target.kind === "bot" ? menu.target : null;
 
   return (
-    <div className="fixed inset-0 z-50" onMouseDown={onClose} onContextMenu={(event) => event.preventDefault()}>
+    <div
+      className="fixed inset-0 z-50"
+      onClick={onClose}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onClose();
+      }}
+    >
       <div
         role="menu"
         style={{ left: menu.x, top: menu.y }}
+        onClick={(event) => event.stopPropagation()}
         className="absolute min-w-44 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-[var(--shadow-float)]"
       >
         {pinnedBot !== null ? (
@@ -303,15 +292,24 @@ function ContextMenu({
   );
 }
 
-function UserProfileFooter() {
+function UserProfileFooter({ collapsed = false }: { collapsed?: boolean }) {
+  // Akeru hides footer labels in icon-collapsed mode (group-data-[collapsible=icon]:hidden)
+  // and centers the remaining icon; match that: initials circle only in the rail.
   return (
-    <footer className="flex shrink-0 items-center gap-2.5 border-t border-border px-3 py-3">
+    <footer
+      className={cn(
+        "flex shrink-0 items-center gap-2.5 border-t border-border py-3",
+        collapsed ? "justify-center" : "px-3",
+      )}
+    >
       <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/20 text-xs font-semibold text-primary">
         AS
       </span>
-      <span className="min-w-0 flex-1 truncate text-sm font-medium text-sidebar-foreground">
-        Armand Segall
-      </span>
+      {collapsed ? null : (
+        <span className="min-w-0 flex-1 truncate text-sm font-medium text-sidebar-foreground">
+          Armand Segall
+        </span>
+      )}
     </footer>
   );
 }
@@ -404,11 +402,11 @@ export function BotRosterSidebar({ api }: { api: RosterApi }) {
               aria-current={activeId === bot.id || undefined}
               onClick={() => api.setActive(bot.id)}
               className={cn(
-                "flex size-9 cursor-pointer items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                activeId === bot.id ? "ring-2 ring-primary ring-offset-2 ring-offset-sidebar" : "opacity-80 hover:opacity-100",
+                "flex size-9 cursor-pointer items-center justify-center rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                activeId === bot.id ? "bg-white/[0.08]" : "hover:bg-accent",
               )}
             >
-              <BotAvatar identity={bot.bloub} size={32} />
+              <BotAvatar identity={bot.bloub} size={28} />
             </button>
           ))}
           {unassignedGroups.map((group) => (
@@ -421,15 +419,15 @@ export function BotRosterSidebar({ api }: { api: RosterApi }) {
               aria-current={activeId === group.id || undefined}
               onClick={() => api.setActive(group.id)}
               className={cn(
-                "flex size-9 cursor-pointer items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                activeId === group.id ? "ring-2 ring-primary ring-offset-2 ring-offset-sidebar" : "opacity-80 hover:opacity-100",
+                "flex size-9 cursor-pointer items-center justify-center rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                activeId === group.id ? "bg-white/[0.08]" : "hover:bg-accent",
               )}
             >
-              <GroupMemberStack group={group} bots={bots} sizeClassName="size-8" />
+              <GroupMemberStack group={group} bots={bots} sizeClassName="size-5" />
             </button>
           ))}
         </div>
-        <UserProfileFooter />
+        <UserProfileFooter collapsed />
       </aside>
     );
   }
@@ -450,8 +448,8 @@ export function BotRosterSidebar({ api }: { api: RosterApi }) {
         >
           <PanelLeftIcon className="size-4" />
         </button>
-        <label className="relative flex min-w-0 flex-1 items-center">
-          <SearchIcon className="pointer-events-none absolute left-2.5 size-3.5 text-sidebar-muted-foreground" />
+        <label className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-lg bg-accent px-2.5 ring-ring focus-within:ring-2">
+          <SearchIcon className="size-4 shrink-0 text-sidebar-muted-foreground" />
           <input
             type="text"
             data-testid="roster-search"
@@ -464,7 +462,7 @@ export function BotRosterSidebar({ api }: { api: RosterApi }) {
                 setQuery("");
               }
             }}
-            className="h-8 w-full rounded-lg border border-input bg-input pl-8 pr-2 text-sm text-sidebar-foreground outline-none placeholder:text-sidebar-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
+            className="min-w-0 flex-1 bg-transparent text-sm text-sidebar-foreground outline-none placeholder:text-sidebar-muted-foreground"
           />
         </label>
         <div className="relative shrink-0">
@@ -480,10 +478,18 @@ export function BotRosterSidebar({ api }: { api: RosterApi }) {
             <PlusIcon className="size-4" />
           </button>
           {plusOpen ? (
-            <div className="fixed inset-0 z-40" onMouseDown={() => setPlusOpen(false)} onContextMenu={(event) => event.preventDefault()}>
+            <div
+              className="fixed inset-0 z-40"
+              onClick={() => setPlusOpen(false)}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setPlusOpen(false);
+              }}
+            >
               <div
                 role="menu"
                 data-testid="roster-create-menu"
+                onClick={(event) => event.stopPropagation()}
                 className="absolute right-0 top-9 z-50 min-w-40 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-[var(--shadow-float)]"
               >
                 <button type="button" role="menuitem" data-testid="new-bot-menu-item" className="flex w-full cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm outline-none hover:bg-accent" onClick={() => { setPlusOpen(false); setNewBotOpen(true); }}>
@@ -504,7 +510,7 @@ export function BotRosterSidebar({ api }: { api: RosterApi }) {
         </div>
       </header>
 
-      <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" aria-label="Bots and groups">
+      <nav className="min-h-0 flex-1 overflow-y-auto pb-2" aria-label="Bots and groups">
         {searching ? (
           <>
             {visibleGroups.map((group) => (
@@ -534,7 +540,7 @@ export function BotRosterSidebar({ api }: { api: RosterApi }) {
           <>
             {pinnedBots.length > 0 ? (
               <div className="mb-1">
-                <div className="flex h-8 items-center gap-1.5 px-2 text-xs font-medium text-sidebar-muted-foreground">
+                <div className="mx-2 flex h-8 items-center gap-1.5 px-3 text-xs font-medium text-sidebar-muted-foreground">
                   <PinIcon className="size-3.5" />
                   <span>Pinned</span>
                   <span className="tabular-nums">{pinnedBots.length}</span>
@@ -592,7 +598,7 @@ export function BotRosterSidebar({ api }: { api: RosterApi }) {
             {unassignedGroups.length > 0 ? (
               <div className="mb-1">
                 {sections.length > 0 ? (
-                  <div className="flex h-8 items-center gap-1.5 px-2 text-xs font-medium text-sidebar-muted-foreground">
+                  <div className="mx-2 flex h-8 items-center gap-1.5 px-3 text-xs font-medium text-sidebar-muted-foreground">
                     <span>Unassigned</span>
                     <span className="tabular-nums">{unassignedBots.length + unassignedGroups.length}</span>
                   </div>

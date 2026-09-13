@@ -91,7 +91,15 @@ export function useRosterState(): RosterApi {
   }, [state]);
 
   const setActive = useCallback((id: string | null) => {
-    setState((prev) => (prev.activeId === id ? prev : { ...prev, activeId: id }));
+    setState((prev) => {
+      // Selecting a bot marks it read: its unread count resets and persists.
+      const hasUnread = id !== null && prev.bots.some((bot) => bot.id === id && bot.unread > 0);
+      const bots = hasUnread
+        ? prev.bots.map((bot) => (bot.id === id ? { ...bot, unread: 0 } : bot))
+        : prev.bots;
+      if (prev.activeId === id && bots === prev.bots) return prev;
+      return { ...prev, activeId: id, bots };
+    });
   }, []);
 
   const toggleRail = useCallback(() => {
