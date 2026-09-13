@@ -25,7 +25,7 @@ import { makeSidLiveCheck, RECOVERY_JOB, scanTurns } from "pi-cf/store/recovery"
 import { nextRunAtMin } from "pi-cf/store/runs";
 import { listChunksForTurn } from "pi-cf/store/chunks";
 import { appendEntry, closeRun, openRun, recordTurnWithOpen } from "pi-cf/store/entries";
-import { readAttachment, redriveTurn, socketMessage, wrapSocket, executeTurn, type LiveTurn, type StreamHost, type TurnSink } from "./stream";
+import { broadcastEntry, readAttachment, redriveTurn, socketMessage, wrapSocket, executeTurn, type LiveTurn, type StreamHost, type TurnSink } from "./stream";
 import type { Agent } from "@earendil-works/pi-agent-core";
 import { clampThinkingLevel, resolveCatalogModel, type RuntimeEnv } from "./model-runtime";
 import { err, UNKNOWN_SESSION_HINT, type Env, type FenceNext, type FenceRead, type ModelTriple, type RouteCtx, type RouteHandler, type WorkspaceSettings } from "./routes/_shared";
@@ -238,6 +238,13 @@ export class WorkspaceBase implements DurableObject {
             return turnId === undefined ? [] : [turnId];
           },
           (sid) => sessionSummarizer(this.env as unknown as RuntimeEnv, sql, sid),
+          (sid, cursor) => {
+            let ws = "";
+            for (const row of sql.exec("SELECT ws FROM sessions WHERE sid = ? LIMIT 1", sid)) {
+              if (typeof row === "object" && row !== null && typeof (row as Record<string, unknown>).ws === "string") ws = (row as Record<string, unknown>).ws as string;
+            }
+            broadcastEntry(this.streamHost(ws, sid), cursor);
+          },
         );
       },
       [KEEPALIVE_JOB]: () => {
@@ -320,6 +327,7 @@ export class WorkspaceBase implements DurableObject {
       const sql = this.state.storage.sql;
       const runId = crypto.randomUUID();
       const turnId = crypto.randomUUID();
+      const host = this.streamHost(routine.ws, routine.sid);
       const sink: TurnSink = {
         push() {},
         done: (doneId, turn) => {
@@ -329,13 +337,12 @@ export class WorkspaceBase implements DurableObject {
           try {
             openRun(sql, routine.sid, failId);
             closeRun(sql, routine.sid, failId);
-            appendEntry(sql, routine.sid, "error", { runId: failId, error, routineId: routine.id });
+            broadcastEntry(host, appendEntry(sql, routine.sid, "error", { runId: failId, error, routineId: routine.id }));
           } catch {
           }
         },
         aborted() {},
       };
-      const host = this.streamHost(routine.ws, routine.sid);
       const catalog = host.model === null ? null : resolveCatalogModel(host.model.provider, host.model.id);
       const effThinking = host.thinking === null ? null : clampThinkingLevel(catalog ?? {}, host.thinking);
       await executeTurn(host, { prompt: routine.prompt, catalog, thinking: effThinking, runId, turnId }, sink);
@@ -353,6 +360,7 @@ export class WorkspaceBase implements DurableObject {
       const sql = this.state.storage.sql;
       const runId = crypto.randomUUID();
       const turnId = crypto.randomUUID();
+      const host = this.streamHost(ws, sid);
       const sink: TurnSink = {
         push() {},
         done: (doneId, turn) => {
@@ -363,13 +371,12 @@ export class WorkspaceBase implements DurableObject {
           try {
             openRun(sql, sid, failId);
             closeRun(sql, sid, failId);
-            appendEntry(sql, sid, "error", { runId: failId, error, inboxIds: ids });
+            broadcastEntry(host, appendEntry(sql, sid, "error", { runId: failId, error, inboxIds: ids }));
           } catch {
           }
         },
         aborted() {},
       };
-      const host = this.streamHost(ws, sid);
       const catalog = host.model === null ? null : resolveCatalogModel(host.model.provider, host.model.id);
       const effThinking = host.thinking === null ? null : clampThinkingLevel(catalog ?? {}, host.thinking);
       return executeTurn(host, { prompt, catalog, thinking: effThinking, runId, turnId }, sink);

@@ -1,6 +1,6 @@
 import { closeRun, entryHead, listEntries, openRun, recordTurnWithOpen } from "pi-cf/store/entries";
 import { buildRuntime, clampThinkingLevel, resolveCatalogModel, supportedThinkingLevels, THINKING_LEVELS, type RuntimeEnv, type RuntimeModel } from "../model-runtime";
-import { acceptStream, checkedRotate, executeTurn, parseBudgets, type TurnSink } from "../stream";
+import { acceptStream, broadcastEntry, checkedRotate, executeTurn, parseBudgets, type TurnSink } from "../stream";
 import { readArchivePage, runCompaction } from "../compaction";
 import { sessionSummarizer } from "../summarizer";
 import { MINT_WS_HINT, err, json, type RouteHandler } from "./_shared";
@@ -154,6 +154,7 @@ const compact: RouteHandler = async (ctx, request, url) => {
   }
   return ctx.enqueueSessionTurn(sid, async () => {
     const out = await runCompaction(ctx.state.storage.sql, sid, true, [], sessionSummarizer(ctx.env as unknown as RuntimeEnv, ctx.state.storage.sql, sid), instructions);
+    if (out.summaryCursor !== null) broadcastEntry(ctx.streamHost(ws, sid), out.summaryCursor);
     return json({ sid, ...out });
   });
 };
