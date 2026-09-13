@@ -9,11 +9,11 @@ export function BotMention({ bot }: { bot: RosterBot }) {
   return (
     <span
       data-testid={`bot-mention-${bot.id}`}
-      className="inline-flex items-center gap-1 rounded-full bg-[var(--accent)] px-1.5 py-0.5 align-baseline text-sm font-medium whitespace-nowrap"
+      className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full bg-[var(--accent)] px-1.5 py-0.5 align-baseline text-sm font-medium [overflow-wrap:anywhere] [word-break:break-word]"
       style={{ color: colorHex(bot.bloub.color) }}
     >
-      <BotAvatar identity={bot.bloub} size={13} />
-      <span>{bot.name}</span>
+      <BotAvatar identity={bot.bloub} size={13} className="shrink-0" />
+      <span className="min-w-0 [overflow-wrap:anywhere] [word-break:break-word]">{bot.name}</span>
     </span>
   );
 }

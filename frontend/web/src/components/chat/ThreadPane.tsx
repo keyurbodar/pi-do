@@ -203,16 +203,6 @@ export function ThreadPane({
     setViewport({ top: el.scrollTop, height: el.clientHeight });
   }, []);
 
-  // Shell bridge: the App header's scroll action dispatches this event.
-  useEffect(() => {
-    const onExternalScroll = () => {
-      setAtBottom(true);
-      scrollToBottom("smooth");
-    };
-    window.addEventListener("pi-do:scroll-bottom", onExternalScroll);
-    return () => window.removeEventListener("pi-do:scroll-bottom", onExternalScroll);
-  }, [scrollToBottom]);
-
   // Track viewport height (mount + resize) so the windowed slice is right
   // before the first scroll event fires.
   useEffect(() => {
