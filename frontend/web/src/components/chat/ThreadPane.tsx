@@ -2,8 +2,9 @@
 // patterns from refs/akeru-bot MessagesTimeline.tsx, MIT), stripped of its
 // store/state layer. Same props in/out as thread/Thread.tsx
 // (turns/pending/conn/onRetry) plus the roster bots list for sender labels /
-// mention chips. avatarSlot is still accepted but ignored (no in-chat
-// avatars); the shell keeps passing it so App needs no change.
+// mention chips. avatarSlot feeds the working ActivityRow (resolved per-turn
+// from senderId, shell slot as fallback); settled bubbles stay avatar-free
+// so App needs no change.
 // Renders the pure mapper.turnToItems view-model list over a
 // StickToBottom-style viewport: pinned follow while new content lands, an
 // isAtBottom-gated jump pill, a thinking-dots activity row while the last
@@ -17,12 +18,15 @@
 // Bubbles cap at 65% width: user groups right-align, bot groups left-align.
 // The column itself is full-bleed (no avatars, edge-aligned text).
 //
-// Working state: while the tail turn streams the timeline shows ONLY the
-// thinking-dots ActivityRow. The streaming caret, ThinkingRow output,
-// StepMeter, and tool StatusCards stay out of the default path — ThinkingRow
-// and StatusCard components (and their mapper branches) still render, but
-// only when the turn errored or halted. Settled bubbles animate in with
-// .msg-pop (user bubbles also .msg-pop-user).
+// Working state: while the tail turn streams the timeline shows the working
+// ActivityRow — the responsible bot's avatar (turn.senderId resolved via
+// bots, shell avatarSlot as fallback) wearing a shimmer sheen beside the
+// thinking dots. The streaming caret, ThinkingRow output, StepMeter, and
+// tool StatusCards stay out of the default path — ThinkingRow and StatusCard
+// components (and their mapper branches) still render, but only when the
+// turn errored or halted. The working row unmounts whole on settle, so
+// settled bubbles land avatar-free and animate in with .msg-pop (user
+// bubbles also .msg-pop-user).
 //
 // Windowing: past VIRTUALIZE_AFTER turns the timeline renders only the
 // visible block slice plus 400px overscan (measured block heights, estimated
@@ -33,6 +37,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type { ReactNode } from "react";
 
 import type { RosterBot } from "../../lib/roster";
+import { BotAvatar } from "../roster";
 import type { ConnState, PendingPrompt, TurnViewState } from "../thread/types";
 import type { AttachmentVM } from "../thread/viewModel";
 import {
@@ -217,6 +222,17 @@ export function ThreadPane({
 
   const lastTurn = turns.length > 0 ? turns[turns.length - 1] : null;
   const empty = turns.length === 0 && pending.length === 0 && !playing;
+  /** Working avatar for the tail turn: senderId resolved via the roster
+  (fixture multi-sender turns included); the shell active-bot slot is the
+  1:1 fallback. Null (no active bot) renders the dots-only row as before. */
+  const workingBot =
+    lastTurn?.senderId !== undefined ? bots.find((bot) => bot.id === lastTurn.senderId) : undefined;
+  const workingAvatar =
+    workingBot !== undefined ? (
+      <BotAvatar identity={workingBot.bloub} presence={workingBot.presence} size={36} />
+    ) : (
+      avatarSlot
+    );
 
   const shared = { avatarSlot, bots, onEdit, onAnswer, onDecision, onRetry };
 
@@ -424,7 +440,7 @@ export function ThreadPane({
             ? blocks.slice(start, end).map((block) => renderBlock(block))
             : blocks.map((block) => renderBlock(block))}
           {windowing && bottomPad > 0 && <div aria-hidden style={{ height: bottomPad }} />}
-          {lastTurn?.status === "streaming" && <ActivityRow avatarSlot={avatarSlot} />}
+          {lastTurn?.status === "streaming" && <ActivityRow avatarSlot={workingAvatar} />}
           {pending.map((p) => (
             <div key={p.id} className="flex w-full justify-end">
               <div className="msg-pop msg-pop-user w-fit min-w-0 max-w-[65%]">
