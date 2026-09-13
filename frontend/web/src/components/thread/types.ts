@@ -123,6 +123,17 @@ export interface TurnViewState {
    * this turn in a multi-sender (group) thread. Live 1:1 turns never set it.
    */
   senderId?: string;
+  /**
+   * Quote of the message being replied to (fixture/group metadata,
+   * additive). The mapper passes label/text straight onto the bubble VM;
+   * it never invents one.
+   */
+  replyTo?: { turnId: string; label: string; text: string };
+  /**
+   * Emoji reactions on this turn (fixture/group metadata, additive).
+   * The mapper passes them through as-is.
+   */
+  reactions?: { emoji: string; by: string }[];
   /** System event line rendered as a centered row above the turn's content. */
   systemEvent?: string;
   /** Roster bot ids whose messages were folded into this turn (inter-bot). */

@@ -1,10 +1,11 @@
-// components/chat/ActivityRow.tsx — akeru BotActivityStatus markup (MIT):
-// avatar slot + shimmer label shown while the last turn is streaming on an
-// open connection. The shell injects the avatar; the shimmer reuses the
-// existing aicss atom.
+// components/chat/ActivityRow.tsx — thinking-dots row shown while the tail
+// turn streams. The shell injects the avatar; three bouncing dots are the
+// only working indicator in the default path (no step meter, no streaming
+// caret, no ThinkingRow output, no tool StatusCards — those render only for
+// error/halted turns).
 import type { ReactNode } from "react";
 
-import { Shimmer } from "../aicss";
+const DOT_DELAYS = ["0ms", "150ms", "300ms"];
 
 export function ActivityRow({ avatarSlot = null }: { avatarSlot?: ReactNode }) {
   return (
@@ -14,7 +15,16 @@ export function ActivityRow({ avatarSlot = null }: { avatarSlot?: ReactNode }) {
       className="flex min-h-8 items-center gap-3 px-2 py-1 text-sm"
     >
       {avatarSlot !== null && <div className="flex size-8 shrink-0 items-center justify-center">{avatarSlot}</div>}
-      <Shimmer>Receiving context…</Shimmer>
+      <span className="flex items-center gap-1.5" aria-hidden>
+        {DOT_DELAYS.map((delay) => (
+          <span
+            key={delay}
+            className="size-1.5 animate-bounce rounded-full bg-[var(--muted-foreground)]"
+            style={{ animationDelay: delay }}
+          />
+        ))}
+      </span>
+      <span className="sr-only">Thinking…</span>
     </div>
   );
 }

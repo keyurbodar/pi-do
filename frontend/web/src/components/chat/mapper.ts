@@ -53,6 +53,10 @@ export interface UserInputVM {
  export interface SenderMessageBubbleVM extends MessageBubbleVM {
    /** Resolved sender name (from turn.senderId via the bots param); unset for 1:1 turns. */
    senderLabel?: string;
+   /** Reply quote passed straight from turn.replyTo (label/text only); never invented. */
+   replyTo?: { label: string; text: string };
+   /** Reactions passed straight from turn.reactions as-is; never invented. */
+   reactions?: { emoji: string; by: string }[];
  }
  
 /** Everything the timeline renders, including the mapper-local rows. */
@@ -77,6 +81,10 @@ export type ChatItemVM = ThreadItemVM | ThinkingRowVM | SystemEventVM | Delegati
  *                       bubble ("Messages from Account Manager and Chief")
  *   senderId          → bot bubbles carry senderLabel, resolved via the
  *                       optional bots param (default [])
+ *   replyTo           → bubbles carry { label, text } straight from
+ *                       turn.replyTo; absent unless the turn sets it
+ *   reactions         → bubbles carry turn.reactions through as-is;
+ *                       absent unless the turn sets them
  */
 export function turnToItems(turn: TurnViewState, bots: RosterBot[] = []): ChatItemVM[] {
   const items: ChatItemVM[] = [];
@@ -87,13 +95,18 @@ export function turnToItems(turn: TurnViewState, bots: RosterBot[] = []): ChatIt
   // Fixture bot turns carry an empty prompt (the exchange's prompt is its
   // own user turn); real turns always have one — reducer rejects empties.
   if (turn.prompt.length > 0) {
-    items.push({
+    const promptBubble: SenderMessageBubbleVM = {
       id: `${turn.runId}:prompt`,
       role: "user",
       text: turn.prompt,
       attachments: [],
       ts: turn.startedAt,
-    });
+    };
+    if (turn.replyTo !== undefined) {
+      promptBubble.replyTo = { label: turn.replyTo.label, text: turn.replyTo.text };
+    }
+    if (turn.reactions !== undefined) promptBubble.reactions = turn.reactions;
+    items.push(promptBubble);
   }
 
   // Delegated sub-task card sits right under the prompt: the spawn precedes
@@ -145,6 +158,10 @@ export function turnToItems(turn: TurnViewState, bots: RosterBot[] = []): ChatIt
           ts: turn.endedAt,
         };
         if (sender !== undefined) bubble.senderLabel = sender.name;
+        if (turn.replyTo !== undefined) {
+          bubble.replyTo = { label: turn.replyTo.label, text: turn.replyTo.text };
+        }
+        if (turn.reactions !== undefined) bubble.reactions = turn.reactions;
         items.push(bubble);
       }
     } else {
