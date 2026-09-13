@@ -164,6 +164,17 @@ while [ "${I}" -le 12 ]; do
   ${CLI} run --ws "${WS}" --sid "${SID}" --prompt "read seed turn ${I}" --base "${BASE}" --json > "${OUT}/seed-run-${I}.json" || exit 1
   I=$((I + 1))
 done
+# Wait out the alarm before the no-op window: a pending mark may still be
+# queued from the seeded turns, and an alarm compaction landing between the
+# pre/post reads would race the untouched-replay assertion.
+TRIES=0
+while [ "${TRIES}" -lt 30 ]; do
+  PENDING="$(node -p "JSON.parse(require('node:fs').readFileSync('${OUT}/meta-pre-manual.json','utf8')).compaction.pending" 2>/dev/null || echo skip)"
+  [ "${PENDING}" = "false" ] && break
+  ${CLI} meta --ws "${WS}" --sid "${SID}" --base "${BASE}" --json > "${OUT}/meta-pre-manual.json" || exit 1
+  TRIES=$((TRIES + 1))
+  sleep 2
+done
 ${CLI} meta --ws "${WS}" --sid "${SID}" --base "${BASE}" --json > "${OUT}/meta-pre-manual.json" || exit 1
 ${CLI} entries --ws "${WS}" --sid "${SID}" --after 0 --limit 100 --base "${BASE}" --json > "${OUT}/pre-manual.json" || exit 1
 ${CLI} compact --ws "${WS}" --sid "${SID}" --base "${BASE}" --json > "${OUT}/manual.json" || exit 1
