@@ -35,7 +35,7 @@ export function MessageControls({
   return (
     <div
       data-testid={`message-actions-${messageId}`}
-      className="absolute -top-3 right-1 z-10 flex items-center gap-0.5 rounded-full border border-[var(--border)] bg-[var(--card)] p-0.5 opacity-0 shadow-[var(--shadow-float)] transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100"
+      className="absolute -top-3 right-1 z-10 flex items-center gap-0 rounded-full border border-transparent bg-[var(--card)]/90 p-0 opacity-0 backdrop-blur transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100"
     >
       <Menu.Root>
         <Menu.Trigger
