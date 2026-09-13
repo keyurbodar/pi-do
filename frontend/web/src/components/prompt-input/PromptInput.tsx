@@ -749,114 +749,106 @@ export function PromptInput({
             </div>
           ) : null}
 
-          <textarea
-            ref={textareaRef}
-            data-testid="composer-input"
-            aria-label={`Message ${botName}`}
-            placeholder={`Message ${botName}`}
-            rows={1}
-            value={value}
-            className="field-sizing-content max-h-56 w-full resize-none bg-transparent py-2 pl-[5.5rem] pr-[5.5rem] text-[15px] leading-6 outline-none placeholder:text-muted-foreground/70"
-            onChange={(event) => {
-              const next = event.currentTarget.value;
-              setValue(next);
-              writeDraft(draftKey, next);
-              syncCaret();
-            }}
-            onKeyDown={onTextareaKeyDown}
-            onKeyUp={syncCaret}
-            onClick={syncCaret}
-            onSelect={syncCaret}
-            onPaste={onTextareaPaste}
-          />
-
-          <div className="pointer-events-none absolute inset-x-2 bottom-2 flex items-center justify-between">
-            <div className="pointer-events-auto flex items-center gap-1">
-              <span className="relative">
-                <button
-                  type="button"
-                  data-testid="composer-stash"
-                  aria-label="Stash prompt"
-                  aria-expanded={isStashMenuOpen}
-                  title={hasText ? "Stash this draft" : "Stashed prompts"}
-                  onClick={stashCurrentDraft}
-                  className="flex size-9 shrink-0 items-center justify-center rounded-full bg-secondary text-muted-foreground transition-colors hover:text-foreground"
+          <div className="flex min-h-[52px] items-center gap-2 px-4">
+            <span className="relative shrink-0">
+              <button
+                type="button"
+                data-testid="composer-stash"
+                aria-label="Stash prompt"
+                aria-expanded={isStashMenuOpen}
+                title={hasText ? "Stash this draft" : "Stashed prompts"}
+                onClick={stashCurrentDraft}
+                className="flex size-9 shrink-0 items-center justify-center rounded-full bg-secondary text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <Bookmark className="size-5" />
+              </button>
+              <CountBadge
+                testid="composer-stash-badge"
+                count={stashEntries.length}
+                label={`${stashEntries.length} stashed prompts`}
+              />
+            </span>
+            <span className="relative shrink-0">
+              <button
+                type="button"
+                data-testid="composer-attach"
+                aria-label="Add attachment"
+                title="Attach files"
+                onClick={() => fileInputRef.current?.click()}
+                className="flex size-9 shrink-0 items-center justify-center rounded-full bg-secondary text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <Plus className="size-5" />
+              </button>
+              <CountBadge
+                testid="composer-tasks-badge"
+                count={attachments.length}
+                label={`${attachments.length} staged attachments`}
+              />
+            </span>
+            <textarea
+              ref={textareaRef}
+              data-testid="composer-input"
+              aria-label={`Message ${botName}`}
+              placeholder={`Message ${botName}`}
+              rows={1}
+              value={value}
+              className="field-sizing-content max-h-56 min-w-0 flex-1 resize-none bg-transparent py-0 text-[15px] leading-6 outline-none placeholder:text-muted-foreground/70"
+              onChange={(event) => {
+                const next = event.currentTarget.value;
+                setValue(next);
+                writeDraft(draftKey, next);
+                syncCaret();
+              }}
+              onKeyDown={onTextareaKeyDown}
+              onKeyUp={syncCaret}
+              onClick={syncCaret}
+              onSelect={syncCaret}
+              onPaste={onTextareaPaste}
+            />
+            <span className="relative shrink-0">
+              <button
+                type="button"
+                data-testid="composer-mic"
+                aria-label={recording ? "Stop voice input" : "Voice input"}
+                title={
+                  !micSupported
+                    ? "Mic unavailable"
+                    : recording
+                      ? "Stop recording"
+                      : "Voice input"
+                }
+                aria-pressed={recording}
+                onClick={onMicClick}
+                className={[
+                  "flex size-9 shrink-0 items-center justify-center rounded-full transition-colors",
+                  recording
+                    ? "bg-destructive/15 text-destructive hover:text-destructive"
+                    : "bg-secondary text-muted-foreground hover:text-foreground",
+                ].join(" ")}
+              >
+                <Mic className="size-5" />
+              </button>
+              {!micSupported && micNotice ? (
+                <span
+                  data-testid="mic-unavailable"
+                  role="status"
+                  className="absolute bottom-[calc(100%+6px)] right-0 z-20 whitespace-nowrap rounded-[var(--control-radius)] border border-border bg-card px-2 py-1 text-[11px] text-muted-foreground shadow-[0_16px_40px_-20px_rgb(0_0_0/60%)]"
                 >
-                  <Bookmark className="size-5" />
-                </button>
-                <CountBadge
-                  testid="composer-stash-badge"
-                  count={stashEntries.length}
-                  label={`${stashEntries.length} stashed prompts`}
-                />
-              </span>
-              <span className="relative">
-                <button
-                  type="button"
-                  data-testid="composer-attach"
-                  aria-label="Add attachment"
-                  title="Attach files"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="pointer-events-auto flex size-9 shrink-0 items-center justify-center rounded-full bg-secondary text-muted-foreground transition-colors hover:text-foreground"
-                >
-                  <Plus className="size-5" />
-                </button>
-                <CountBadge
-                  testid="composer-tasks-badge"
-                  count={attachments.length}
-                  label={`${attachments.length} staged attachments`}
-                />
-              </span>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <div className="pointer-events-auto flex items-center gap-1">
-                <span className="relative">
-                  <button
-                    type="button"
-                    data-testid="composer-mic"
-                    aria-label={recording ? "Stop voice input" : "Voice input"}
-                    title={
-                      !micSupported
-                        ? "Mic unavailable"
-                        : recording
-                          ? "Stop recording"
-                          : "Voice input"
-                    }
-                    aria-pressed={recording}
-                    onClick={onMicClick}
-                    className={[
-                      "flex size-9 shrink-0 items-center justify-center rounded-full transition-colors",
-                      recording
-                        ? "bg-destructive/15 text-destructive hover:text-destructive"
-                        : "bg-secondary text-muted-foreground hover:text-foreground",
-                    ].join(" ")}
-                  >
-                    <Mic className="size-5" />
-                  </button>
-                  {!micSupported && micNotice ? (
-                    <span
-                      data-testid="mic-unavailable"
-                      role="status"
-                      className="absolute bottom-[calc(100%+6px)] right-0 z-20 whitespace-nowrap rounded-[var(--control-radius)] border border-border bg-card px-2 py-1 text-[11px] text-muted-foreground shadow-[0_16px_40px_-20px_rgb(0_0_0/60%)]"
-                    >
-                      Mic unavailable
-                    </span>
-                  ) : null}
+                  Mic unavailable
                 </span>
-                <button
-                  type="button"
-                  data-testid="composer-send"
-                  data-status="ready"
-                  aria-label="Send"
-                  disabled={!hasText}
-                  onClick={send}
-                  className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-transform disabled:opacity-25"
-                >
-                  <ArrowUp className="size-5" />
-                </button>
-              </div>
-            </div>
+              ) : null}
+            </span>
+            <button
+              type="button"
+              data-testid="composer-send"
+              data-status="ready"
+              aria-label="Send"
+              disabled={!hasText}
+              onClick={send}
+              className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-transform disabled:opacity-25"
+            >
+              <ArrowUp className="size-5" />
+            </button>
           </div>
         </div>
 
