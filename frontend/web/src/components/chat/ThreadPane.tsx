@@ -58,6 +58,16 @@ import { UserInputCard } from "./UserInputCard";
 
 /** Distance in px from the bottom that still counts as pinned. */
 const PIN_THRESHOLD = 64;
+
+// Working-row face: uploaded image first, bloub second, bloub again when the
+// image fails to load (broken data URL after a restore). Never renders empty.
+function WorkingFace({ bot }: { bot: RosterBot }) {
+  const [imgOk, setImgOk] = useState(true);
+  if (bot.avatarVariant === "upload" && bot.avatarImage && imgOk) {
+    return <img src={bot.avatarImage} alt="" onError={() => setImgOk(false)} className="size-9 shrink-0 rounded-full object-cover" />;
+  }
+  return <BotAvatar identity={bot.bloub} presence={bot.presence} size={36} />;
+}
 /** Consecutive turns gap by more than this before a time divider renders. */
 const DIVIDER_GAP_MS = 20 * 60_000;
 /** Consecutive same-side bubbles gap by this (or less) to share one group. */
@@ -224,23 +234,13 @@ export function ThreadPane({
   const empty = turns.length === 0 && pending.length === 0 && !playing;
   // Working avatar for the tail turn: senderId resolved via the roster
   // (fixture multi-sender turns included); the shell active-bot slot is the
-  // 1:1 fallback. Mirrors the sidebar row: uploaded avatars render the image,
-  // every other variant renders the bloub (BotAvatar alone would show a
-  // placeholder bloub, often near-black, for upload-variant bots like lahn).
+  // 1:1 fallback. WorkingFace mirrors the sidebar row (upload image, else
+  // bloub, bloub again when the image fails to load) so it never renders empty.
   const workingBot =
     lastTurn?.senderId !== undefined ? bots.find((bot) => bot.id === lastTurn.senderId) : undefined;
-  const workingAvatar =
-    workingBot !== undefined ? (
-      workingBot.avatarVariant === "upload" && workingBot.avatarImage ? (
-        <img src={workingBot.avatarImage} alt="" className="size-9 shrink-0 rounded-full object-cover" />
-      ) : (
-        <BotAvatar identity={workingBot.bloub} presence={workingBot.presence} size={36} />
-      )
-    ) : (
-      avatarSlot
-    );
-
+  const workingAvatar = workingBot !== undefined ? <WorkingFace bot={workingBot} /> : avatarSlot;
   const shared = { avatarSlot, bots, onEdit, onAnswer, onDecision, onRetry };
+
 
   // Flatten turns → timeline blocks. Consecutive same-side bubbles within
   // GROUP_GAP_MS merge into one BubbleGroup (even across turn boundaries);

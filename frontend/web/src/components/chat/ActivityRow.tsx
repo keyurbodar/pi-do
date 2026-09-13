@@ -19,7 +19,7 @@ export function ActivityRow({ avatarSlot = null }: { avatarSlot?: ReactNode }) {
     >
       <div className="flex w-fit min-w-0 max-w-[65%] items-center gap-2.5 py-1">
         {avatarSlot !== null && (
-          <span data-testid="activity-avatar" aria-hidden className="relative inline-flex shrink-0">
+          <span data-testid="activity-avatar" aria-hidden className="relative inline-flex shrink-0 overflow-hidden rounded-full bg-white/[0.08]">
             {avatarSlot}
             <span className="pointer-events-none absolute inset-0 animate-shimmer rounded-full bg-[linear-gradient(100deg,transparent_40%,color-mix(in_srgb,var(--foreground)_14%,transparent)_50%,transparent_60%)] bg-[length:200%_100%]" />
           </span>
