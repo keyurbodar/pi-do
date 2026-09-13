@@ -1,5 +1,5 @@
 // routes.test.mjs — proves the edge forwarder and the inner dispatcher share
-// one route table: all 25 forwarded shapes resolve through routes/table.ts
+// one route table: all 26 forwarded shapes resolve through routes/table.ts
 // with byte-identical method plus path plus param mapping, and no route shape
 // is declared anywhere else. Imports table.ts only (it has no runtime deps).
 import test from "node:test";
@@ -13,7 +13,7 @@ const workerDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const srcDir = path.join(workerDir, "src");
 const readSrc = (rel) => fs.readFileSync(path.join(srcDir, rel), "utf8");
 
-// The 25 forwarded shapes, in registration order: key plus method plus outer
+// The 26 forwarded shapes, in registration order: key plus method plus outer
 // path plus inner path plus param mapping, exactly as the legacy double
 // declaration served them.
 const EXPECTED = [
@@ -42,10 +42,11 @@ const EXPECTED = [
   { key: "bgGet", methods: ["GET"], outer: "/workspaces/:id/bg", inner: "/bg", sid: false, query: ["handle"], passthrough: false, stream: false },
   { key: "bgKill", methods: ["POST"], outer: "/workspaces/:id/bg/kill", inner: "/bg/kill", sid: false, query: [], passthrough: false, stream: false },
   { key: "stream", methods: ["GET"], outer: "/workspaces/:id/sessions/:sid/stream", inner: "/stream", sid: true, query: [], passthrough: false, stream: true },
+  { key: "routines", methods: ["POST", "GET", "DELETE"], outer: "/workspaces/:id/sessions/:sid/routines", inner: "/routines", sid: true, query: ["id"], passthrough: false, stream: false },
 ];
 
-test("forward table holds all 25 route shapes byte-identical", () => {
-  assert.equal(FORWARD_TABLE.length, 25);
+test("forward table holds all 26 route shapes byte-identical", () => {
+  assert.equal(FORWARD_TABLE.length, 26);
   EXPECTED.forEach((want, i) => {
     const got = FORWARD_TABLE[i];
     assert.deepEqual(
@@ -99,8 +100,11 @@ test("every route resolves through the single table", () => {
     ["GET", "/workspaces/w1/bg", "/bg"],
     ["POST", "/workspaces/w1/bg/kill", "/bg/kill"],
     ["GET", "/workspaces/w1/sessions/s1/stream", "/stream"],
+    ["POST", "/workspaces/w1/sessions/s1/routines", "/routines"],
+    ["GET", "/workspaces/w1/sessions/s1/routines", "/routines"],
+    ["DELETE", "/workspaces/w1/sessions/s1/routines", "/routines"],
   ];
-  assert.equal(cases.length, 29);
+  assert.equal(cases.length, 32);
   for (const [method, concrete, inner] of cases) {
     const def = matchRoute(method, concrete);
     assert.ok(def, `${method} ${concrete} resolves`);
@@ -127,6 +131,7 @@ test("forward query mapping matches the legacy per-route mapping", () => {
   assert.deepEqual(forwardQuery(ROUTE.exec, {}), {});
   assert.deepEqual(forwardQuery(ROUTE.settings, {}), {});
   assert.deepEqual(forwardQuery(ROUTE.doctor, {}), {});
+  assert.deepEqual(forwardQuery(ROUTE.routines, { sid: "s1", get: get({ id: "r1" }) }), { sid: "s1", id: "r1" });
 });
 
 test("index.ts keeps only its three local routes", () => {
@@ -141,7 +146,7 @@ test("every inner path is declared once, in table.ts", () => {
     .join("\n");
   const countQuoted = (literal) => allSrc.split(`"${literal}"`).length - 1;
   const inners = [...new Set([...FORWARD_TABLE.map((d) => d.inner), "/create", "/exists", "/models"])];
-  assert.deepEqual(inners.length, 27);
+  assert.deepEqual(inners.length, 28);
   for (const inner of inners) {
     // "/bg" serves two forward shapes; "/models" is both the edge-local
     // catalog route and an inner path. Everything else appears exactly once.
@@ -151,7 +156,7 @@ test("every inner path is declared once, in table.ts", () => {
 });
 
 test("every table def is handler-bound exactly once", () => {
-  const routeSrcs = ["routes/files.ts", "routes/sessions.ts", "routes/turns.ts", "routes/ops.ts", "routes/doctor.ts"].map(readSrc).join("\n");
+  const routeSrcs = ["routes/files.ts", "routes/sessions.ts", "routes/turns.ts", "routes/ops.ts", "routes/doctor.ts", "routes/routines.ts"].map(readSrc).join("\n");
   // POST and GET share one bg handler bound through ROUTE.bgPost.
   const unbound = new Set(["bgGet"]);
   for (const key of Object.keys(ROUTE)) {
@@ -163,10 +168,11 @@ test("every table def is handler-bound exactly once", () => {
       || routeSrcs.includes(`registerHandler("sessions", ROUTE.${key}`)
       || routeSrcs.includes(`registerHandler("turns", ROUTE.${key}`)
       || routeSrcs.includes(`registerHandler("ops", ROUTE.${key}`)
-      || routeSrcs.includes(`registerHandler("doctor", ROUTE.${key}`);
+      || routeSrcs.includes(`registerHandler("doctor", ROUTE.${key}`)
+      || routeSrcs.includes(`registerHandler("routines", ROUTE.${key}`);
     assert.equal(bound, !unbound.has(key), `${key} handler binding`);
   }
-  for (const [file, owner] of [["routes/files.ts", "files"], ["routes/sessions.ts", "sessions"], ["routes/turns.ts", "turns"], ["routes/ops.ts", "ops"], ["routes/doctor.ts", "doctor"]]) {
+  for (const [file, owner] of [["routes/files.ts", "files"], ["routes/sessions.ts", "sessions"], ["routes/turns.ts", "turns"], ["routes/ops.ts", "ops"], ["routes/doctor.ts", "doctor"], ["routes/routines.ts", "routines"]]) {
     assert.ok(readSrc(file).includes(`ownedRoutes("${owner}")`), `${file} exports its owned slice`);
   }
 });

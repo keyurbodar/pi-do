@@ -47,6 +47,7 @@ const app = new Hono<{ Bindings: Env }>()
   .get(ROUTE.bgGet.outer, (c) => forwardToWorkspace(c.env, c.req.param("id"), ROUTE.bgGet.inner, c.req, forwardQuery(ROUTE.bgGet, { get: (k) => c.req.query(k) ?? undefined })))
   .post(ROUTE.bgKill.outer, (c) => forwardToWorkspace(c.env, c.req.param("id"), ROUTE.bgKill.inner, c.req))
   .get(ROUTE.stream.outer, (c) => forwardStream(c.env, c.req.param("id"), c.req.param("sid"), c.req))
+  .on([...ROUTE.routines.methods], ROUTE.routines.outer, (c) => forwardToWorkspace(c.env, c.req.param("id"), ROUTE.routines.inner, c.req, forwardQuery(ROUTE.routines, { sid: c.req.param("sid"), get: (k) => c.req.query(k) ?? undefined })))
   .notFound(() => Response.json({ error: "not found", hint: "check the path and method, then retry" }, { status: 404 }));
 
 export type AppType = typeof app;

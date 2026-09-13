@@ -28,6 +28,7 @@ import { sessionRoutes } from "./routes/sessions";
 import { turnRoutes } from "./routes/turns";
 import { opRoutes } from "./routes/ops";
 import { doctorRoutes } from "./routes/doctor";
+import { routineRoutes } from "./routes/routines";
 
 const ROUTES: Record<string, RouteHandler> = {
   ...fileRoutes,
@@ -35,6 +36,7 @@ const ROUTES: Record<string, RouteHandler> = {
   ...turnRoutes,
   ...opRoutes,
   ...doctorRoutes,
+  ...routineRoutes,
 };
 
 export class WorkspaceBase implements DurableObject {
