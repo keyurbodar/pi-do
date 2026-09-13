@@ -44,10 +44,9 @@ icon rail, and selects a bot to address it. State persists to localStorage.
 - Sidebar header, left to right: `rail-toggle` (Collapse sidebar),
   `roster-search` (placeholder "Search"), `new-bot-button` (aria-label
   "Create", plus icon).
-- Every bot/group row is `roster-row-{id}`; hovering a row reveals
-  `row-actions-{id}` (aria-label "Actions for {name}"); right-clicking a row
-  opens the same floating menu. Section headers expose
-  `section-actions-{name}`.
+- Every bot/group row is `roster-row-{id}`; right-clicking a row opens the
+  floating context menu (the hover ellipsis button was removed). Section
+  headers open their menu the same way.
 - Row menu items: `menu-pin` (bots only, "Pin"/"Unpin"), `menu-move-{sectionId}`
   (one per existing section, plus "No section" when the row is in one),
   `menu-delete` ("Delete", or "Delete section" for a section header).
@@ -80,8 +79,8 @@ Preconditions:
   Pinned area and section headers are gone while searching). Type `zzz`
   instead and the list shows "No bots match". Press Escape in the field to
   clear; the full list returns. Store `03-search.png` and `04-no-match.png`.
-- **Pin.** Hover `roster-row-inbox-manager`, click
-  `row-actions-inbox-manager`, then `menu-pin` (label "Pin"). A "Pinned"
+- **Pin.** Right-click `roster-row-inbox-manager`, then click
+  `menu-pin` (label "Pin"). A "Pinned"
   header with count appears at the top of the list and the row moves under
   it with a pin icon. Click `menu-pin` again ("Unpin") to restore. Store
   `05-pinned.png`.
@@ -101,15 +100,14 @@ Preconditions:
 - **Create section and move.** Click `new-bot-button` →
   `new-section-menu-item`. The browser shows a native `window.prompt`
   ("Section name") — answer it with `Verify Section`. A section header
-  appears with count 0 and a `section-actions-Verify Section` button. Move a
-  bot into it: `row-actions-{botId}` → `menu-move-{sectionId}`; the section
-  count increments and the row renders under the header. Click the section
-  header: `aria-expanded` flips and the children hide/show. Store
-  `08-section.png`.
-- **Delete.** Open `row-actions-{botId}` on the created bot and click
-  `menu-delete`: the row disappears and the section count drops. Open
-  `section-actions-Verify Section` → `menu-delete` (label "Delete
-  section"): the header disappears. Store `09-deleted.png`.
+  appears with count 0. Move a bot into it: right-click the bot row, then
+  `menu-move-{sectionId}`; the section count increments and the row renders
+  under the header. Click the section header: `aria-expanded` flips and the
+  children hide/show. Store `08-section.png`.
+- **Delete.** Right-click the created bot's row and click `menu-delete`: the
+  row disappears and the section count drops. Right-click the
+  `Verify Section` header and click `menu-delete` (label "Delete section"):
+  the header disappears. Store `09-deleted.png`.
 - **Rail.** Click `rail-toggle`. The sidebar becomes
   `[data-testid="roster-sidebar"][data-collapsed="true"]`: a 56px column of
   round avatars (still `roster-row-{id}`, `title` = bot name) with
