@@ -20,8 +20,11 @@ import { ArrowUp, Bookmark, FileText, Mic, Plus, Square, X } from "lucide-react"
 
 import { StashMenu, type StashEntry } from "./StashMenu";
 
+import { clearReplyTarget, useReplyTarget } from "../chat/replyStore";
+
 export type SubmitOpts = {
   model?: string;
+  reply?: { label: string; text: string };
 };
 
 export type MentionBot = {
@@ -51,8 +54,8 @@ export type PromptInputProps = {
   // v1 wires to the session WS send path; keep send() clearing behavior.
   // Second arg carries the per-draft model pick; old callers ignore it.
   onSubmit?: (text: string, opts?: SubmitOpts) => void;
-  // While a turn streams, the send button morphs into Stop (Square) and
-  // fires onAbort instead — the only brake on a stuck turn.
+  // While a turn streams the send button stays Send (disabled); Escape is
+  // the only abort path and fires onAbort.
   running?: boolean;
   onAbort?: () => void;
   // Placeholder reads "Message {botName}".
@@ -376,6 +379,17 @@ export function PromptInput({
 
   const hasText = value.trim().length > 0;
 
+  // Reply target: the controlled replyTo prop wins; otherwise the module
+  // store armed by MessageBubble reply actions.
+  const storeReply = useReplyTarget();
+  const activeReplyLabel = replyTo === null || replyTo === undefined ? storeReply?.label : replyTo.id;
+  const activeReplyText = replyTo === null || replyTo === undefined ? storeReply?.text : replyTo.text;
+  const hasActiveReply = activeReplyLabel !== undefined && activeReplyText !== undefined;
+  const cancelReply = () => {
+    onCancelReply?.();
+    clearReplyTarget();
+  };
+
   const appendAttachments = (added: readonly Attachment[]) => {
     if (added.length === 0) return;
     const updated = [...attachmentsRef.current, ...added];
@@ -417,7 +431,13 @@ export function PromptInput({
     attachmentsRef.current = [];
     setAttachments([]);
     releaseAttachments(staged);
-    onSubmit?.(text, model === "default" ? {} : { model });
+    onSubmit?.(text, {
+      ...(model === "default" ? {} : { model }),
+      ...(hasActiveReply && activeReplyLabel !== undefined && activeReplyText !== undefined
+        ? { reply: { label: activeReplyLabel, text: activeReplyText } }
+        : {}),
+    });
+    if (hasActiveReply) cancelReply();
     requestAnimationFrame(() => textareaRef.current?.focus());
   };
 
@@ -484,6 +504,8 @@ export function PromptInput({
     if (e.key === "Escape") {
       setIsModelMenuOpen(false);
       setIsStashMenuOpen(false);
+      // The send button never morphs into Stop; Escape is the only abort path.
+      if (running) onAbort?.();
       return;
     }
     if ((e.key === "ArrowDown" || e.key === "ArrowUp") && activeToken !== null) {
@@ -663,7 +685,7 @@ export function PromptInput({
         </div>
       ) : null}
 
-      {replyTo !== null && replyTo !== undefined ? (
+      {hasActiveReply ? (
         <div
           data-testid="composer-reply-preview"
           className="mb-2 flex items-center gap-2 rounded-[var(--control-radius)] border border-input bg-secondary px-3 py-1.5"
@@ -673,13 +695,13 @@ export function PromptInput({
             className="w-0.5 shrink-0 self-stretch rounded-full bg-primary"
           />
           <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-            {replyTo.text}
+            Replying to {activeReplyLabel}: {activeReplyText}
           </p>
           <button
             type="button"
             data-testid="reply-dismiss"
             aria-label="Dismiss reply"
-            onClick={() => onCancelReply?.()}
+            onClick={cancelReply}
             className="flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground"
           >
             <X className="size-3.5" />
@@ -903,22 +925,13 @@ export function PromptInput({
                 <button
                   type="button"
                   data-testid="composer-send"
-                  data-status={running ? "streaming" : "ready"}
-                  aria-label={running ? "Stop" : "Send"}
-                  disabled={!hasText && !running}
-                  onClick={running ? onAbort : send}
-                  className={[
-                    "flex size-9 shrink-0 items-center justify-center rounded-full transition-transform",
-                    running
-                      ? "bg-[var(--error-surface)] text-destructive hover:scale-105"
-                      : "bg-primary text-primary-foreground disabled:opacity-25",
-                  ].join(" ")}
+                  data-status="ready"
+                  aria-label="Send"
+                  disabled={!hasText}
+                  onClick={send}
+                  className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-transform disabled:opacity-25"
                 >
-                  {running ? (
-                    <Square size={12} fill="currentColor" />
-                  ) : (
-                    <ArrowUp className="size-5" />
-                  )}
+                  <ArrowUp className="size-5" />
                 </button>
               </div>
             </div>
