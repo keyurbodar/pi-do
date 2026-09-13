@@ -1,102 +1,173 @@
-/* frontend/web/src/theme.css — interior.dev material system
-   (refs/interior/app/globals.css): bezel/panel/well surfaces, hairline rings
-   instead of borders, ink scale, mono metadata. Shadcn-preset var names are
-   kept as aliases so existing module CSS keeps working. Dark is locked at
-   the document (index.html). */
-:root {
-  /* interior surfaces */
-  --bezel: #141312;
-  --panel: #1d1d1a;
-  --well: #252522;
-  --sub: #1a1a17;
-  --hairline: rgba(255, 255, 255, 0.16);
-  --hairline-strong: rgba(255, 255, 255, 0.28);
-  --ink: #f8f8f4;
-  --ink-2: #c2c2ba;
-  --ink-3: #93938b;
-  --accent: rgba(147, 176, 255, 0.14);
-  --accent-soft: rgba(147, 176, 255, 0.14);
-  --accent-ink: #93b0ff;
-  --moss: #5bd79c;
-  --moss-tint: rgba(91, 215, 156, 0.12);
-  --flag: #f5897f;
-  --flag-tint: rgba(245, 137, 127, 0.12);
-  --orange: #d99a62;
-  --hover: rgba(255, 255, 255, 0.06);
-  --hover-2: rgba(255, 255, 255, 0.1);
+/* frontend/web/src/theme.css — Tailwind v4 entry.
+   Tokens ported from refs/akeru-bot/apps/web/src/index.css (MIT).
+   Akeru is a dark chat UI; its dark values are baked in as the base theme
+   (index.html locks dark via class="dark" + color-scheme). Legacy
+   interior.dev variable names are kept as aliases so existing module CSS
+   keeps working. */
+@import "tailwindcss";
 
-  /* interior shadows: borders are hairline rings, not lines */
+@custom-variant dark (&:is(.dark, .dark *));
+
+/* Akeru base typography + animation tokens (akeru @theme).
+   Geist ships via @fontsource in akeru; here the stacks fall back to
+   system fonts until the font packages are added. */
+@theme {
+  --font-sans:
+    "Geist Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono:
+    "Geist Mono Variable", "SF Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono",
+    monospace;
+  --animate-blink: blink 1s step-end infinite;
+  --animate-shimmer: shimmer 1.8s linear infinite;
+}
+
+/* Global keyframes for the chat UI (caret blink, gradient shimmer). Kept
+   outside @theme so they are always emitted, not tree-shaken until first
+   utility use; --animate-* above exposes them as animate-blink/animate-shimmer. */
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* Utility-facing color/radius namespaces mapped onto the semantic vars
+   (akeru uses @theme inline for the same reason: utilities must follow
+   the variables, not snapshot them at build time). */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-panel: var(--panel);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-muted-foreground: var(--sidebar-muted-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-error: var(--error);
+  --color-error-foreground: var(--error-foreground);
+  --color-surface-raised: var(--surface-raised);
+  --color-code: var(--code-background);
+  --color-code-foreground: var(--code-foreground);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+}
+
+:root {
+  color-scheme: dark;
+
+  /* Akeru core palette — the @variant dark values from akeru's :root theme,
+     resolved from Tailwind v4 defaults (neutral/red/emerald/amber/blue). */
+  --radius: 0.625rem;
+  --background: oklch(0.145 0 0); /* neutral-950 */
+  --foreground: oklch(0.97 0 0); /* neutral-100 */
+  --card: color-mix(in srgb, var(--background) 97%, #fff);
+  --card-foreground: var(--foreground);
+  --popover: color-mix(in srgb, var(--background) 94%, #fff);
+  --popover-foreground: var(--foreground);
+  --primary: oklch(0.571 0.21 264);
+  --primary-foreground: #fff;
+  --secondary: rgb(255 255 255 / 4%);
+  --secondary-foreground: var(--foreground);
+  --muted: rgb(255 255 255 / 4%);
+  --muted-foreground: color-mix(in srgb, oklch(0.556 0 0) 90%, #fff); /* neutral-500 90% + white */
+  --placeholder: var(--muted-foreground);
+  --secondary-label: var(--muted-foreground);
+  --icon-muted: var(--muted-foreground);
+  --accent: rgb(255 255 255 / 4%);
+  --accent-foreground: var(--foreground);
+  --destructive: color-mix(in srgb, oklch(0.637 0.237 25.331) 90%, #fff); /* red-500 90% + white */
+  --destructive-foreground: oklch(0.704 0.191 22.216); /* red-400 */
+  --border: rgb(255 255 255 / 6%);
+  --input: rgb(255 255 255 / 8%);
+  --ring: var(--primary);
+  --surface-raised: var(--secondary);
+  --message-surface: var(--accent);
+  --message-foreground: var(--foreground);
+  --code-background: color-mix(in srgb, var(--card) 90%, var(--background));
+  --code-foreground: var(--foreground);
+  --error: var(--destructive);
+  --error-foreground: var(--destructive-foreground);
+  --error-surface: color-mix(in srgb, var(--error) 16%, transparent);
+  --success: oklch(0.696 0.17 162.48); /* emerald-500 */
+  --success-foreground: oklch(0.765 0.177 163.223); /* emerald-400 */
+  --info: oklch(0.623 0.214 259.815); /* blue-500 */
+  --info-foreground: oklch(0.707 0.165 254.624); /* blue-400 */
+  --warning: oklch(0.769 0.188 70.08); /* amber-500 */
+  --warning-foreground: oklch(0.828 0.189 84.429); /* amber-400 */
+  --warning-surface: color-mix(in srgb, var(--warning) 16%, transparent);
+  --sidebar: var(--card);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-muted-foreground: var(--muted-foreground);
+  --sidebar-border: var(--border);
+  --control-radius: 0.5rem;
+
+  /* Legacy interior.dev names → akeru values (aliases for existing module CSS). */
+  --bg: var(--background);
+  --bezel: var(--background);
+  --panel: var(--card);
+  --well: var(--code-background);
+  --sub: var(--popover);
+  --hairline: var(--border);
+  --hairline-strong: var(--input);
+  --ink: var(--foreground);
+  --ink-2: oklch(0.87 0 0); /* neutral-300 */
+  --ink-3: var(--muted-foreground);
+  --accent-ink: var(--primary);
+  --accent-soft: var(--accent);
+  --moss: var(--success);
+  --moss-tint: color-mix(in srgb, var(--success) 12%, transparent);
+  --flag: var(--destructive);
+  --flag-tint: var(--error-surface);
+  --orange: var(--warning);
+  --hover: var(--accent);
+  --hover-2: rgb(255 255 255 / 8%);
+
+  /* interior shadows kept: akeru elevates with hairline borders and has no
+     shadow tokens; these reference the hairline vars above. */
   --shadow-float: 0 28px 56px -24px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.08);
   --shadow-lift: 0 1px 2px rgba(0, 0, 0, 0.2), 0 0 0 1px var(--hairline);
   --shadow-well: inset 0 1px 2px rgba(0, 0, 0, 0.2), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
   --shadow-row: inset 0 0 0 1px rgba(255, 255, 255, 0.07), 0 1px 2px rgba(0, 0, 0, 0.12);
 
-  /* interior radii + motion */
-  --radius-chip: 6px;
-  --radius-control: 8px;
-  --radius-card: 10px;
+  --radius-chip: calc(var(--radius) - 4px);
+  --radius-control: var(--control-radius);
+  --radius-card: var(--radius);
   --ease-out-strong: cubic-bezier(0.23, 1, 0.32, 1);
-
-  /* shadcn-preset aliases (b1D0dxmC slot, values now interior) */
-  --background: var(--bezel);
-  --foreground: var(--ink);
-  --card: var(--panel);
-  --card-foreground: var(--ink);
-  --popover: var(--panel);
-  --popover-foreground: var(--ink);
-  --primary: var(--ink);
-  --primary-foreground: var(--bezel);
-  --secondary: var(--well);
-  --secondary-foreground: var(--ink);
-  --muted: var(--well);
-  --muted-foreground: var(--ink-3);
-  --accent-foreground: var(--accent-ink);
-  --destructive: var(--flag);
-  --border: var(--hairline);
-  --input: var(--hairline);
-  --ring: var(--accent-ink);
-  --radius: var(--radius-card);
-  --font-sans: "Geist", "Inter", ui-sans-serif, system-ui, -apple-system,
-    "Segoe UI", sans-serif;
-  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
-}
-
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme]) {
-    /* interior light */
-    --bezel: #ffffff;
-    --panel: #ffffff;
-    --well: #fafafa;
-    --sub: #fafafa;
-    --hairline: rgba(0, 0, 0, 0.14);
-    --hairline-strong: rgba(0, 0, 0, 0.26);
-    --ink: #131313;
-    --ink-2: #454545;
-    --ink-3: #6e6e6e;
-    --accent: #edf1ff;
-    --accent-soft: #edf1ff;
-    --accent-ink: #4568ff;
-    --moss: #3d7a4e;
-    --moss-tint: rgba(61, 122, 78, 0.1);
-    --flag: #c0442f;
-    --flag-tint: rgba(192, 68, 47, 0.08);
-    --orange: #b3702f;
-    --hover: rgba(0, 0, 0, 0.04);
-    --hover-2: rgba(0, 0, 0, 0.07);
-    --shadow-float: 0 28px 56px -24px rgba(0, 0, 0, 0.22), 0 0 0 1px rgba(0, 0, 0, 0.06);
-    --shadow-lift: 0 1px 2px rgba(0, 0, 0, 0.04), 0 0 0 1px var(--hairline);
-    --shadow-well: inset 0 1px 2px rgba(0, 0, 0, 0.05), inset 0 0 0 1px rgba(0, 0, 0, 0.1);
-    --shadow-row: inset 0 0 0 1px rgba(0, 0, 0, 0.07), 0 1px 2px rgba(0, 0, 0, 0.05);
-    --background: var(--bezel);
-    --foreground: var(--ink);
-    --card: var(--panel);
-    --primary: var(--ink);
-    --primary-foreground: #ffffff;
-    --muted: var(--well);
-    --muted-foreground: var(--ink-3);
-    --destructive: var(--flag);
-    --border: var(--hairline);
-  }
 }
 
 *,
@@ -104,16 +175,16 @@
 *::after {
   border-color: var(--border);
 }
-:root {
-  color-scheme: dark;
-}
 
 html,
 body {
   margin: 0;
   padding: 0;
+  overscroll-behavior: none;
 }
 
+/* Akeru base typography (font-family via the theme token) merged with the
+   app's body sizing that module CSS depends on. */
 body {
   background: var(--background);
   color: var(--foreground);
@@ -121,7 +192,6 @@ body {
   font-size: 14px;
   letter-spacing: -0.01em;
   line-height: 1.5;
-  font-feature-settings: "cv11", "ss01";
   -webkit-font-smoothing: antialiased;
   height: 100dvh;
   overflow: hidden;

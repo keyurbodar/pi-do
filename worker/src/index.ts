@@ -10,7 +10,7 @@ export { WorkspaceDO, ShellWorker };
 interface Env extends ForwardEnv {}
 
 const app = new Hono<{ Bindings: Env }>()
-  .use(cors({ origin: ["http://localhost:5173", "http://127.0.0.1:5173"] }))
+  .use(cors({ origin: ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3001", "http://127.0.0.1:3001", "http://localhost:3002", "http://127.0.0.1:3002", "http://localhost:3003", "http://127.0.0.1:3003", "http://localhost:3004", "http://127.0.0.1:3004", "http://localhost:5173", "http://127.0.0.1:5173"] }))
   .get("/", (c) => Response.json({ ok: true, service: "pi-do" }))
   .post("/workspaces", (c) => createWorkspace(c.env))
   .post(ROUTE.sessions.outer, (c) => forwardToWorkspace(c.env, c.req.param("id"), ROUTE.sessions.inner, c.req))

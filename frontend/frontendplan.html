@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pi-do Frontend Plan — Grok-style Agent Chat UI</title>
+<style>
+  :root {
+    --bg: #0d0d0f;
+    --panel: #16161a;
+    --panel-2: #1c1c22;
+    --border: #2a2a32;
+    --text: #e8e8ec;
+    --muted: #9a9aa6;
+    --accent: #f5a623;
+    --green: #4ade80;
+    --blue: #60a5fa;
+    --red: #f87171;
+    --purple: #a78bfa;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.55;
+    padding: 48px 24px 96px;
+    max-width: 1060px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 28px; letter-spacing: -0.02em; margin-bottom: 6px; }
+  h2 { font-size: 20px; margin: 48px 0 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border); letter-spacing: -0.01em; }
+  h3 { font-size: 15px; margin: 24px 0 10px; color: var(--accent); }
+  p, li { color: var(--text); font-size: 14px; }
+  .sub { color: var(--muted); font-size: 14px; margin-bottom: 24px; }
+  ul, ol { padding-left: 22px; margin: 8px 0; }
+  li { margin: 4px 0; }
+  code {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 1px 6px;
+    font-family: "SF Mono", ui-monospace, Menlo, monospace;
+    font-size: 12.5px;
+    color: var(--blue);
+  }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0 20px; font-size: 13.5px; }
+  th { text-align: left; color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+  th, td { padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  td:first-child { white-space: nowrap; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 22px;
+    margin: 14px 0;
+  }
+  .phase-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 6px; }
+  .phase-num {
+    background: var(--accent); color: #000; font-weight: 700; font-size: 12px;
+    border-radius: 6px; padding: 2px 9px; letter-spacing: 0.04em;
+  }
+  .phase-title { font-size: 17px; font-weight: 700; }
+  .meta { color: var(--muted); font-size: 12.5px; margin-bottom: 12px; }
+  .check { list-style: none; padding-left: 0; }
+  .check li { padding-left: 26px; position: relative; margin: 6px 0; }
+  .check li::before {
+    content: ""; position: absolute; left: 0; top: 3px;
+    width: 14px; height: 14px; border: 1.5px solid var(--muted);
+    border-radius: 4px;
+  }
+  .tag { display: inline-block; font-size: 11px; font-weight: 600; border-radius: 5px; padding: 1px 8px; margin-left: 8px; vertical-align: middle; }
+  .tag.main { background: rgba(96,165,250,.15); color: var(--blue); }
+  .tag.wt { background: rgba(167,139,250,.15); color: var(--purple); }
+  .tag.par { background: rgba(74,222,128,.12); color: var(--green); }
+  .tag.block { background: rgba(248,113,113,.12); color: var(--red); }
+  .wave { display: flex; gap: 14px; flex-wrap: wrap; margin: 14px 0; }
+  .wave-box { flex: 1; min-width: 220px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .wave-box h4 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
+  .arrow-row { text-align: center; color: var(--muted); font-size: 18px; margin: 2px 0; }
+  .risk { border-left: 3px solid var(--red); padding-left: 14px; margin: 10px 0; }
+  .risk strong { color: var(--red); }
+  .note { border-left: 3px solid var(--accent); padding-left: 14px; margin: 10px 0; color: var(--muted); }
+  a { color: var(--blue); }
+</style>
+</head>
+<body>
+
+<h1>pi-do Frontend Plan</h1>
+<p class="sub">Grok-style multi-agent chat UI for <code>frontend/web</code> &mdash; React 19 + rsbuild, hono/SSE worker backend (untouched). UI only. Akeru-bot view layer as reference, bloub engine for avatars. Scope = full akeru roster + thread surface, nothing akeru doesn't ship.</p>
+
+<h2>Decisions locked</h2>
+<table>
+  <tr><th>Decision</th><th>Choice</th><th>Why</th></tr>
+  <tr><td>Port strategy</td><td>Native shell, cherry-pick akeru views</td><td>Akeru's Effect-RPC state layer is unportable; its view components are.</td></tr>
+  <tr><td>Styling</td><td>Tailwind v4 (postcss plugin in rsbuild)</td><td>Akeru components port nearly verbatim; existing <code>theme.css</code> tokens map into the Tailwind theme.</td></tr>
+  <tr><td>Roster data</td><td>Typed fixtures behind <code>lib/roster.ts</code></td><td>No backend work; one-file swap to real sessions later.</td></tr>
+  <tr><td>Avatars</td><td>bloub procedural SVG engine (MIT)</td><td>Pure TS, zero deps, drops into React as-is. 14 states, 16 expressions, 8 shapes, 12 colors.</td></tr>
+  <tr><td>Out of scope</td><td>Window chrome, browser/screen preview, channels/memory/sandbox/routines/voice backends, server-side bot persistence</td><td>Desktop-only or backend-coupled &mdash; violates "UI only".</td></tr>
+  <tr><td>UI construction rule</td><td>Never write UI from scratch. Install akeru's deps when ported components need them. When a UI component exists in multiple <code>refs/</code> libraries, pick by precedence: <code>refs/interior</code> first, then <code>refs/coss</code>, then the rest (ui-components, blocks, computer, pi, nanocodex)</td><td>Hand-rolled UI drifts and ships slower; the references already solved the pattern. Fixed precedence removes per-component debates.</td></tr>
+  <tr><td>Theme &amp; typography</td><td>Match akeru exactly. Tailwind theme tokens (colors, radii, fonts, spacing) and typography scale port from akeru's <code>apps/web/src/index.css</code> and component classes; our <code>theme.css</code> tokens remap onto them, not the other way around</td><td>The target look is akeru's; divergent tokens would fight every ported component.</td></tr>
+  <tr><td>Self-verification loop</td><td>Project-local <code>verify-web</code> skill (generated via <code>/create-verification-skill</code>) + upkeep via <code>/maintain-verification-skill</code></td><td>Typecheck and build are not proof. Every phase proves visual correctness, interactions, and console cleanliness on the real running app.</td></tr>
+</table>
+
+<h2>Strategy &mdash; how we port</h2>
+<div class="card">
+  <ul>
+    <li><strong>Contract-first.</strong> Before any parallel work, commit to <code>main</code>: shared types (<code>lib/roster.ts</code> types, thread/card view-model types), Tailwind v4 wiring, theme tokens, and empty directory scaffolding. Every worktree codes against these; nobody negotiates interfaces mid-flight.</li>
+    <li><strong>Copy, then cut.</strong> Akeru components are copied into our tree first (with their MIT copyright header), then stripped of Effect/atom imports and rewired to our props/contracts. Never re-type from scratch, never port their state layer.</li>
+    <li><strong>Verify on the running app, like a user.</strong> Every phase ends with a <code>verify-web</code> drive: launch, click through the changed surface, screenshot, assert visible state, zero console errors. Typecheck and <code>rsbuild build</code> are necessary, never sufficient. The <code>verify-web</code> skill is generated in Step 0 and maintained via <code>/maintain-verification-skill</code> at integration.</li>
+    <li><strong>Fixtures are the API.</strong> Sidebar, groups, sections, presence, previews all read from <code>lib/roster.ts</code>. The open thread binds to the real <code>bootstrapSession</code>/<code>useThread</code> SSE stream. Swapping fixtures for live data later = one file.</li>
+    <li>Generate the project-local verification skill via <code>/create-verification-skill</code>: <code>.cursor/skills/verify-web/</code> with launch (rsbuild dev + worker on 8787), doctor, drive recipe (browser automation: selectors, clicks, screenshots, console-error capture), evidence location, cleanup. Seed the feature map from the current app (thread, composer) and extend it as phases land.</li>
+  </ul>
+</div>
+
+<h2>Phases &amp; checklists</h2>
+
+<div class="card">
+  <div class="phase-head"><span class="phase-num">STEP 0</span><span class="phase-title">Contracts &amp; scaffolding</span><span class="tag main">MAIN, FIRST</span></div>
+  <div class="meta">Blocks everything. Small, done by integrator before fanning out. ~half day.</div>
+  <ul class="check">
+    <li>Add Tailwind v4 to rsbuild (<code>@tailwindcss/postcss</code>). Port akeru's theme tokens (colors, radii, fonts, typography scale from <code>apps/web/src/index.css</code>) as the <code>@theme</code> source of truth; remap existing <code>theme.css</code> variables onto akeru's values.</li>
+    <li>Create <code>web/src/lib/roster.ts</code>: <code>RosterBot</code>, <code>RosterGroup</code>, <code>RosterSection</code>, presence/preview/unread types, seed fixture data (Chief, Sales Outbound, Inbox Manager, Account Manager, Talent Scout, Expense Manager, Offsite crew).</li>
+    <li>Create <code>web/src/components/thread/viewModel.ts</code>: status-card, tool-row, attachment, approval, inter-bot-message view-model types derived from existing <code>useThread</code> entries.</li>
+    <li>Directory scaffolding: <code>components/roster/</code>, <code>components/chat/</code>, <code>lib/bloub/</code>.</li>
+    <li>Commit to <code>main</code> so all worktrees branch from it.</li>
+  </ul>
+</div>
+
+<div class="card">
+  <div class="phase-head"><span class="phase-num">1</span><span class="phase-title">Bloub avatars</span><span class="tag wt">WORKTREE wt-avatar</span><span class="tag par">WAVE 1</span></div>
+  <div class="meta">No dependencies beyond Step 0. Pure lib + one component. Smallest phase &mdash; merges first.</div>
+  <ul class="check">
+    <li>Copy <code>refs/bloub/src/bot/</code> (engine, states, face, skins, expressions, repere, etc.) into <code>web/src/lib/bloub/</code> verbatim. MIT license header retained.</li>
+    <li>Write <code>Bloub.tsx</code> React renderer: rAF loop (dt clamped), inline SVG viewBox &plusmn;158, mask-cut eyes, paper underlay &mdash; port of <code>BloubBot.vue</code> props: <code>state</code>, <code>shape</code>, <code>color</code>, <code>expression</code>, <code>size</code>, <code>playing</code>, <code>frozenAt</code>.</li>
+    <li>Write <code>BotAvatar.tsx</code>: deterministic shape/color/expression/blink-phase derivation from bot id (hash), sizes for sidebar row / header / composer.</li>
+    <li>Map chat states: <code>idle</code> (gaze drift + blinks), <code>thinking</code> (typing-dots pulse), <code>alert</code>, <code>notify</code>, <code>sleep</code>.</li>
+    <li><strong>Acceptance (verify-web):</strong> demo route renders 8 shapes &times; states at 60fps; avatar animates in isolation; deterministic per-id (same id = same bot look). Drive: load demo route, screenshot, assert shapes/states visible, zero console errors.</li>
+  </ul>
+</div>
+
+<div class="card">
+  <div class="phase-head"><span class="phase-num">2</span><span class="phase-title">App shell + sidebar</span><span class="tag wt">WORKTREE wt-shell</span><span class="tag par">WAVE 1</span></div>
+  <div class="meta">Depends on Step 0 only (uses avatar placeholder until Phase 1 merges). Ports akeru <code>BotRosterSidebar.tsx</code>.</div>
+  <ul class="check">
+    <li>Two-pane shell replacing <code>App.tsx</code> single-thread layout: sidebar + chat pane; chat pane keeps existing boot states (loading / unkeyed / error / ready).</li>
+    <li>Sidebar header: search input + <code>+</code> menu (New bot / New group / New section).</li>
+    <li>Bot rows: BotAvatar, name, timestamp, one-line preview, "Typing&hellip;" state, unread dot, pin indicator.</li>
+    <li>Row context menu: pin, delete (fixture-local state).</li>
+    <li>Groups with member-stack avatars; sections with collapse; search filtering across all.</li>
+    <li>Collapsible rail mode (icon-only sidebar).</li>
+    <li>New bot dialog: name + bloub shape/color/expression picker (akeru's <code>NewBotDialog</code> + <code>AvatarPickerDialog</code> adapted). New group dialog. New section prompt.</li>
+    <li>User profile footer (static: initials + name).</li>
+    <li>Clean cutover: the new shell replaces the current single-thread UI in the same change. <code>App.tsx</code> boot states are kept; the old layout markup is not.</li>
+    <li>Selecting a bot opens its thread pane; active row highlighted.</li>
+    <li><strong>Acceptance (verify-web):</strong> drive the full sidebar like a user: search filters, create bot &rarr; row appears with unique avatar, pin/delete, group/section create, rail collapse, bot select opens thread pane. Screenshots per interaction, zero console errors.</li>
+  </ul>
+</div>
+
+<div class="card">
+  <div class="phase-head"><span class="phase-num">3</span><span class="phase-title">Thread view</span><span class="tag wt">WORKTREE wt-thread</span><span class="tag par">WAVE 1</span></div>
+  <div class="meta">Depends on Step 0 view-model types + Tailwind. Builds on existing <code>useThread</code>/SSE &mdash; no backend changes. Reference: akeru <code>MessagesTimeline</code>, <code>DelegationCard</code>, <code>BotActivityStatus</code>.</div>
+  <ul class="check">
+    <li>Chat header chip: BotAvatar + bot name (akeru <code>ActiveBotHeaderChip</code>).</li>
+    <li>Message bubbles: user right / bot left, markdown rendering (existing react-markdown + remark-gfm setup).</li>
+    <li>Status/tool cards: checklist rows ("Salesforce &rarr; list pulled &middot; 52 accounts"), running vs "Done" pill states &mdash; from view-model types.</li>
+    <li>Activity row: BotAvatar in <code>thinking</code> state + shimmer "Receiving context&hellip;" while SSE stream is pending.</li>
+    <li>Inter-bot message divider ("Messages from Account Manager and Chief").</li>
+    <li>Image attachments in messages + lightbox dialog (akeru <code>BotMessageAttachments</code> + <code>ExpandedImageDialog</code> pattern).</li>
+    <li>Auto-scroll, scroll-to-bottom affordance, error/retry row (existing <code>onRetry</code>).</li>
+    <li><strong>Acceptance (verify-web):</strong> live conversation with the worker: send a message, watch stream render, assert bubbles/cards/typing state appear and resolve; open lightbox on an image attachment; screenshots at each step; zero console errors.</li>
+  </ul>
+</div>
+
+<div class="card">
+  <div class="phase-head"><span class="phase-num">4</span><span class="phase-title">Composer + approvals + polish</span><span class="tag wt">WORKTREE wt-composer</span><span class="tag par">WAVE 1</span></div>
+  <div class="meta">Depends on Step 0 + Tailwind. Restyles existing <code>PromptInput</code>; reference akeru <code>BotPromptComposer.tsx</code>.</div>
+  <ul class="check">
+    <li>Chat-style composer: rounded pill, <code>+</code> attach button, placeholder "Message {botName}", mic button (UI only), send/stop states wired to existing <code>send</code>/<code>abort</code>.</li>
+    <li>Attachment strip: staged files with image thumbnails, remove buttons, object-URL lifecycle (akeru <code>BotPromptAttachments</code> logic).</li>
+    <li>Draft persistence per bot (localStorage, akeru <code>composerDraftStore</code> pattern).</li>
+    <li>Prompt stash menu (akeru <code>ComposerStashMenu</code> pattern, fixture-local).</li>
+    <li>Approval prompt card UI (akeru <code>BotApprovalPrompt</code>: three decision buttons) &mdash; fixture-driven flow.</li>
+    <li>Empty states: no bot selected, new bot first-run.</li>
+    <li>Polish pass: focus rings, keyboard (Enter send / Shift+Enter newline), scroll behavior, dark theme consistency.</li>
+    <li><strong>Acceptance (verify-web):</strong> end-to-end drive: type &rarr; send &rarr; stream renders &rarr; typing indicator &rarr; done; stage attachment &rarr; thumbnail + remove; draft survives reload; approval card buttons respond. Screenshots per step; zero console errors.</li>
+  </ul>
+</div>
+
+<div class="card">
+  <div class="phase-head"><span class="phase-num">5</span><span class="phase-title">Integration &amp; ship</span><span class="tag main">MAIN, INTEGRATOR</span></div>
+  <div class="meta">After waves merge. One owner; no parallel edits here.</div>
+  <ul class="check">
+    <li>Merge order: <code>wt-avatar</code> &rarr; <code>wt-shell</code> &rarr; <code>wt-thread</code> &rarr; <code>wt-composer</code> (resolve avatar placeholder &rarr; real BotAvatar at first merge).</li>
+    <li>Run <code>/maintain-verification-skill</code>: reconcile the feature map with the new UI surface (sidebar, thread, composer, approvals), fix harness gaps the new components exposed.</li>
+    <li>Interaction bug sweep via <code>verify-web</code>: every mapped feature driven live &mdash; focus traps, scroll jank, double-submit, stale draft, broken lightbox, console errors. Findings triaged: product bug &rarr; fix; map drift &rarr; fix map.</li>
+    <li>Full smoke test on <code>localhost:3000</code>: sidebar interactions, live thread, composer, approvals.</li>
+    <li>Delete the placeholder avatar and unused akeru imports left by the merges.</li>
+    <li>Typecheck (<code>tsc --noEmit</code>) + build (<code>rsbuild build</code>) clean.</li>
+    <li>Delete superseded current-UI code by name: old layout in <code>App.tsx</code> (replaced), <code>components/shell/</code>, <code>components/bui/</code>, <code>components/aicss/</code>, and any <code>components/thread/</code> or <code>components/prompt-input/</code> pieces the new thread/composer replaced. Keep <code>useThread</code>, <code>session.ts</code>, <code>hc-client.ts</code> (live wiring). Grep for imports before each deletion; nothing orphaned survives.</li>
+  </ul>
+</div>
+
+<h2>Parallelization &mdash; worktree plan</h2>
+
+<p>Four phases run as <strong>three parallel worktrees + one</strong>. Step 0 lands on <code>main</code> first; everything branches from it. All four phase worktrees can start the same day.</p>
+
+<div class="wave">
+  <div class="wave-box">
+    <h4>Step 0 &mdash; main (serial)</h4>
+    <p>Contracts, Tailwind, scaffolding, fixtures seed.</p>
+    <p class="arrow-row">&darr; commit to main</p>
+  </div>
+  <div class="wave-box">
+    <h4>Wave 1 &mdash; parallel &times;4</h4>
+    <p><code>wt-avatar</code> (Phase 1)<br>
+       <code>wt-shell</code> (Phase 2)<br>
+       <code>wt-thread</code> (Phase 3)<br>
+       <code>wt-composer</code> (Phase 4)</p>
+  </div>
+  <div class="wave-box">
+    <h4>Wave 2 &mdash; main (serial)</h4>
+    <p>Merge in dependency order, integrate, smoke test, ship.</p>
+  </div>
+</div>
+
+<h3>Worktree mechanics</h3>
+<div class="card">
+  <ul>
+    <li>Create: <code>git worktree add .worktrees/wt-avatar -b wt-avatar main</code> (repo already uses <code>.worktrees/</code>).</li>
+    <li>Each worktree: own <code>npm install</code> in <code>frontend/web</code>; own dev server on a distinct port (<code>rsbuild dev --port 3001/3002/3003/3004</code>) so agents verify visually without clobbering each other.</li>
+    <li>The worker (<code>localhost:8787</code>) is shared &mdash; one instance, already running as process <code>worker</code>. CORS already allows the 3000&ndash;300x localhost origins pattern (extend allowlist if a new port is added).</li>
+    <li>Merge with <code>git merge</code> in order; rebase a worktree on main if a later-merged sibling touched shared files.</li>
+  </ul>
+</div>
+
+<h3>Shared-file rules (conflict avoidance)</h3>
+<table>
+  <tr><th>File/area</th><th>Owner</th><th>Rule</th></tr>
+  <tr><td><code>App.tsx</code></td><td>wt-shell</td><td>Only wt-shell edits the app entry. Others never touch it.</td></tr>
+  <tr><td><code>theme.css</code> / Tailwind theme</td><td>Step 0</td><td>Frozen after Step 0; additions via worktree-local CSS only.</td></tr>
+  <tr><td><code>lib/roster.ts</code> types</td><td>Step 0</td><td>Frozen contract. Fixtures data may grow inside wt-shell only.</td></tr>
+  <tr><td><code>components/thread/viewModel.ts</code></td><td>Step 0</td><td>wt-thread consumes; changes negotiated via hub message, not silent edits.</td></tr>
+  <tr><td><code>components/thread/</code> (existing useThread)</td><td>wt-thread</td><td>wt-thread may extend; others read-only.</td></tr>
+  <tr><td><code>components/prompt-input/</code></td><td>wt-composer</td><td>Exclusive to wt-composer.</td></tr>
+  <tr><td><code>lib/bloub/</code>, avatar components</td><td>wt-avatar</td><td>Exclusive; others import the contract (<code>BotAvatarProps</code>) defined in Step 0.</td></tr>
+</table>
+
+<h3>Cross-worktree coordination</h3>
+<div class="card">
+  <ul>
+    <li>Subagents coordinate via <code>hub</code> messages, not by reading each other's worktrees.</li>
+    <li><code>wt-shell</code> codes sidebar rows against <code>BotAvatarProps</code> with a static placeholder SVG; swaps to real <code>BotAvatar</code> at merge time (one import line).</li>
+    <li><code>wt-thread</code> and <code>wt-composer</code> are fully disjoint (timeline vs composer) &mdash; zero shared files beyond Step 0 contracts.</li>
+    <li>If a contract proves wrong, the discovering agent messages the integrator; contract change lands on <code>main</code>, others rebase. Never negotiate inside a worktree.</li>
+  </ul>
+</div>
+
+<h2>Verification plan &mdash; self-verification loop</h2>
+<div class="card">
+  <p><strong>Principle:</strong> typecheck and build are not proof. Proof is the app running, driven the way a user drives it, with captured evidence. The loop lives in a project-local skill so every agent verifies identically, in this session or the next.</p>
+  <h3>The verify-web skill (generated in Step 0 via /create-verification-skill)</h3>
+  <ul>
+    <li><strong>Launch:</strong> <code>rsbuild dev</code> (port per worktree) + shared worker on 8787; readiness = port answering + build banner.</li>
+    <li><strong>Doctor:</strong> process up, port owned, worker reachable, page loads without console errors.</li>
+    <li><strong>Drive:</strong> browser automation with stable selectors (<code>data-testid</code> on new components &mdash; akeru does the same); clicks, typing, waits on visible state, never blind sleeps.</li>
+    <li><strong>Evidence:</strong> screenshot per step + console-error log + asserted visible state, stored under a named evidence dir; cleanup never deletes evidence.</li>
+    <li><strong>Feature map:</strong> one file per user-facing feature (sidebar search, bot create, thread send/stream, attachments, approvals, composer drafts&hellip;), each with the user-POV path, drive recipe, and the observable end state that proves it.</li>
+  </ul>
+  <h3>Per-phase loop</h3>
+  <ol>
+    <li>Implement &rarr; typecheck + build (necessary, not sufficient).</li>
+    <li>Drive the changed surface with verify-web: real user paths, screenshot each interaction, assert visible outcomes.</li>
+    <li>Interaction checks: hover/focus states, empty states, error paths (worker down, stream drop), double-submit, keyboard nav, console clean.</li>
+    <li>Bug found &rarr; reproduce on the driven surface first, fix root cause, re-drive until green. Receipts (screenshots + console log) attached to the phase report.</li>
+  </ol>
+  <h3>Upkeep</h3>
+  <ul>
+    <li>New UI surface lands &rarr; feature map gains a file in the same PR (the map rots otherwise).</li>
+    <li>At integration: full <code>/maintain-verification-skill</code> pass &mdash; source wave + live pass over every feature.</li>
+  </ul>
+  <h3>Per-worktree specifics</h3>
+  <ul>
+    <li>Each worktree verifies on its own port against the shared worker; evidence per worktree.</li>
+    <li>Phase 1 additionally: throwaway render harness comparing bloub React output against <code>refs/bloub</code> Vue demo states (same <code>sample(t)</code> calls &rarr; same paths).</li>
+    <li>Phase 3: live conversation against the real worker &mdash; bubbles, stream, typing, cards all observed.</li>
+    <li>Integration: full verify-web click-through on <code>localhost:3000</code> + <code>tsc --noEmit</code> + <code>rsbuild build</code>.</li>
+  </ul>
+</div>
+
+<h2>Risks</h2>
+<div class="risk"><strong>Akeru components are deeper-coupled than they look.</strong> Some "view" files import atoms/commands internally. Mitigation: copy &rarr; strip &rarr; rewire is scoped per component; if a component exceeds ~2h of decoupling, rebuild it thin against our contracts using akeru only as visual reference.</div>
+<div class="risk"><strong>bloub renderer port subtle bugs.</strong> Mask/paper layering is finicky (eyes are holes; back arcs must not show through). Mitigation: engine copied verbatim; only the ~250-line renderer is new; compared frame-by-frame against the Vue demo.</div>
+<div class="risk"><strong>Thread view-model mismatch.</strong> Our SSE entries may not carry tool-status data the cards need. Mitigation: Step 0 maps actual <code>useThread</code> entry shapes first; cards render whatever exists, degrade gracefully &mdash; no backend changes to invent fields.</div>
+<div class="risk"><strong>Tailwind v4 + rsbuild friction.</strong> Version compat issues possible. Mitigation: proven in Step 0 alone before anyone branches; fallback is CSS-modules per component (slower, decided only if Step 0 fails).</div>
+<p class="note" style="margin-top:36px">Repos cloned at <code>refs/akeru-bot</code> and <code>refs/bloub</code> (both MIT). Verification skills installed: <code>/create-verification-skill</code> and <code>/maintain-verification-skill</code> (they generate and upkeep the project-local <code>verify-web</code> skill in Step 0). Both dev servers currently running: web on <code>:3000</code>, worker on <code>:8787</code>.</p>
+
+
+</body>
+</html>

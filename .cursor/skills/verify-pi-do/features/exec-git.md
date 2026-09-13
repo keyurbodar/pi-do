@@ -7,14 +7,15 @@ footguns.
 ## Sub-features
 
 - `exec-once` runs one command via `POST /workspaces/{id}/exec` and returns output.
-- `git-read` runs allowlisted git reads via `POST .../sessions/{sid}/git`.
-- `git-reject` refuses off-allowlist argv before execution: unknown/networked argv → 403, deferred local writes → 501.
+- `git-read` runs allowlisted git argv via `POST .../sessions/{sid}/git` (reads plus `commit`, `add`, `push`, `pull`, `fetch`, `clone` per the git.ts hint — the allowlist is structural, not read-only).
+- `git-reject` refuses malformed argv before execution: non-array/empty argv, non-string args, bad clone depth flags → 403.
+- `exec-cap` the 64-session exec cap evicts the oldest idle session and proceeds; refusal (429) only when all 64 are mid-exec (PR53).
 
 ## How to get to it (user POV)
 
 - `POST {BASE}/workspaces/{id}/exec` with `{ "command": "echo hi" }`.
 - `POST {BASE}/workspaces/{id}/sessions/{sid}/git` with `{ "argv": ["status"] }`.
-- Same git route with `{ "argv": ["push", "origin", "main"] }` for the rejection path.
+- Same git route with `{ "argv": ["not-a-git-word"] }` for the rejection path.
 
 ## Driving it with pi-do CLI
 
