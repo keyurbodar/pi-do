@@ -13,6 +13,7 @@ import {
   runIdOf,
   type EntryRow,
   type PendingPrompt,
+  type TurnInboxMessage,
   type TurnViewState,
 } from "./types";
 
@@ -127,6 +128,35 @@ function consumePending(m: Mutable, prompt: string): void {
   if (idx >= 0) m.pending.splice(idx, 1);
 }
 
+const INBOX_MESSAGE = /^message from (\S+?)(?: in thread (\S+?))?: ([\s\S]*)$/;
+
+/** Inbox-wake prompt → parsed messages. The '<inbox-changed count="N"/>'
+ * sentinel line is dropped; lines that don't match the message shape fold
+ * into the previous message's text (a body can itself contain newlines). */
+function parseInboxPrompt(prompt: string): TurnInboxMessage[] {
+  const messages: TurnInboxMessage[] = [];
+  for (const line of prompt.split("\n")) {
+    if (line.startsWith("<inbox-changed") || line.trim().length === 0) continue;
+    const match = INBOX_MESSAGE.exec(line);
+    if (match !== null) {
+      messages.push({ from: match[1], thread: match[2] ?? null, text: match[3] });
+    } else if (messages.length > 0) {
+      messages[messages.length - 1].text += `\n${line}`;
+    } else {
+      messages.push({ from: null, thread: null, text: line });
+    }
+  }
+  return messages;
+}
+
+/** Session-level row → synthetic done turn carrying only a systemEvent, so
+ * it renders as a centered row in cursor order (these rows have no runId). */
+function pushEvent(m: Mutable, cursor: number, text: string): void {
+  const turn = ensure(m, `evt:${cursor}`);
+  turn.systemEvent = text;
+  turn.status = "done";
+}
+
 function applyRow(m: Mutable, row: EntryRow): void {
   const body = parseBody(row.body);
   switch (row.type) {
@@ -135,9 +165,18 @@ function applyRow(m: Mutable, row: EntryRow): void {
       const prompt = body["prompt"];
       if (runId === null || typeof prompt !== "string" || prompt.length === 0) return;
       const turn = ensure(m, runId);
-      turn.prompt = prompt;
+      if (Array.isArray(body["inboxIds"])) {
+        // Teammate wake: the prompt is the inbox sentinel plus 'message
+        // from <sid>' lines — never a user bubble. The parsed messages
+        // render as an inbox event; the raw text stays out of the thread.
+        turn.inbox = parseInboxPrompt(prompt);
+      } else {
+        turn.prompt = prompt;
+        consumePending(m, prompt);
+      }
+      const routineId = body["routineId"];
+      if (typeof routineId === "string" && routineId.length > 0) turn.routineId = routineId;
       if (turn.startedAt === null) turn.startedAt = Date.now();
-      consumePending(m, prompt);
       return;
     }
     case "text": {
@@ -246,9 +285,27 @@ function applyRow(m: Mutable, row: EntryRow): void {
       ensure(m, runId).steers.push(text);
       return;
     }
+    case "compaction": {
+      const count = body["count"];
+      pushEvent(m, row.cursor, `Context compacted · ${typeof count === "number" ? count : "?"} entries`);
+      return;
+    }
+    case "model_change": {
+      const to = body["to"];
+      const rec = to !== null && typeof to === "object" && !Array.isArray(to) ? (to as Record<string, unknown>) : null;
+      const provider = rec !== null && typeof rec["provider"] === "string" ? rec["provider"] : null;
+      const id = rec !== null && typeof rec["id"] === "string" ? rec["id"] : null;
+      pushEvent(m, row.cursor, `Model changed to ${provider !== null && id !== null ? `${provider}/${id}` : (id ?? provider ?? "unknown")}`);
+      return;
+    }
+    case "thinking_level_change": {
+      const level = body["level"];
+      pushEvent(m, row.cursor, `Thinking level · ${typeof level === "string" && level.length > 0 ? level : "unknown"}`);
+      return;
+    }
     default:
-      // Session-level rows (model/thinking switches, compaction, usage) and
-      // unknown future types never render as turn content.
+      // Session-level rows (usage, unknown future types) never render as
+      // turn content.
       return;
   }
 }

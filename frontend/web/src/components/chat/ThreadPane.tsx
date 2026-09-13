@@ -43,6 +43,7 @@ import type { AttachmentVM } from "../thread/viewModel";
 import {
   turnToItems,
   type ChatItemVM,
+  type InboxEventVM,
   type SenderMessageBubbleVM,
   type SystemEventVM,
 } from "./mapper";
@@ -559,6 +560,7 @@ function ChatItem({
     if (item.kind === "system") return <SystemRow vm={item} />;
     if (item.kind === "thinking") return <ThinkingRow vm={item} />;
     if (item.kind === "delegation") return <DelegationCard vm={item} bots={bots} />;
+    if (item.kind === "inbox") return <InboxRow vm={item} />;
     return <UserInputCard vm={item} onAnswer={onAnswer} />;
   }
   if ("role" in item) {
@@ -601,6 +603,31 @@ function SystemRow({ vm }: { vm: SystemEventVM }) {
       <span aria-hidden className="h-px min-w-4 flex-1 bg-[var(--border)]" />
       <span className="max-w-[70%] truncate">{vm.text}</span>
       <span aria-hidden className="h-px min-w-4 flex-1 bg-[var(--border)]" />
+    </div>
+  );
+}
+
+/** Inbox wake event: the teammate messages that triggered the turn, one
+ * muted line each ("Chief · in offsite — venue's booked"). */
+function InboxRow({ vm }: { vm: InboxEventVM }) {
+  return (
+    <div
+      data-testid={`thread-item-${vm.id}`}
+      className="flex flex-col items-center gap-0.5 py-0.5 text-xs text-[var(--muted-foreground)]"
+      role="note"
+    >
+      <div className="flex w-full items-center gap-3">
+        <span aria-hidden className="h-px min-w-4 flex-1 bg-[var(--border)]" />
+        <span>Inbox</span>
+        <span aria-hidden className="h-px min-w-4 flex-1 bg-[var(--border)]" />
+      </div>
+      {vm.messages.map((msg, index) => (
+        <div key={index} className="max-w-[70%] truncate">
+          {msg.label}
+          {msg.thread !== null ? ` · in ${msg.thread}` : ""}
+          {` — ${msg.text}`}
+        </div>
+      ))}
     </div>
   );
 }

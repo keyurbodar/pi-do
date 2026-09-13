@@ -134,6 +134,19 @@ export interface TurnViewState {
    * The mapper passes them through as-is.
    */
   reactions?: { emoji: string; by: string }[];
+  /**
+   * Teammate wake: the prompt row carried inboxIds, so its text is the
+   * '<inbox-changed/>' sentinel plus 'message from <sid>[: in thread <t>]:'
+   * lines. The reducer strips the sentinel, parses the messages here, and
+   * clears prompt so no raw user bubble renders; the mapper emits an
+   * InboxEventVM instead.
+   */
+  inbox?: TurnInboxMessage[];
+  /**
+   * Routine fire: the prompt row carried routineId, so this turn was
+   * scheduled, not typed. The mapper marks it with a routine system row.
+   */
+  routineId?: string;
   /** System event line rendered as a centered row above the turn's content. */
   systemEvent?: string;
   /** Roster bot ids whose messages were folded into this turn (inter-bot). */
@@ -165,6 +178,15 @@ export interface TurnUserInput {
 export interface TurnApproval {
   title: string;
   description: string;
+}
+
+/** One delivered inbox message parsed out of an inbox-wake prompt. */
+export interface TurnInboxMessage {
+  /** Sender session id; null for lines that didn't match the message shape. */
+  from: string | null;
+  /** Group/thread id when the message was delivered into one. */
+  thread: string | null;
+  text: string;
 }
 
 export interface PendingPrompt {
