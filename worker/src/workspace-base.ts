@@ -25,7 +25,7 @@ import { makeSidLiveCheck, RECOVERY_JOB, scanTurns } from "pi-cf/store/recovery"
 import { nextRunAtMin } from "pi-cf/store/runs";
 import { listChunksForTurn } from "pi-cf/store/chunks";
 import { appendEntry, closeRun, openRun, recordTurnWithOpen } from "pi-cf/store/entries";
-import { broadcastEntry, readAttachment, redriveTurn, socketMessage, wrapSocket, executeTurn, type LiveTurn, type StreamHost, type TurnSink } from "./stream";
+import { broadcastEntries, broadcastEntry, readAttachment, redriveTurn, socketMessage, wrapSocket, executeTurn, type LiveTurn, type StreamHost, type TurnSink } from "./stream";
 import type { Agent } from "@earendil-works/pi-agent-core";
 import { clampThinkingLevel, resolveCatalogModel, type RuntimeEnv } from "./model-runtime";
 import { err, UNKNOWN_SESSION_HINT, type Env, type FenceNext, type FenceRead, type ModelTriple, type RouteCtx, type RouteHandler, type WorkspaceSettings } from "./routes/_shared";
@@ -331,13 +331,17 @@ export class WorkspaceBase implements DurableObject {
       const sink: TurnSink = {
         push() {},
         done: (doneId, turn) => {
+          const head = entryHead(sql, routine.sid).head;
           recordTurnWithOpen(sql, routine.sid, doneId, routine.prompt, turn.toolCalls, turn.result, turn.usage, turn.halt ?? null, { routineId: routine.id });
+          broadcastEntries(host, head);
         },
         fail: (failId, error) => {
           try {
+            const head = entryHead(sql, routine.sid).head;
             openRun(sql, routine.sid, failId);
             closeRun(sql, routine.sid, failId);
-            broadcastEntry(host, appendEntry(sql, routine.sid, "error", { runId: failId, error, routineId: routine.id }));
+            appendEntry(sql, routine.sid, "error", { runId: failId, error, routineId: routine.id });
+            broadcastEntries(host, head);
           } catch {
           }
         },
@@ -364,14 +368,18 @@ export class WorkspaceBase implements DurableObject {
       const sink: TurnSink = {
         push() {},
         done: (doneId, turn) => {
+          const head = entryHead(sql, sid).head;
           recordTurnWithOpen(sql, sid, doneId, prompt, turn.toolCalls, turn.result, turn.usage, turn.halt ?? null, { inboxIds: ids });
           markDelivered(sql, ws, ids, entryHead(sql, sid).head);
+          broadcastEntries(host, head);
         },
         fail: (failId, error) => {
           try {
+            const head = entryHead(sql, sid).head;
             openRun(sql, sid, failId);
             closeRun(sql, sid, failId);
-            broadcastEntry(host, appendEntry(sql, sid, "error", { runId: failId, error, inboxIds: ids }));
+            appendEntry(sql, sid, "error", { runId: failId, error, inboxIds: ids });
+            broadcastEntries(host, head);
           } catch {
           }
         },

@@ -1,6 +1,6 @@
 import { closeRun, entryHead, listEntries, openRun, recordTurnWithOpen } from "pi-cf/store/entries";
 import { buildRuntime, clampThinkingLevel, resolveCatalogModel, supportedThinkingLevels, THINKING_LEVELS, type RuntimeEnv, type RuntimeModel } from "../model-runtime";
-import { acceptStream, broadcastEntry, checkedRotate, executeTurn, parseBudgets, type TurnSink } from "../stream";
+import { acceptStream, broadcastEntries, broadcastEntry, checkedRotate, executeTurn, parseBudgets, type TurnSink } from "../stream";
 import { readArchivePage, runCompaction } from "../compaction";
 import { sessionSummarizer } from "../summarizer";
 import { MINT_WS_HINT, err, json, type RouteHandler } from "./_shared";
@@ -86,7 +86,9 @@ const run: RouteHandler = async (ctx, request, url) => {
     const sink: TurnSink = {
       push() {},
       done(doneId, turn, runtime) {
+        const head = entryHead(sql, sid).head;
         recordTurnWithOpen(sql, sid, doneId, prompt, turn.toolCalls, turn.result, turn.usage, turn.halt ?? null);
+        broadcastEntries(ctx.streamHost(ws, sid), head);
         const out = { result: turn.result, toolCalls: turn.toolCalls, runtime, usage: turn.usage, turnId, ...(turn.halt ? { halt: turn.halt } : {}) };
         response = rotated !== null ? json({ ...out, fence: rotated.fence, revision: rotated.revision }) : json(out);
       },

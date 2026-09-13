@@ -3,7 +3,7 @@ import { appendChunk, appendChunkBatch, serializeChunkBody, type BufferedChunk }
 // persistence for one broadcast frame. Separated from the turn engine
 // (stream-engine.ts) so transport framing can evolve without touching turn
 // policy. Import through ./stream, which re-exports both halves.
-import { appendEntry, getEntry, runInSyncTx, type EntriesSql } from "pi-cf/store/entries";
+import { appendEntry, getEntry, listEntries, runInSyncTx, type EntriesSql } from "pi-cf/store/entries";
 import type { InboxAccess } from "pi-cf/store/inbox";
 import { touchPiRun } from "pi-cf/store/runs";
 import type { FileStore } from "pi-cf/store/vfs-dofs";
@@ -183,6 +183,17 @@ export function broadcastEntry(host: StreamHost, cursor: number): void {
   try {
     const row = getEntry(host.sql, host.sid, cursor);
     if (row !== null) broadcast(host, { entry: row });
+  } catch {
+  }
+}
+
+// Multi-row variant for writes that land several entries in one commit
+// (recordTurnWithOpen: prompt + tool pairs + result, plus any interrupted
+// rows openRunInner appends first). Callers pass the entry head captured
+// before the write; every row after it goes out in cursor order.
+export function broadcastEntries(host: StreamHost, after: number): void {
+  try {
+    for (const row of listEntries(host.sql, host.sid, { after, limit: 1000 })) broadcast(host, { entry: row });
   } catch {
   }
 }
