@@ -205,7 +205,7 @@ export function MessageBubble({
     return (
       <div data-testid={`thread-item-${vm.id}`} className="group relative flex flex-col items-end">
         {toolbar}
-        <div className="w-fit max-w-[65%] rounded-[20px] bg-[var(--message-surface)] px-4 py-2 text-[15px] leading-6 text-[var(--message-foreground)]">
+        <div className="w-fit max-w-[80%] rounded-2xl bg-[var(--message-surface)] px-3.5 py-2 text-[15px] leading-6 text-[var(--message-foreground)]">
           {quoteBlock}
           <div className="[&>div]:text-[15px] [&>div]:leading-6 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_ul:first-child]:mt-0 [&_ul:last-child]:mb-0 [&_ol:first-child]:mt-0 [&_ol:last-child]:mb-0 [&_pre:first-child]:mt-0 [&_pre:last-child]:mb-0 [&_h1:first-child]:mt-0 [&_h2:first-child]:mt-0 [&_h3:first-child]:mt-0">
             {renderText(vm.text, bots)}
@@ -233,7 +233,7 @@ export function MessageBubble({
           <div className="flex items-start gap-0.5">
             <div className="min-w-0 flex-1">
               {quoteBlock}
-              <div className="w-fit max-w-full rounded-[20px] bg-white/[0.06] px-4 py-2.5 text-[15px] leading-relaxed [&>div]:text-[15px] [&>div]:leading-relaxed [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_ul:first-child]:mt-0 [&_ul:last-child]:mb-0 [&_ol:first-child]:mt-0 [&_ol:last-child]:mb-0 [&_pre:first-child]:mt-0 [&_pre:last-child]:mb-0 [&_h1:first-child]:mt-0 [&_h2:first-child]:mt-0 [&_h3:first-child]:mt-0">
+              <div className="w-fit max-w-[75%] rounded-2xl bg-white/[0.06] px-3.5 py-2 text-[15px] leading-[1.55] [&>div]:text-[15px] [&>div]:leading-[1.55] [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_ul:first-child]:mt-0 [&_ul:last-child]:mb-0 [&_ol:first-child]:mt-0 [&_ol:last-child]:mb-0 [&_pre:first-child]:mt-0 [&_pre:last-child]:mb-0 [&_h1:first-child]:mt-0 [&_h2:first-child]:mt-0 [&_h3:first-child]:mt-0">
                 {renderText(vm.text, bots)}
               </div>
             </div>

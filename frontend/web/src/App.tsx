@@ -266,8 +266,10 @@ function ReadyThreadInner({ session, ownerId, activeBot, bots, onActivity }: {
           onRetry={send}
           onEdit={editInComposer}
           bots={bots}
+          /* Resting face only: ThreadPane shows this slot beside the working dots,
+             and a typing/live presence would collapse the engine into dot-state. */
           avatarSlot={activeBot
-            ? <BotAvatar identity={activeBot.bloub} presence={activeBot.presence} size={36} />
+            ? <BotAvatar identity={activeBot.bloub} presence="idle" size={36} />
             : null}
         />
       </div>
