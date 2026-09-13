@@ -15,7 +15,7 @@ import type {
 } from "../thread/viewModel";
 import { stateOfTurn, toolRowOf } from "../thread/viewModel";
 import { peekReplyFor } from "./replyStore";
-import type { ToolCallView, TurnViewState } from "../thread/types";
+import type { ToolCallView, TurnInboxMessage, TurnViewState } from "../thread/types";
 
 /** Centered system row ("Created routine · Month-end close"). */
 export interface SystemEventVM {
@@ -50,6 +50,13 @@ export interface UserInputVM {
   options: string[];
 }
 
+/** Inbox wake: the teammate messages that triggered this turn. */
+export interface InboxEventVM {
+  kind: "inbox";
+  id: string;
+  messages: { label: string; thread: string | null; text: string }[];
+}
+
  /** Bot bubble carrying an optional group-thread sender label. */
  export interface SenderMessageBubbleVM extends MessageBubbleVM {
    /** Resolved sender name (from turn.senderId via the bots param); unset for 1:1 turns. */
@@ -61,7 +68,7 @@ export interface UserInputVM {
  }
  
 /** Everything the timeline renders, including the mapper-local rows. */
-export type ChatItemVM = ThreadItemVM | ThinkingRowVM | SystemEventVM | DelegationVM | UserInputVM | SenderMessageBubbleVM;
+export type ChatItemVM = ThreadItemVM | ThinkingRowVM | SystemEventVM | DelegationVM | UserInputVM | SenderMessageBubbleVM | InboxEventVM;
 
 /**
  * One turn → ordered timeline items:
@@ -79,6 +86,9 @@ export type ChatItemVM = ThreadItemVM | ThinkingRowVM | SystemEventVM | Delegati
  *   approval          → pending ApprovalVM trailing the content
  *   userInput         → UserInputVM trailing the approval
  *   systemEvent       → SystemEventVM prepended above the turn's content
+ *   routineId         → "Routine · <id>" SystemEventVM above the prompt
+ *   inbox             → InboxEventVM (teammate messages that woke the turn),
+ *                       sender sids resolved to names via the bots param
  *   interBotFrom      → InterBotMessageVM inserted before the first bot text
  *                       bubble ("Messages from Account Manager and Chief")
  *   senderId          → bot bubbles carry senderLabel, resolved via the
@@ -93,6 +103,21 @@ export function turnToItems(turn: TurnViewState, bots: RosterBot[] = []): ChatIt
 
   if (turn.systemEvent !== undefined && turn.systemEvent.length > 0) {
     items.push({ kind: "system", id: `${turn.runId}:system`, text: turn.systemEvent });
+  }
+  if (turn.routineId !== undefined && turn.routineId.length > 0) {
+    items.push({ kind: "system", id: `${turn.runId}:routine`, text: `Routine · ${turn.routineId}` });
+  }
+  if (turn.inbox !== undefined) {
+    const inbox: InboxEventVM = {
+      kind: "inbox",
+      id: `${turn.runId}:inbox`,
+      messages: turn.inbox.map((msg: TurnInboxMessage) => ({
+        label: msg.from !== null ? (bots.find((b) => b.id === msg.from)?.name ?? msg.from) : "inbox",
+        thread: msg.thread,
+        text: msg.text,
+      })),
+    };
+    items.push(inbox);
   }
   // Fixture bot turns carry an empty prompt (the exchange's prompt is its
   // own user turn); real turns always have one — reducer rejects empties.
