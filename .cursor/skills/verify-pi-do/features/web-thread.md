@@ -4,7 +4,7 @@ Activates with the web frontend (`frontend/web`, live on the shared dev
 server). A user opens the app in a browser, types a prompt, watches their
 message appear as a right-aligned bubble, and the assistant's answer streams
 in below it — markdown-rendered, with the active roster bot's avatar, a
-shimmer activity row while the tail streams, and a jump pill when scrolled
+three-dots activity row while the tail streams, and a jump pill when scrolled
 up — until the turn settles. Streaming runs against the real Worker
 (default `http://127.0.0.1:8787`), not a mock.
 
@@ -12,8 +12,11 @@ up — until the turn settles. Streaming runs against the real Worker
 
 - `web-thread-open` loads the app and bootstraps a fresh session; the empty thread shows the ready status line.
 - `web-thread-send` puts the prompt in the thread as a right-aligned user bubble (`thread-item-{id}`) the moment it is sent (optimistic pending row).
-- `web-thread-stream` renders the assistant turn live over the Worker WS: working timer, streamed text with a blinking cursor on the live tail, thinking and tool chips when the model emits them, and the `activity-row` (avatar + "Receiving context…" shimmer) while the last turn streams on an open connection.
-- `web-thread-settle` ends the turn: the working row is replaced by the settled fold row, the activity row disappears, and every streamed part re-reads from the entries API.
+- `web-thread-stream` renders the assistant turn live over the Worker WS: while the tail turn streams the only working indicator is the `activity-row` (avatar slot + three bouncing dots, sr-only "Thinking…"). No streaming caret, no step meter, no ThinkingRow output, no tool StatusCards in the default path — ThinkingRow and StatusCard rows render only for errored/halted turns.
+- `web-thread-settle` ends the turn: the activity row disappears, settled bubbles animate in with `.msg-pop` (user bubbles also `.msg-pop-user`), and every streamed part re-reads from the entries API.
+- `web-thread-group` groups consecutive same-side bubbles (within 5 minutes, across turn boundaries) into one visual group: 2px gaps inside, 10px between groups, bubbles capped at 65% width (user right, agents left), one avatar on the first agent bubble, one small muted right-aligned timestamp under agent groups, none under user groups. Turns gapped by 20+ minutes split with a `time-divider`.
+- `web-thread-react` shows a hover toolbar on every bubble (`message-actions-{id}`): react (`message-react-{id}` opening six `message-react-option-{id}-{emoji}` options), reply (`message-reply-{id}`), and more (`message-more-{id}` with `message-copy-{id}` + `message-download-{id}`). Picks render as `message-reactions-{id}` pills (`message-reaction-{id}-{emoji}`); quoted replies render as `message-reply-quote-{id}` above the text. Retry/revert/edit affordances were removed from bubbles — legacy `onRetry`/`onEdit` props are accepted but render nothing; the only retry is the turn-level `retry-{runId}` on failed turns.
+- `web-thread-reply` arms the composer reply strip from any bubble's `message-reply-{id}`: the composer shows `composer-reply-preview` ("Replying to {label}: …" with `reply-dismiss` X) and the sent prompt carries the `> {label}: {text}` quote, which renders back as `message-reply-quote-{id}`.
 - `web-thread-markdown` renders bubble text as markdown (GFM tables/lists, `remark-breaks` line breaks, code blocks, links opening in a new tab).
 - `web-thread-avatar` shows the active roster bot's avatar (BotAvatar, presence-aware) to the left of every assistant bubble once a bot is selected in the roster.
 - `web-thread-scroll` pins the viewport to the bottom while content lands; scrolling up reveals the `scroll-to-bottom` pill, which jumps back and re-pins.
@@ -64,22 +67,25 @@ Preconditions:
   `[data-testid="composer-send"]`). The user bubble
   (`[data-testid^="thread-item-"]`, right-aligned) appears immediately as
   the optimistic pending row; store `02-sent.png`.
-- **Stream.** While the turn runs, `.thread` shows the working row ("Working
-  for Ns") and assistant content streams under it
-  (`[data-testid^="thread-item-"]` with the avatar slot when a bot is
-  selected). With the connection open and the last turn streaming,
-  `[data-testid="activity-row"]` (aria-live "polite", avatar + "Receiving
-  context…" shimmer) sits under the tail. Store `03-streaming.png`
-  mid-stream — proof of streaming, not just the end state; the activity row
-  is gone once settled, so capture it now.
+- **Stream.** While the turn runs, assistant content streams into
+  `[data-testid^="thread-item-"]` bubbles (avatar slot on the first bubble
+  of each agent group when a bot is selected). With the connection open and
+  the last turn streaming, `[data-testid="activity-row"]` (aria-live
+  "polite", three bouncing dots, sr-only "Thinking…") sits under the tail —
+  it is the only working indicator. Store `03-streaming.png` mid-stream —
+  proof of streaming, not just the end state; the activity row is gone once
+  settled, so capture it now.
 - **Markdown.** Send a prompt that returns markdown (e.g. `reply with a
   bold word, an inline code span, and a two-item numbered list`). The
   settled assistant bubble renders `<strong>`, `<code>` (inline code
   styling), and an `<ol>` — raw `**`/backtick characters must not be
   visible. Store `04-markdown.png`.
-- **Settle.** The working row is replaced by the fold row (button,
-  `aria-label="Toggle turn details"`, label "Worked for Ns"); the terminal
-  text stays visible and `activity-row` is removed. Store `05-settled.png`.
+- **Settle.** `activity-row` is removed, the terminal text stays visible,
+  and settled bubbles carry `.msg-pop` (`.msg-pop-user` on user bubbles —
+  assert the class, the 150ms animation will have finished). Consecutive
+  same-side bubbles share one group: one avatar on the first agent bubble,
+  one timestamp under agent groups, none under user groups, bubbles capped
+  at 65% width. Store `05-settled.png`.
 - **Scroll pill.** With enough content to overflow, scroll the thread up.
   `[data-testid="scroll-to-bottom"]` appears; clicking it scrolls back down
   and the pill disappears, and new streamed content pulls the viewport
@@ -93,6 +99,15 @@ Preconditions:
   `[data-testid="retry-{runId}"]`; clicking it re-sends the original prompt
   as a new run. Store `08-retry.png`. Skip when the backend is keyed and
   healthy — report the unmet precondition instead of forcing a failure.
+- **Reply + reactions.** Hover an assistant bubble so `message-actions-{id}`
+  appears (it is opacity-0 until group-hover), click
+  `message-react-{id}`, pick one of the six
+  `message-react-option-{id}-{emoji}` options: a `message-reactions-{id}`
+  row with `message-reaction-{id}-{emoji}` appears under the bubble. Then
+  hover a bubble, click `message-reply-{id}`: the composer shows
+  `composer-reply-preview`; send a short reply and confirm the new bubble
+  carries `message-reply-quote-{id}`. `reply-dismiss` clears the strip
+  without sending. Store `09-react.png` and `10-replied.png`.
 - **Proof.** Store screenshots, the console record, the transcript with the
   network log, and the entries re-read in
   `artifacts/{RUN_ID}/web-thread/`.
@@ -126,3 +141,15 @@ Preconditions:
 - Markdown is rendered per bubble by ChatMarkdown (react-markdown + GFM +
   breaks); single newlines become line breaks. Do not mistake a rendered
   `<br>` for a missing `\n\n` paragraph break.
+- Group assertions are structural: same-side bubbles within 5 minutes share
+  a group (2px gaps, one avatar, one timestamp or none); assert alignment,
+  the 65% cap, and single avatar/timestamp per group — never a hardcoded
+  `thread-item-` id.
+- The bubble toolbar is `opacity-0` until hover/focus-within: hover the
+  bubble (or focus a control) before clicking `message-react-{id}` /
+  `message-reply-{id}` / `message-more-{id}`, then re-query — the testids
+  exist in the DOM regardless, but a real user must hover first.
+- Bubbles have no edit/retry UI: `onRetry`/`onEdit`/`retryText` props still
+  typecheck but render nothing. Do not assert edit/retry testids on
+  bubbles; the only retry affordance is turn-level `retry-{runId}` on
+  failed turns.

@@ -14,6 +14,7 @@ import type {
   ThreadItemVM,
 } from "../thread/viewModel";
 import { stateOfTurn, toolRowOf } from "../thread/viewModel";
+import { peekReplyFor } from "./replyStore";
 import type { ToolCallView, TurnViewState } from "../thread/types";
 
 /** Centered system row ("Created routine · Month-end close"). */
@@ -104,6 +105,11 @@ export function turnToItems(turn: TurnViewState, bots: RosterBot[] = []): ChatIt
     };
     if (turn.replyTo !== undefined) {
       promptBubble.replyTo = { label: turn.replyTo.label, text: turn.replyTo.text };
+    } else {
+      const staged = peekReplyFor(turn.prompt);
+      if (staged !== null) {
+        promptBubble.replyTo = { label: staged.label, text: staged.text };
+      }
     }
     if (turn.reactions !== undefined) promptBubble.reactions = turn.reactions;
     items.push(promptBubble);

@@ -239,6 +239,8 @@ export function ThreadPane({
           onOpenImage={setLightbox}
           onRetry={onRetry}
           onEdit={onEdit}
+          onAnswer={onAnswer}
+          onDecision={onDecision}
         />
       ),
     });
@@ -403,6 +405,19 @@ export function ThreadPane({
                 : "New session ready — send a prompt to start."}
             </p>
           )}
+          {/* Fixture playback of a fresh session (fixture runIds, no live turn yet): blue NEW above the first group. */}
+          {playing && blocks.length > 0 && turns.every((turn) => turn.runId.startsWith("fixture:")) && (
+            <div
+              data-testid="new-divider"
+              className="flex items-center gap-3 py-1 text-xs font-medium text-[var(--info)]"
+              role="separator"
+              aria-label="New"
+            >
+              <span aria-hidden className="h-px min-w-4 flex-1 bg-[var(--info)]/40" />
+              <span>NEW</span>
+              <span aria-hidden className="h-px min-w-4 flex-1 bg-[var(--info)]/40" />
+            </div>
+          )}
           {windowing && topPad > 0 && <div aria-hidden style={{ height: topPad }} />}
           {windowing
             ? blocks.slice(start, end).map((block) => renderBlock(block))
@@ -458,6 +473,8 @@ function BubbleGroupView({
   onOpenImage,
   onRetry,
   onEdit,
+  onAnswer,
+  onDecision,
 }: {
   group: BubbleGroup;
   avatarSlot: ReactNode;
@@ -465,6 +482,8 @@ function BubbleGroupView({
   onOpenImage: (attachment: AttachmentVM) => void;
   onRetry: (prompt: string) => void;
   onEdit: (text: string) => void;
+  onAnswer: (id: string, answer: string) => void;
+  onDecision: (id: string, decision: "approved" | "rejected") => void;
 }) {
   const isUser = group.role === "user";
   return (
@@ -483,6 +502,8 @@ function BubbleGroupView({
                 onRetry={onRetry}
                 retryText={turn.prompt}
                 onEdit={onEdit}
+                onAnswer={onAnswer}
+                onDecision={onDecision}
               />
             </div>
           </div>

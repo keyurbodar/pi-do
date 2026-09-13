@@ -20,7 +20,7 @@ import { ArrowUp, Bookmark, FileText, Mic, Plus, Square, X } from "lucide-react"
 
 import { StashMenu, type StashEntry } from "./StashMenu";
 
-import { clearReplyTarget, useReplyTarget } from "../chat/replyStore";
+import { clearReplyTarget, stageReplyFor, useReplyTarget } from "../chat/replyStore";
 
 export type SubmitOpts = {
   model?: string;
@@ -431,6 +431,7 @@ export function PromptInput({
     attachmentsRef.current = [];
     setAttachments([]);
     releaseAttachments(staged);
+    if (hasActiveReply) stageReplyFor(text);
     onSubmit?.(text, {
       ...(model === "default" ? {} : { model }),
       ...(hasActiveReply && activeReplyLabel !== undefined && activeReplyText !== undefined
