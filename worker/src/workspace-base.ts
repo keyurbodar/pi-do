@@ -402,6 +402,14 @@ export class WorkspaceBase implements DurableObject {
         const sql = this.state.storage.sql;
         ensureInboxSchema(sql);
         const target = resolveSendTarget(sql, ws, (w, s) => this.sessionExists(w, s), to);
+        if (target.kind === "user") {
+          // The human reads the thread; there is no user session to wake, so
+          // the row is marked delivered at insert and no alarm is armed.
+          const result = insertInbox(sql, ws, from, "user", { body, thread, requestId });
+          if (!result.ok) return result;
+          markDelivered(sql, ws, [result.row.id], null);
+          return { ok: true, id: result.row.id, toSid: "user", created: false };
+        }
         if (target.kind === "group") {
           const members = listMembers(sql, ws, target.group.id).filter((m) => m !== from);
           if (members.length === 0) return { ok: false, error: "empty group", hint: "every member is the sender; add members with POST /workspaces/:id/groups" };

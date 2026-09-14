@@ -33,8 +33,9 @@ function toGroupRow(row: unknown): GroupRow | null {
 }
 
 export function getGroup(sql: EntriesSql, ws: string, ref: string): GroupRow | null {
-  // ref is a group id or its unique name.
-  return toGroupRow(readSingleRow(sql, `${SELECT_GROUP} WHERE ws = ? AND (id = ? OR name = ?) LIMIT 1`, ws, ref, ref));
+  // ref is a group id, its unique name, or its thread key — bots see the
+  // thread in wake prompts, so replying to it must resolve back here.
+  return toGroupRow(readSingleRow(sql, `${SELECT_GROUP} WHERE ws = ? AND (id = ? OR name = ? OR thread = ?) LIMIT 1`, ws, ref, ref, ref));
 }
 
 export function listGroups(sql: EntriesSql, ws: string): Array<GroupRow & { members: string[] }> {

@@ -1,5 +1,7 @@
-import { countUndelivered, ensureInboxSchema, getInbox, insertInbox, listInbox, listThread, type InboxRow } from "pi-cf/store/inbox";
+import { ensureInboxSchema, getInbox, insertInbox, listInbox, listThread, markDelivered, type InboxRow } from "pi-cf/store/inbox";
+import { listMembers } from "pi-cf/store/groups";
 import { rearmInbox } from "../inbox";
+import { resolveSendTarget } from "../groups";
 import { MINT_WS_HINT, err, json, type RouteHandler } from "./_shared";
 import { ROUTE, ownedRoutes, registerHandler } from "./table";
 
@@ -45,19 +47,33 @@ const inbox: RouteHandler = async (ctx, request, url) => {
   if (rec["to"] === sid) {
     return err("self-send", "the recipient must be a different session; a session cannot message itself", 400);
   }
-  // Spawn-by-message: an unknown recipient materializes as a new named
-  // session on first message. The inbox row is the visible record of who
-  // spawned whom and why.
-  let toSid = rec["to"];
-  if (!ctx.sessionExists(ws, toSid)) {
-    for (const row of sql.exec("SELECT sid FROM sessions WHERE ws = ? AND name = ? LIMIT 1", ws, toSid)) {
-      if (row !== null && typeof row === "object" && typeof (row as Record<string, unknown>).sid === "string") {
-        toSid = (row as Record<string, unknown>).sid as string;
-      }
-      break;
-    }
-    if (!ctx.sessionExists(ws, toSid)) toSid = ctx.mintSession(ws, toSid, (rec["body"] as string).slice(0, 8192));
+  // One resolution for tool and route: "user" is the human (a row on the
+  // thread, never a session and never a wake), a group fans out one row
+  // per member on the group's thread, and an unknown name materializes a
+  // new session — spawn-by-message is the designed API behavior.
+  const target = resolveSendTarget(sql, ws, (w, s) => ctx.sessionExists(w, s), rec["to"]);
+  if (target.kind === "user") {
+    const result = insertInbox(sql, ws, sid, "user", { body: rec["body"], thread: rec["thread"], requestId: rec["requestId"] });
+    if (!result.ok) return err(result.error, result.hint, 400);
+    markDelivered(sql, ws, [result.row.id], null);
+    const row = getInbox(sql, ws, result.row.id);
+    return json({ sid, message: row === null ? null : fmtInbox(row) }, 201);
   }
+  if (target.kind === "group") {
+    const members = listMembers(sql, ws, target.group.id).filter((m) => m !== sid);
+    if (members.length === 0) return err("empty group", "every member is the sender; add members with POST /workspaces/:id/groups", 400);
+    const ids: string[] = [];
+    for (const member of members) {
+      const requestId = typeof rec["requestId"] === "string" ? `${rec["requestId"]}:${member}` : undefined;
+      const result = insertInbox(sql, ws, sid, member, { body: rec["body"], thread: target.group.thread, requestId });
+      if (!result.ok) return err(result.error, result.hint, 400);
+      ids.push(result.row.id);
+    }
+    rearmInbox(sql, Date.now());
+    await ctx.streamHost(ws, sid).pokeAlarm();
+    return json({ sid, delivered: ids.length, thread: target.group.thread }, 201);
+  }
+  const toSid = target.kind === "session" ? target.sid : ctx.mintSession(ws, target.name, (rec["body"] as string).slice(0, 8192));
   const result = insertInbox(sql, ws, sid, toSid, { body: rec["body"], thread: rec["thread"], requestId: rec["requestId"] });
   if (!result.ok) return err(result.error, result.hint, 400);
   rearmInbox(sql, Date.now());
