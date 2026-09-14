@@ -109,6 +109,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { table: "sessions", column: "name", ddl: "ALTER TABLE sessions ADD COLUMN name TEXT" },
   { table: "sessions", column: "cwd", ddl: "ALTER TABLE sessions ADD COLUMN cwd TEXT" },
   { table: "sessions", column: "parentSessionId", ddl: "ALTER TABLE sessions ADD COLUMN parentSessionId TEXT" },
+  { table: "sessions", column: "deleted_at", ddl: "ALTER TABLE sessions ADD COLUMN deleted_at TEXT" },
   { table: "compaction_marks", column: "pages", ddl: "ALTER TABLE compaction_marks ADD COLUMN pages INTEGER NOT NULL DEFAULT 0" },
   { table: "compaction_marks", column: "total", ddl: "ALTER TABLE compaction_marks ADD COLUMN total INTEGER NOT NULL DEFAULT 0" },
 ];

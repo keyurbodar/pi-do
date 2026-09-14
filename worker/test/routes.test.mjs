@@ -18,6 +18,7 @@ const readSrc = (rel) => fs.readFileSync(path.join(srcDir, rel), "utf8");
 // declaration served them.
 const EXPECTED = [
   { key: "sessions", methods: ["POST", "GET"], outer: "/workspaces/:id/sessions", inner: "/sessions", sid: false, query: [], passthrough: false, stream: false },
+  { key: "sessionDelete", methods: ["DELETE"], outer: "/workspaces/:id/sessions/:sid", inner: "/session", sid: true, query: [], passthrough: false, stream: false },
   { key: "git", methods: ["POST"], outer: "/workspaces/:id/sessions/:sid/git", inner: "/git", sid: true, query: [], passthrough: false, stream: false },
   { key: "claim", methods: ["POST"], outer: "/workspaces/:id/sessions/:sid/claim", inner: "/claim", sid: true, query: [], passthrough: false, stream: false },
   { key: "model", methods: ["POST"], outer: "/workspaces/:id/sessions/:sid/model", inner: "/model", sid: true, query: [], passthrough: false, stream: false },
@@ -47,8 +48,8 @@ const EXPECTED = [
   { key: "groupMessages", methods: ["POST", "GET"], outer: "/workspaces/:id/groups/messages", inner: "/groups/messages", sid: false, query: ["id", "sid"], passthrough: false, stream: false },
 ];
 
-test("forward table holds all 28 route shapes byte-identical", () => {
-  assert.equal(FORWARD_TABLE.length, 28);
+test("forward table holds all 29 route shapes byte-identical", () => {
+  assert.equal(FORWARD_TABLE.length, 29);
   EXPECTED.forEach((want, i) => {
     const got = FORWARD_TABLE[i];
     assert.deepEqual(
@@ -74,6 +75,7 @@ test("inner-only defs stay out of the forward table", () => {
 test("every route resolves through the single table", () => {
   const cases = [
     ["POST", "/workspaces/w1/sessions", "/sessions"],
+    ["DELETE", "/workspaces/w1/sessions/s1", "/session"],
     ["POST", "/workspaces/w1/sessions/s1/git", "/git"],
     ["POST", "/workspaces/w1/sessions/s1/claim", "/claim"],
     ["POST", "/workspaces/w1/sessions/s1/model", "/model"],
@@ -112,7 +114,7 @@ test("every route resolves through the single table", () => {
     ["POST", "/workspaces/w1/groups/messages", "/groups/messages"],
     ["GET", "/workspaces/w1/groups/messages", "/groups/messages"],
   ];
-  assert.equal(cases.length, 38);
+  assert.equal(cases.length, 39);
   for (const [method, concrete, inner] of cases) {
     const def = matchRoute(method, concrete);
     assert.ok(def, `${method} ${concrete} resolves`);
@@ -153,7 +155,7 @@ test("every inner path is declared once, in table.ts", () => {
     .join("\n");
   const countQuoted = (literal) => allSrc.split(`"${literal}"`).length - 1;
   const inners = [...new Set([...FORWARD_TABLE.map((d) => d.inner), "/create", "/exists", "/models"])];
-  assert.deepEqual(inners.length, 30);
+  assert.deepEqual(inners.length, 31);
   for (const inner of inners) {
     // "/bg" serves two forward shapes; "/models" is both the edge-local
     // catalog route and an inner path. Everything else appears exactly once.

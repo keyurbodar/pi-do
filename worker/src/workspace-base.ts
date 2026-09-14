@@ -122,7 +122,7 @@ export class WorkspaceBase implements DurableObject {
 
   protected sessionExists(ws: string, sid: string): boolean {
     const rows = [
-      ...this.state.storage.sql.exec("SELECT 1 FROM sessions WHERE sid = ? AND ws = ? LIMIT 1", sid, ws),
+      ...this.state.storage.sql.exec("SELECT 1 FROM sessions WHERE sid = ? AND ws = ? AND deleted_at IS NULL LIMIT 1", sid, ws),
     ];
     return rows.length > 0;
   }
@@ -278,7 +278,7 @@ export class WorkspaceBase implements DurableObject {
               }
               break;
             }
-            if (ws === "") throw new Error("redrive needs a live session");
+            if (ws === "" || !this.sessionExists(ws, input.sid)) throw new Error("redrive needs a live session");
             let skip: number;
             if (input.fresh) {
               // No safe resume point: skip the leading pinned run (chunk and
@@ -324,6 +324,9 @@ export class WorkspaceBase implements DurableObject {
   // entries stay attributable, and a failure lands an error entry.
   protected fireRoutineTurn(routine: RoutineRow): Promise<void> {
     return this.enqueueSessionTurn(routine.sid, async () => {
+      // A session deleted after its routine was claimed stays asleep: the
+      // row is already gone, so there is nothing to rearm — just skip.
+      if (!this.sessionExists(routine.ws, routine.sid)) return;
       const sql = this.state.storage.sql;
       const runId = crypto.randomUUID();
       const turnId = crypto.randomUUID();
@@ -360,8 +363,14 @@ export class WorkspaceBase implements DurableObject {
   protected fireInboxTurn(ws: string, sid: string, rows: InboxRow[]): Promise<void> {
     const ids = rows.map((r) => r.id);
     const prompt = inboxPrompt(rows);
-    return this.enqueueSessionTurn(sid, () => {
+    return this.enqueueSessionTurn(sid, async () => {
       const sql = this.state.storage.sql;
+      // A deleted session is never woken; its claimed rows are drained so
+      // the inbox job stops re-firing for them.
+      if (!this.sessionExists(ws, sid)) {
+        markDelivered(sql, ws, ids, null);
+        return;
+      }
       const runId = crypto.randomUUID();
       const turnId = crypto.randomUUID();
       const host = this.streamHost(ws, sid);

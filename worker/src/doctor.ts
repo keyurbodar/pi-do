@@ -35,7 +35,7 @@ export function reportWorkspaceDoctor(sql: Sql, env: RuntimeEnv, ws: string): Do
   const warnings: string[] = [];
   const settings = readSingleRow(sql, "SELECT modelProvider, modelId, thinkingLevel FROM workspace_settings WHERE ws = ? LIMIT 1", ws);
   if (settings !== null) warnings.push(...tripleWarnings("workspace default", settings.modelProvider, settings.modelId, settings.thinkingLevel));
-  for (const row of sql.exec("SELECT sid, modelProvider, modelId, thinkingLevel FROM sessions WHERE ws = ?", ws)) {
+  for (const row of sql.exec("SELECT sid, modelProvider, modelId, thinkingLevel FROM sessions WHERE ws = ? AND deleted_at IS NULL", ws)) {
     if (row === null || typeof row !== "object" || !("sid" in row)) continue;
     const rec = row as Record<string, unknown>;
     warnings.push(...tripleWarnings(`session ${typeof rec.sid === "string" ? rec.sid : "?"}`, rec.modelProvider, rec.modelId, rec.thinkingLevel));
