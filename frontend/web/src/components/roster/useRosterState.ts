@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createBotSession,
+  deleteSession,
   ensureWorkspace,
   evictSession,
   listSessions,
@@ -275,7 +276,9 @@ export function useRosterState(): RosterApi {
   }, []);
 
   const deleteBot = useCallback((id: string) => {
-    // No server delete: the session stays server-side, the row hides locally.
+    // Optimistic local removal; the server tombstone goes away via
+    // DELETE /sessions/:sid. A 404 means it is already gone; a network
+    // failure only logs — the row stays hidden either way.
     evictSession(id);
     setState((prev) => ({
       ...prev,
@@ -283,6 +286,11 @@ export function useRosterState(): RosterApi {
       order: prev.order.filter((sid) => sid !== id),
       activeId: prev.activeId === id ? null : prev.activeId,
     }));
+    ensureWorkspace()
+      .then((ws) => deleteSession(ws, id))
+      .catch((e: unknown) => {
+        console.error("delete session failed", e instanceof Error ? e.message : e);
+      });
   }, []);
 
   const deleteGroup = useCallback((id: string) => {

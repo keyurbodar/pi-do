@@ -3,8 +3,6 @@ import { api, workerBaseUrl } from "./hc-client";
 export interface SessionHandle {
   workspaceId: string;
   sessionId: string;
-  fence: string;
-  revision: number;
 }
 
 /** One row of GET /workspaces/:id/sessions — the roster's server truth. */
@@ -38,12 +36,6 @@ function asRecord(value: unknown, what: string): Record<string, unknown> {
 function asString(record: Record<string, unknown>, name: string, what: string): string {
   const value = record[name];
   if (typeof value !== "string" || value.length === 0) throw malformed(what);
-  return value;
-}
-
-function asNumber(record: Record<string, unknown>, name: string, what: string): number {
-  const value = record[name];
-  if (typeof value !== "number" || !Number.isInteger(value)) throw malformed(what);
   return value;
 }
 
@@ -132,7 +124,7 @@ const botSessions = new Map<string, Promise<SessionHandle>>();
 
 function bootWorkspace(): Promise<WorkspaceBoot> {
   if (bootPromise === null) {
-    bootPromise = (async () => {
+    const pending = (async () => {
       const stored = storedWorkspaceId();
       if (stored !== null) {
         const sessions = await fetchSessionRows(stored);
@@ -142,6 +134,12 @@ function bootWorkspace(): Promise<WorkspaceBoot> {
       storeWorkspaceId(workspaceId);
       return { workspaceId, sessions: [] };
     })();
+    // A failed boot clears the cache so the next call retries instead of
+    // serving the same rejection forever.
+    bootPromise = pending.catch((e: unknown) => {
+      if (bootPromise === pending) bootPromise = null;
+      throw e;
+    });
   }
   return bootPromise;
 }
@@ -155,65 +153,9 @@ export function listSessions(): Promise<SessionSummary[]> {
   return bootWorkspace().then((boot) => boot.sessions);
 }
 
-/** Rotate the owner fence on a session that already exists. The first claim
- * rides a wrong fence so the 403 body hands back the live fence+revision;
- * the retry claims for real. One extra retry covers a concurrent claimer. */
-async function claimSession(workspaceId: string, sessionId: string): Promise<SessionHandle> {
-  const path = `/workspaces/${workspaceId}/sessions/${sessionId}/claim`;
-  const what = "POST /workspaces/:id/sessions/:sid/claim";
-  let fence = "probe";
-  let expected = 0;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const res = await fetch(`${workerBaseUrl()}${path}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ fence, expected }),
-    });
-    if (res.ok) {
-      const claimed = asRecord(await res.json(), what);
-      return {
-        workspaceId,
-        sessionId,
-        fence: asString(claimed, "fence", what),
-        revision: asNumber(claimed, "revision", what),
-      };
-    }
-    if (res.status === 403 || res.status === 409) {
-      const body = await res.json().catch(() => null);
-      const rec = body !== null && typeof body === "object" ? (body as Record<string, unknown>) : null;
-      const liveFence = rec?.["fence"];
-      const liveRevision = rec?.["revision"];
-      if (typeof liveFence === "string" && liveFence.length > 0 && typeof liveRevision === "number") {
-        fence = liveFence;
-        expected = liveRevision;
-        continue;
-      }
-    }
-    throw failed(res.status, what);
-  }
-  throw failed(409, what);
-}
-
-/** Resolve the keyed default server-side so sessions run keyed without
- * duplicating precedence in the client. */
-async function applyDefaultModel(handle: SessionHandle): Promise<SessionHandle> {
-  const what = "POST /workspaces/:id/sessions/:sid/model";
-  const modeled = await postForwarded(
-    `/workspaces/${handle.workspaceId}/sessions/${handle.sessionId}/model`,
-    what,
-    { fence: handle.fence, expected: handle.revision },
-  );
-  const fence = modeled["fence"];
-  const revision = modeled["revision"];
-  return {
-    ...handle,
-    fence: typeof fence === "string" && fence.length > 0 ? fence : handle.fence,
-    revision: typeof revision === "number" && Number.isInteger(revision) ? revision : handle.revision,
-  };
-}
-
 /** Mint a roster-backed session: name and combined backstory persist on the
- * sessions row, so the bot survives reloads and hydrates from GET /sessions. */
+ * sessions row, so the bot survives reloads and hydrates from GET /sessions.
+ * A fresh session already carries the workspace default model. */
 export async function createBotSession(name: string, backstory: string | null): Promise<SessionHandle> {
   const workspaceId = await ensureWorkspace();
   const what = "POST /workspaces/:id/sessions";
@@ -221,39 +163,44 @@ export async function createBotSession(name: string, backstory: string | null): 
     name,
     ...(backstory !== null ? { backstory } : {}),
   });
-  const sessionId = asString(session, "sessionId", what);
-  const fence = asString(session, "fence", what);
-  const revision = asNumber(session, "revision", what);
-  const claimed = await postForwarded(
-    `/workspaces/${workspaceId}/sessions/${sessionId}/claim`,
-    "POST /workspaces/:id/sessions/:sid/claim",
-    { fence, expected: revision },
-  );
-  const handle: SessionHandle = {
-    workspaceId,
-    sessionId,
-    fence: asString(claimed, "fence", "POST /workspaces/:id/sessions/:sid/claim"),
-    revision: asNumber(claimed, "revision", "POST /workspaces/:id/sessions/:sid/claim"),
-  };
-  return applyDefaultModel(handle);
+  return { workspaceId, sessionId: asString(session, "sessionId", what) };
 }
 
-/** One session per roster bot, claimed lazily on first open and cached for
- * the page lifetime, so each bot's conversation is its own. Group owners
- * (local "group-" ids) get null — the crew-chat unit fills that seam. */
+/** Tombstone a session server-side; 404 means it is already gone. */
+export async function deleteSession(ws: string, sid: string): Promise<void> {
+  const what = "DELETE /workspaces/:id/sessions/:sid";
+  const res = await fetch(
+    `${workerBaseUrl()}/workspaces/${ws}/sessions/${encodeURIComponent(sid)}`,
+    { method: "DELETE" },
+  );
+  if (res.status === 404) return;
+  if (!res.ok) throw failed(res.status, what);
+}
+
+/** One session per roster bot, resolved lazily on first open and cached for
+ * the page lifetime, so each bot's conversation is its own. The stream
+ * sends bare prompts, so no claim or model call is needed here. Group
+ * owners (local "group-" ids) get null — the crew-chat unit fills that seam. */
 export function sessionForOwner(ownerId: string): Promise<SessionHandle | null> {
   if (ownerId.startsWith("group-")) return Promise.resolve(null);
   let pending = botSessions.get(ownerId);
   if (pending === undefined) {
-    pending = ensureWorkspace()
-      .then((workspaceId) => claimSession(workspaceId, ownerId))
-      .then(applyDefaultModel);
+    const created = ensureWorkspace().then((workspaceId) => ({
+      workspaceId,
+      sessionId: ownerId,
+    }));
+    // A rejected handle (e.g. transient boot failure) evicts itself so the
+    // next open retries instead of serving the same rejection forever.
+    pending = created.catch((e: unknown) => {
+      if (botSessions.get(ownerId) === pending) botSessions.delete(ownerId);
+      throw e;
+    });
     botSessions.set(ownerId, pending);
   }
   return pending;
 }
 
-/** Drop a cached handle (deleteBot hides the row; the session stays server-side). */
+/** Drop a cached handle (deleteBot removes the row and tombstones the session). */
 export function evictSession(ownerId: string): void {
   botSessions.delete(ownerId);
 }

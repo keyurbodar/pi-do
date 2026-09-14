@@ -318,7 +318,7 @@ export function ThreadPane({
         node: <ChatItem item={item} {...shared} onOpenImage={setLightbox} retryText={turn.prompt} />,
       });
     }
-    if (turn.status === "error") {
+    if (turn.status === "error" || turn.status === "interrupted") {
       flushGroup();
       blocks.push({
         key: `retry:${turn.runId}`,
@@ -328,7 +328,7 @@ export function ThreadPane({
             className="flex items-center gap-2 px-1 text-sm text-[var(--muted-foreground)]"
           >
             <RotateCcw aria-hidden className="size-3.5 shrink-0" />
-            <span>Turn failed.</span>
+            <span>{turn.status === "interrupted" ? "Turn interrupted." : "Turn failed."}</span>
             <button
               type="button"
               data-testid={`retry-${turn.runId}`}
