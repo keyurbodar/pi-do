@@ -1,5 +1,4 @@
 import { createGroup, deleteGroup, ensureGroupsSchema, getGroup, listGroups, listMembers } from "pi-cf/store/groups";
-import { resolveSendTarget } from "../groups";
 import { insertInbox, listThread, type InboxRow } from "pi-cf/store/inbox";
 import type { EntriesSql } from "pi-cf/store/entries";
 import { rearmInbox } from "../inbox";

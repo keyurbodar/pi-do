@@ -10,11 +10,11 @@ export const sendTool: AgentHarnessTool<ToolContext, any, { sent: boolean; to: s
   name: "send",
   label: "Send",
   description:
-    "Send a durable message to another bot (session) by its id or name. The recipient wakes with your message in its context; unknown names materialize a new bot whose persona is the message body, so this is also how you propose new teammates. Use thread to keep a group conversation together. Delivery is at-least-once across crashes.",
+    "Send a durable message to another bot (session) by id or name, to a group by id, name, or thread (one copy per member), or to the literal \"user\" to reach the human on a thread. Recipients wake with your message in context; unknown names materialize a new bot whose persona is the message body, so this is also how you propose new teammates. Use thread to keep a group conversation together. Delivery is at-least-once across crashes.",
   parameters: {
     type: "object",
     properties: {
-      to: { type: "string", description: "Recipient session id or name" },
+      to: { type: "string", description: "Recipient: session id or name, group id/name/thread, or \"user\" for the human" },
       body: { type: "string", description: "Message text" },
       thread: { type: "string", description: "Optional channel key to group the conversation" },
       requestId: { type: "string", description: "Optional idempotency key; a retry with the same key never double-sends" },
