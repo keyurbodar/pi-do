@@ -208,7 +208,9 @@ export function MessageBubble({
           {toolbar}
           {quoteBlock}
           <div className="[&>div]:text-[15px] [&>div]:leading-6 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_ul:first-child]:mt-0 [&_ul:last-child]:mb-0 [&_ol:first-child]:mt-0 [&_ol:last-child]:mb-0 [&_pre:first-child]:mt-0 [&_pre:last-child]:mb-0 [&_h1:first-child]:mt-0 [&_h2:first-child]:mt-0 [&_h3:first-child]:mt-0">
-            {renderText(vm.text, bots)}
+            {/* Own text renders verbatim: never chip a bot name here (a message
+                like "hi" to a bot named hi must stay text, not a squeezed chip). */}
+            {renderText(vm.text, [])}
           </div>
           <AttachmentGrid attachments={vm.attachments} onOpen={onOpenImage} />
         </div>
