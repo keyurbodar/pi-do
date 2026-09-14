@@ -1,4 +1,5 @@
 import { appendEntry, listEntries, runInSyncTx, sessionLeaf, sumResultUsage, entryHead } from "pi-cf/store/entries";
+import { ensureGroupsSchema } from "pi-cf/store/groups";
 import { createCheckpoint, getCheckpoint, listCheckpoints, rewindSession } from "pi-cf/store/checkpoints";
 import { drainPages, readSingleRow } from "pi-cf/store/sql-util";
 import { buildRuntime, clampThinkingLevel, resolveCatalogModel, supportedThinkingLevels, THINKING_LEVELS, type RuntimeEnv, type RuntimeModel } from "../model-runtime";
@@ -9,6 +10,7 @@ import { ROUTE, ownedRoutes, registerHandler } from "./table";
 import { loadProjectContextMessage } from "pi-cf/agent/project-context";
 import { composePrompt, SYSTEM_PROMPT } from "pi-cf/agent/session";
 import { readBackstory } from "../backstory";
+import { ensureRoutinesSchema, rearmRoutines } from "../routines";
 
 const sessions: RouteHandler = async (ctx, request, url) => {
   const ws = url.searchParams.get("ws") ?? "";
@@ -18,7 +20,7 @@ const sessions: RouteHandler = async (ctx, request, url) => {
     const bad = ctx.requireSession(ws, null, "call GET /workspaces/:id/sessions on the Worker instead", MINT_WS_HINT);
     if (bad) return bad;
     const out: Array<Record<string, unknown>> = [];
-    for (const row of ctx.state.storage.sql.exec("SELECT sid, name, backstory, created_at FROM sessions WHERE ws = ? ORDER BY created_at", ws)) {
+    for (const row of ctx.state.storage.sql.exec("SELECT sid, name, backstory, created_at FROM sessions WHERE ws = ? AND deleted_at IS NULL ORDER BY created_at", ws)) {
       if (row === null || typeof row !== "object") continue;
       const r = row as Record<string, unknown>;
       const sid = typeof r.sid === "string" ? r.sid : "";
@@ -73,6 +75,29 @@ const sessions: RouteHandler = async (ctx, request, url) => {
     backstory,
   );
   return json({ sessionId, fence, revision: 0, model: { provider: defaults.provider, id: defaults.id }, thinking: defaults.thinking, retention: effRetention, name, cwd, backstory, parentSessionId: null });
+};
+
+// Tombstone, not row delete: entries and inbox history stay readable in
+// storage, but the session stops resolving (requireSession 404s it), its
+// routines and group memberships go, and the wake paths skip it.
+const remove: RouteHandler = async (ctx, request, url) => {
+  if (request.method !== "DELETE") return null;
+  const ws = url.searchParams.get("ws") ?? "";
+  const sid = url.searchParams.get("sid") ?? "";
+  const bad = ctx.requireSession(ws, sid, "call DELETE /workspaces/:id/sessions/:sid on the Worker instead", MINT_WS_HINT);
+  if (bad) return bad;
+  const sql = ctx.state.storage.sql;
+  ensureRoutinesSchema(sql);
+  ensureGroupsSchema(sql);
+  runInSyncTx(sql, () => {
+    sql.exec("UPDATE sessions SET deleted_at = ? WHERE sid = ?", new Date().toISOString(), sid);
+    sql.exec("DELETE FROM pi_routines WHERE ws = ? AND sid = ?", ws, sid);
+    sql.exec("DELETE FROM pi_group_members WHERE ws = ? AND sid = ?", ws, sid);
+    sql.exec("DELETE FROM pi_runs WHERE sid = ?", sid);
+  });
+  rearmRoutines(sql);
+  await ctx.streamHost(ws, sid).pokeAlarm();
+  return json({ ok: true, deleted: sid });
 };
 
 const claim: RouteHandler = async (ctx, request, url) => {
@@ -467,5 +492,6 @@ registerHandler("sessions", ROUTE.fork, fork);
 registerHandler("sessions", ROUTE.clone, clone);
 registerHandler("sessions", ROUTE.checkpoints, checkpoints);
 registerHandler("sessions", ROUTE.rewind, rewind);
+registerHandler("sessions", ROUTE.sessionDelete, remove);
 
 export const sessionRoutes: Record<string, RouteHandler> = ownedRoutes("sessions");

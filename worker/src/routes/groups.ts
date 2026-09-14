@@ -59,7 +59,7 @@ const groups: RouteHandler = async (ctx, request, url) => {
 // named session — a crew created with a not-yet-existing bot gets that bot.
 function resolveGroupMember(ctx: RouteCtx, ws: string, ref: string): string {
   if (ctx.sessionExists(ws, ref)) return ref;
-  for (const row of ctx.state.storage.sql.exec("SELECT sid FROM sessions WHERE ws = ? AND name = ? LIMIT 1", ws, ref)) {
+  for (const row of ctx.state.storage.sql.exec("SELECT sid FROM sessions WHERE ws = ? AND name = ? AND deleted_at IS NULL LIMIT 1", ws, ref)) {
     if (row !== null && typeof row === "object" && typeof (row as Record<string, unknown>).sid === "string") {
       return (row as Record<string, unknown>).sid as string;
     }

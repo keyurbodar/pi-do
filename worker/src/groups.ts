@@ -23,7 +23,7 @@ export function resolveSendTarget(sql: EntriesSql, ws: string, sessionExists: (w
   ensureGroupsSchema(sql);
   const group = getGroup(sql, ws, to);
   if (group !== null) return { kind: "group", group };
-  for (const row of sql.exec("SELECT sid FROM sessions WHERE ws = ? AND name = ? LIMIT 1", ws, to)) {
+  for (const row of sql.exec("SELECT sid FROM sessions WHERE ws = ? AND name = ? AND deleted_at IS NULL LIMIT 1", ws, to)) {
     if (row !== null && typeof row === "object" && typeof (row as Record<string, unknown>).sid === "string") {
       return { kind: "session", sid: (row as Record<string, unknown>).sid as string };
     }

@@ -40,6 +40,7 @@ function def<const M extends Method, const O extends string | null, const I exte
 // three outer:null entries are inner-only (no edge route forwards to them).
 export const ROUTE = {
   sessions: def(["POST", "GET"], "/workspaces/:id/sessions", "/sessions"),
+  sessionDelete: def(["DELETE"], "/workspaces/:id/sessions/:sid", "/session", { sid: true }),
   git: def(["POST"], "/workspaces/:id/sessions/:sid/git", "/git", { sid: true }),
   claim: def(["POST"], "/workspaces/:id/sessions/:sid/claim", "/claim", { sid: true }),
   model: def(["POST"], "/workspaces/:id/sessions/:sid/model", "/model", { sid: true }),
@@ -73,7 +74,7 @@ export const ROUTE = {
 };
 
 export const FORWARD_TABLE: ForwardDef[] = [
-  ROUTE.sessions, ROUTE.git, ROUTE.claim, ROUTE.model, ROUTE.thinking, ROUTE.settings,
+  ROUTE.sessions, ROUTE.sessionDelete, ROUTE.git, ROUTE.claim, ROUTE.model, ROUTE.thinking, ROUTE.settings,
   ROUTE.run, ROUTE.compact, ROUTE.archive, ROUTE.entries, ROUTE.meta,
   ROUTE.doctor, ROUTE.fork, ROUTE.clone, ROUTE.checkpoints, ROUTE.rewind, ROUTE.files,
   ROUTE.exec, ROUTE.execKill, ROUTE.execDispose, ROUTE.bgPost, ROUTE.bgGet, ROUTE.bgKill,
