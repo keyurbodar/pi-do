@@ -27,7 +27,7 @@ interface GroupLogEntry {
 }
 
 /** Fan-out rows carry requestId "<base>:<member sid>"; rows without a
- * requestId (bot tool sends) collapse on adjacent identical from+body. */
+ * requestId (bot tool sends) collapse on adjacent identical from+to+body. */
 function clusterMessages(rows: GroupMessage[]): GroupLogEntry[] {
   const entries: GroupLogEntry[] = [];
   for (const row of rows) {
@@ -35,7 +35,7 @@ function clusterMessages(rows: GroupMessage[]): GroupLogEntry[] {
       row.requestId !== null && row.requestId.endsWith(`:${row.to}`)
         ? row.requestId.slice(0, -(row.to.length + 1))
         : row.requestId;
-    const key = base !== null ? `req:${base}` : `msg:${row.from}::${row.body}`;
+    const key = base !== null ? `req:${base}` : `msg:${row.from}::${row.to}::${row.body}`;
     const last = entries[entries.length - 1];
     if (last !== undefined && last.key === key) {
       last.total += 1;
@@ -64,6 +64,7 @@ export function GroupPane({ group, bots }: { group: RosterGroup; bots: RosterBot
   const mounted = useRef(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
+  const inFlight = useRef(false);
 
   useEffect(() => {
     mounted.current = true;
@@ -73,6 +74,7 @@ export function GroupPane({ group, bots }: { group: RosterGroup; bots: RosterBot
   }, []);
 
   const refresh = useCallback(() => {
+    inFlight.current = true;
     ensureWorkspace()
       .then((ws) => groupMessages(ws, group.id))
       .then(
@@ -85,12 +87,20 @@ export function GroupPane({ group, bots }: { group: RosterGroup; bots: RosterBot
           if (!mounted.current) return;
           setError(e instanceof Error ? e.message : String(e));
         },
-      );
+      )
+      .finally(() => {
+        inFlight.current = false;
+      });
   }, [group.id]);
 
   useEffect(() => {
     refresh();
-    const timer = window.setInterval(refresh, POLL_MS);
+    // Poll ticks skip while a fetch is in flight or the tab is hidden;
+    // send-triggered refreshes always run so the new row lands at once.
+    const timer = window.setInterval(() => {
+      if (inFlight.current || document.visibilityState !== "visible") return;
+      refresh();
+    }, POLL_MS);
     return () => window.clearInterval(timer);
   }, [refresh]);
 
