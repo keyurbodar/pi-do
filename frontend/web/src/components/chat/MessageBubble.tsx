@@ -269,6 +269,10 @@ type TextSegment = { kind: "text"; text: string } | { kind: "mention"; bot: Rost
  * mention-bearing text renders as plain runs + BotMention chips instead.
  */
 function splitMentions(text: string, bots: RosterBot[]): TextSegment[] | null {
+  // A message that IS just a name ("hi", "Hi!") is a greeting, not a
+  // reference — never chip it, on either side.
+  const bare = text.trim().toLowerCase().replace(/[!.,?]+$/, "");
+  if (bots.some((b) => b.name.toLowerCase() === bare)) return null;
   if (bots.length === 0) return null;
   const escaped = bots
     .map((b) => b.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
